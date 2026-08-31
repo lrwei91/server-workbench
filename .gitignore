@@ -1,0 +1,19 @@
+# ---- 运行时产物（不提交）----
+# 执行日志（按日期命名，运行自动生成）
+logs/
+*.log
+
+# 话单操作日志（可能含话单业务数据）
+cdr/data/logs/
+
+# ---- 本地配置（含真实凭据，不提交）----
+# 如需分享配置结构，请复制为 config.example.js 并移除密码
+config.js
+
+# ---- 系统/编辑器 ----
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+.idea/
+.vscode/

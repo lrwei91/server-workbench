@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>远程服务器管理工作台</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<!-- ================= 顶栏 ================= -->
+<header>
+  <div class="logo">
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#3d5a80" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/><path d="M7 10l2.5 2.5L14 8"/></svg>
+    远程服务器管理工作台
+  </div>
+  <div class="status-pill" id="statusPill">
+    <span class="dot off" id="statusDot"></span>
+    <span id="statusText">未连接</span>
+  </div>
+  <div class="grow"></div>
+  <button class="btn" id="btnCmds" title="打开快捷指令面板（含常用命令速查）">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 6 20 6"/><polyline points="4 12 20 12"/><polyline points="4 18 20 18"/></svg>
+    快捷指令
+  </button>
+  <button class="btn" id="btnBilling" title="打开计费速查面板">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+    计费速查
+  </button>
+  <button class="btn" id="btnCdr" title="打开话单文件数据调整工具（浏览/改数/批量造数/导出校验）">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+    话单工具
+  </button>
+  <button class="btn" id="btnSettings" title="修改连接的服务器、账号">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+    连接设置
+  </button>
+  <button class="btn primary" id="btnConnect">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+    连接
+  </button>
+</header>
+
+<!-- ================= 新手引导 ================= -->
+<div id="guide">
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#3d5a80" stroke-width="2" stroke-linecap="round" style="flex-shrink:0"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>
+  <div class="steps">
+    <span><i class="num">1</i>点右上角【连接】登录服务器（配置已预置，直接点即可）</span>
+    <span><i class="num">2</i>左侧【服务器文件】/【HDFS】浏览，或点顶栏【快捷指令】执行操作</span>
+    <span><i class="num">3</i>执行结果自动显示在右侧日志区，可复制 / 下载</span>
+  </div>
+  <button class="close" id="guideClose" title="关闭引导">×</button>
+</div>
+
+<!-- ================= 主体 ================= -->
+<main>
+  <aside>
+    <div class="tabs">
+      <div class="tab active" data-tab="files">服务器文件</div>
+      <div class="tab" data-tab="hdfs">HDFS</div>
+    </div>
+
+    <!-- 文件面板 -->
+    <div class="tab-pane active" data-pane="files" id="filePane">
+      <div class="pathbox" id="curPath" title="当前目录">~/（连接后自动进入）</div>
+      <div class="crumbs" id="crumbs"></div>
+      <div class="file-toolbar">
+        <button class="btn" id="btnUp" title="返回上一级目录">↑ 上级</button>
+        <button class="btn" id="btnRefresh">刷新</button>
+        <button class="btn" id="btnGoto" title="输入路径直接跳转">跳转…</button>
+        <button class="btn" id="btnMkdir" title="在当前目录下新建文件夹">＋ 文件夹</button>
+        <button class="btn" id="btnTouch" title="在当前目录下新建空文件">＋ 文件</button>
+      </div>
+      <div class="file-list" id="fileList">
+        <div class="empty-tip">尚未连接服务器<br>请先点击右上角【连接】</div>
+      </div>
+    </div>
+
+    <!-- HDFS 浏览面板 -->
+    <div class="tab-pane" data-pane="hdfs" id="hdfsPane" style="display:none">
+      <div class="pathbox" id="hdfsCurPath" title="当前 HDFS 目录">/apps/bill_cnos_jf_test/prep（连接后自动进入）</div>
+      <div class="crumbs" id="hdfsCrumbs"></div>
+      <div class="file-toolbar">
+        <button class="btn" id="btnHdfsUp" title="返回上一级目录">↑ 上级</button>
+        <button class="btn" id="btnHdfsRefresh">刷新</button>
+        <button class="btn" id="btnHdfsGoto" title="输入 HDFS 路径直接跳转">跳转…</button>
+      </div>
+      <div class="chips" style="margin:0 0 8px" id="hdfsQuick">
+        <span class="hint">常用：</span>
+        <button class="chip" data-hp="/apps">/apps</button>
+        <button class="chip" data-hp="/apps/bill_cnos_jf_test/prep">采预 prep</button>
+        <button class="chip" data-hp="/apps/bill_cnos_jf/cal">批价 cal</button>
+      </div>
+      <div class="file-list" id="hdfsList">
+        <div class="empty-tip">尚未连接服务器<br>请先点击右上角【连接】</div>
+      </div>
+      <div class="hint" style="margin-top:6px">HDFS 是集群共享的分布式文件系统（如话单目录 /apps/...），与【服务器文件】页的服务器本地磁盘是两回事。此页仅查看与下载，不提供增删。</div>
+    </div>
+  </aside>
+
+  <!-- 日志主区 -->
+  <section class="console">
+    <div class="console-bar">
+      <div class="title">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#3d5a80" stroke-width="2" stroke-linecap="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+        执行日志
+      </div>
+      <div class="grow"></div>
+      <button class="btn sm" id="btnExport" title="把本次会话全部日志保存为本地 txt 文件">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        导出日志
+      </button>
+      <button class="btn sm" id="btnClear" title="清空当前显示的执行记录（本地日志文件仍保留，刷新后会自动恢复当天日志）">清屏</button>
+    </div>
+    <div id="logFlow"></div>
+    <div id="emptyState">
+      <svg width="46" height="46" viewBox="0 0 24 24" fill="none" stroke="#c4c8cd" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/><path d="M7 9l2.5 2.5L14 7"/></svg>
+      <div class="big">尚无执行记录</div>
+      <p>从左侧【快捷指令】开始，例如「当前目录文件列表」<br>或在下方输入框输入命令（无需记忆，点选即可）</p>
+    </div>
+  </section>
+</main>
+
+<!-- ================= 底部命令输入 ================= -->
+<footer>
+  <div class="input-row">
+    <input id="cmdInput" placeholder="也可直接输入命令回车执行（↑↓ 切换历史）…" autocomplete="off" list="cmdSuggest">
+    <datalist id="cmdSuggest"></datalist>
+    <button class="btn primary" id="btnRun">执行</button>
+  </div>
+  <div class="chips" id="chips">
+    <span class="hint">快速输入：</span>
+    <!-- 服务器文件 Tab 的常用命令 -->
+    <span class="chip-group" data-for="files">
+      <button class="chip" title="列出当前目录的文件和文件夹，含大小、时间">ls -lh</button>
+      <button class="chip" title="显示当前所在目录的完整路径">pwd</button>
+      <button class="chip" title="查看各磁盘分区容量与剩余空间">df -h</button>
+      <button class="chip" title="查看内存总量、已用与剩余">free -h</button>
+      <button class="chip" title="查看运行中的进程（前 60 条）">ps -ef | head -60</button>
+      <button class="chip" title="服务器已运行时长与当前负载">uptime</button>
+      <button class="chip" title="查看当前系统时间">date</button>
+      <button class="chip" title="查看服务器主机名">cat /etc/hostname</button>
+    </span>
+    <!-- HDFS Tab 的常用命令（与本地命令不同，必须用 hadoop fs） -->
+    <span class="chip-group" data-for="hdfs" style="display:none">
+      <button class="chip" title="列出当前 HDFS 目录内容">hadoop fs -ls .</button>
+      <button class="chip" title="列出 HDFS 计费根目录">hadoop fs -ls /apps</button>
+      <button class="chip" title="统计当前 HDFS 目录的磁盘占用（含子目录）">hadoop fs -du -h .</button>
+      <button class="chip" title="查看 HDFS 集群整体空间使用情况">hadoop fs -df -h</button>
+      <button class="chip" title="查看 HDFS 文件内容">hadoop fs -cat</button>
+      <button class="chip" title="查看 HDFS 文件前 50 行">hadoop fs -head 50</button>
+      <button class="chip" title="查看 HDFS 文件后 100 行（适合看日志）">hadoop fs -tail 100</button>
+      <button class="chip" title="统计当前目录文件/目录数量与配额">hadoop fs -count -q .</button>
+    </span>
+  </div>
+</footer>
+
+<!-- ================= 模态：连接设置 ================= -->
+<div class="overlay" id="ovSettings">
+  <div class="modal">
+    <div class="modal-head">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#3d5a80" stroke-width="2" stroke-linecap="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+      连接设置
+      <button class="x" data-close="ovSettings">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="field"><label>服务器地址</label><input id="cfgHost" placeholder="10.11.2.99"></div>
+      <div class="field"><label>端口</label><input id="cfgPort" placeholder="22"></div>
+      <div class="field"><label>用户名</label><input id="cfgUser" placeholder="cnos_jf"></div>
+      <div class="field"><label>密码（留空则使用内置密码）</label><input id="cfgPass" type="password" placeholder="••••••••"></div>
+      <div class="warn-note">默认已预置 <b>10.11.2.99</b> 的账号信息，通常无需修改即可连接。仅在服务器或账号变更时填写。</div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn" data-close="ovSettings">取消</button>
+      <button class="btn primary" id="btnSaveCfg">保存并连接</button>
+    </div>
+  </div>
+</div>
+
+<!-- ================= 模态：快捷指令（主 Tab：服务器 / HDFS） ================= -->
+<div class="overlay" id="ovCmds">
+  <div class="modal modal-lg">
+    <div class="modal-head">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#3d5a80" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 6 20 6"/><polyline points="4 12 20 12"/><polyline points="4 18 20 18"/></svg>
+      快捷指令
+      <div class="sub-tabs" style="margin-left:14px;display:flex;gap:6px">
+        <button class="btn sm active" data-cheat-tab="srv" id="cheatTabSrv">服务器</button>
+        <button class="btn sm" data-cheat-tab="hdfs" id="cheatTabHdfs">HDFS</button>
+      </div>
+      <button class="x" data-close="ovCmds">×</button>
+    </div>
+    <div class="modal-body scroll">
+      <div id="cmdPane"></div>
+      <div id="cheatPane" style="display:none"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn" data-close="ovCmds">关闭</button>
+    </div>
+  </div>
+</div>
+
+<!-- ================= 模态：计费速查 ================= -->
+<div class="overlay" id="ovBilling">
+  <div class="modal modal-lg">
+    <div class="modal-head">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#3d5a80" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+      计费速查
+      <button class="x" data-close="ovBilling">×</button>
+    </div>
+    <div class="modal-body scroll">
+      <input id="billSearch" class="bill-search" placeholder="搜索：事件类型 / 业务名 / 表名 / 服务名 / HDFS 目录…">
+      <div class="bill-suffix-row">
+        <span class="hint">HBase 命名空间</span>
+        <input id="hbNsInput" title="HBase namespace（资料原文 ns_cnos 为生产环境，本测试服务器实测为 ns_aibcp_dev）" style="width:118px" value="ns_aibcp_dev">
+        <span class="hint">HBase 账期</span>
+        <input id="hbMonthInput" title="量本表 / 排重表的账期月份" value="202410">
+        <span class="hint">话单表后缀</span>
+        <input id="billSuffixInput" title="话单 TICKET 表的地市与账期后缀" value="597_2606">
+      </div>
+
+      <div class="cmd-group-title">HDFS 目录速查 <span class="tag">点「进入」浏览</span></div>
+      <div class="bill-table" id="hdfsQuickTable"></div>
+
+      <div class="cmd-group-title">话单类型 ↔ 表名 <span class="tag">点「SQL」复制</span></div>
+      <div class="bill-table" id="ticketTable"></div>
+
+      <div class="cmd-group-title">HBase 表速查 <span class="tag">scan 一键执行</span></div>
+      <div id="hbaseCards"></div>
+
+      <div class="cmd-group-title">计费服务速查 <span class="tag">可一键查进程</span></div>
+      <div class="bill-table" id="svcTable"></div>
+      <div class="warn-note">「SQL」仅复制到剪贴板，请粘贴到数据库客户端执行；「scan / 查进程」直接在服务器执行（hbase shell 启动约需 10~30 秒）。</div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn" data-close="ovBilling">关闭</button>
+    </div>
+  </div>
+</div>
+
+<!-- ================= 模态：话单工具（iframe 嵌入 cdr-tool） ================= -->
+<div class="overlay" id="ovCdr">
+  <div class="modal modal-xl">
+    <div class="modal-head">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#3d5a80" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+      话单文件数据调整工具
+      <span class="hint" style="font-weight:400;color:var(--text-2);margin-left:6px">浏览 / 改数 / 批量造数 / 导出校验（源文件只读）</span>
+      <button class="x" data-close="ovCdr">×</button>
+    </div>
+    <div class="modal-body">
+      <iframe id="cdrFrame" data-src="/cdr/" title="话单文件数据调整工具"></iframe>
+    </div>
+  </div>
+</div>
+
+<!-- ================= 模态：参数化命令 ================= -->
+<div class="overlay" id="ovParams">
+  <div class="modal">
+    <div class="modal-head">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#3d5a80" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+      <span id="paramTitle">执行指令</span>
+      <button class="x" data-close="ovParams">×</button>
+    </div>
+    <div class="modal-body">
+      <div id="paramDesc" style="font-size:13px;color:var(--text-2);line-height:1.7"></div>
+      <div id="paramFields"></div>
+      <div class="cmd-preview" id="paramPreview"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn" data-close="ovParams">取消</button>
+      <button class="btn primary" id="btnParamRun">执行</button>
+    </div>
+  </div>
+</div>
+
+<!-- ================= 模态：删除确认 ================= -->
+<div class="overlay" id="ovDelete">
+  <div class="modal">
+    <div class="modal-head" style="color:var(--err)">
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#d93026" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+      <span id="delTitle">确认删除</span>
+      <button class="x" data-close="ovDelete">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="danger-note" id="delNote"></div>
+      <div class="warn-note">删除操作立即生效且<b>无法撤销</b>；目录删除仅支持空目录（更安全）。如不确定，请先用【查看】确认内容。</div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn" data-close="ovDelete">取消</button>
+      <button class="btn danger" id="btnDelConfirm">我已确认，删除</button>
+    </div>
+  </div>
+</div>
+
+
+<script src="/app.js"></script>
+</body>
+</html>

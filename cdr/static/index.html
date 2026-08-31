@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>话单文件数据调整工具</title>
+<link rel="stylesheet" href="static/style.css">
+</head>
+<body>
+<header class="topbar">
+  <h1>话单文件数据调整工具</h1>
+  <span class="sub" id="srcDir"></span>
+</header>
+
+<main>
+  <!-- 1. 文件区 -->
+  <section class="card" id="fileCard">
+    <div class="card-head">1 · 文件加载 <span class="tip">源目录只读，修改后导出到 outputs，绝不覆盖原文件</span></div>
+    <div class="row">
+      <select id="fileSelect"></select>
+      <button id="loadBtn" class="btn primary">加载</button>
+      <span id="loadMsg" class="msg"></span>
+    </div>
+    <div id="stats" class="hidden">
+      <div class="stat-grid" id="statCards"></div>
+      <div id="bizBars" class="biz-bars"></div>
+      <div id="warnings" class="warn hidden"></div>
+    </div>
+  </section>
+
+  <!-- 2. 记录区 -->
+  <section class="card" id="recordCard">
+    <div class="card-head">2 · 记录浏览与编辑
+      <span class="tip">点击行打开编辑抽屉；勾选行作为批量造数模板</span>
+    </div>
+    <div id="bizTabs" class="tabs hidden"></div>
+    <div id="filterBar" class="filter-bar hidden">
+      <div id="filterRows"></div>
+      <div class="row">
+        <button id="addFilterBtn" class="btn small">+ 条件</button>
+        <button id="applyFilterBtn" class="btn small primary">筛选</button>
+        <button id="resetFilterBtn" class="btn small">清空</button>
+        <label class="ml">列显示：
+          <select id="colMode">
+            <option value="common">常用字段</option>
+            <option value="all">全部字段</option>
+          </select>
+        </label>
+        <label>每页
+          <select id="pageSizeSel">
+            <option>50</option><option selected>100</option><option>200</option>
+          </select>
+        </label>
+        <span id="recCount" class="msg"></span>
+      </div>
+    </div>
+    <div class="table-wrap hidden" id="tableWrap">
+      <table id="recTable"><thead id="recThead"></thead><tbody id="recTbody"></tbody></table>
+    </div>
+    <div id="pager" class="pager hidden"></div>
+  </section>
+
+  <!-- 3. 操作区 -->
+  <section class="card hidden" id="opCard">
+    <div class="card-head">3 · 批量操作 <span class="tip">先预览后应用，支持一键撤销</span></div>
+    <div class="op-grid">
+      <div class="panel">
+        <h3>批量修改</h3>
+        <div class="panel-body">
+          <div class="p-title">匹配条件（AND）</div>
+          <div id="buFilters"></div>
+          <button id="buAddFilter" class="btn small">+ 条件</button>
+          <div class="p-title">目标字段 = 新值（可多条）</div>
+          <div id="buUpdates"></div>
+          <button id="buAddUpdate" class="btn small">+ 修改项</button>
+          <div class="row mt">
+            <button id="buPreview" class="btn">预览</button>
+            <button id="buApply" class="btn primary">应用</button>
+            <button id="undoBtn" class="btn">撤销</button>
+            <span id="undoMsg" class="msg"></span>
+          </div>
+          <pre id="buResult" class="result"></pre>
+        </div>
+      </div>
+      <div class="panel">
+        <h3>批量造数 <span id="tplCount" class="msg"></span></h3>
+        <div class="panel-body">
+          <div class="row">
+            <label>每模板份数 <input type="number" id="genCopies" value="10" min="1" max="10000"></label>
+          </div>
+          <div class="p-title">ID 重生成</div>
+          <div class="row wrap">
+            <label><input type="checkbox" id="rgCollect" checked> COLLECT_CDR_ID</label>
+            <label><input type="checkbox" id="rgOrg" checked> ORG_CDR_ID</label>
+            <label><input type="checkbox" id="rgRecSeq" checked> REC_SEQ</label>
+            <label><input type="checkbox" id="rgCdrKey" checked> CDR_KEY</label>
+            <label><input type="checkbox" id="rgUuid"> SESSION_ID/OCS_SESSION_ID/MSG_ID</label>
+          </div>
+          <div class="p-title">字段变换规则（可选）</div>
+          <div id="genTransforms"></div>
+          <button id="genAddTransform" class="btn small">+ 变换规则</button>
+          <div class="row mt">
+            <button id="genBtn" class="btn primary">生成</button>
+            <span id="genMsg" class="msg"></span>
+          </div>
+          <pre id="genResult" class="result"></pre>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 4. 导出区 -->
+  <section class="card hidden" id="exportCard">
+    <div class="card-head">4 · 导出（自动重算 TICKET_COUNT 并校验）</div>
+    <div class="row">
+      <label>输出目录 <input type="text" id="outDir" class="wide"></label>
+    </div>
+    <div class="row">
+      <label>文件名 <input type="text" id="outName" class="wide" placeholder="留空自动生成（带时间戳）"></label>
+      <button id="exportBtn" class="btn primary">导出</button>
+      <span id="exportMsg" class="msg"></span>
+    </div>
+    <pre id="exportResult" class="result"></pre>
+    <div class="p-title">导出历史</div>
+    <div id="exportHistory" class="history"></div>
+  </section>
+</main>
+
+<!-- 编辑抽屉 -->
+<div id="drawer" class="drawer hidden">
+  <div class="drawer-head">
+    <span id="drawerTitle">编辑记录</span>
+    <button id="drawerClose" class="btn small">×</button>
+  </div>
+  <div class="drawer-body" id="drawerBody"></div>
+  <div class="drawer-foot">
+    <span id="drawerMsg" class="msg"></span>
+    <button id="drawerSave" class="btn primary">保存</button>
+  </div>
+</div>
+<div id="overlay" class="overlay hidden"></div>
+
+<script src="static/app.js"></script>
+</body>
+</html>
