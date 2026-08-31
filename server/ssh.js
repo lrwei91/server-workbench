@@ -1,169 +1,131 @@
-/**
- * SSH 连接管理与远程命令执行
- *
- * 职责：
- *   1. 维护当前 SSH 连接（conn / connInfo / homeDir）
- *   2. 连接建立 / 断开，错误翻译为友好提示
- *   3. 执行远程命令（exec），拦截交互式命令与自杀式删除
- */
+/** SSH connection lifecycle and bounded remote command execution. */
 'use strict';
 
-const { Client } = require('ssh2');
-const config = require('../config');
+const config = require('./config-loader');
 
-// ---------- 内置默认连接配置（从统一 config 读取） ----------
-const DEFAULT_CONFIG = {
-  host: config.ssh.host,
-  port: config.ssh.port,
-  username: config.ssh.username,
-  password: config.ssh.password,
-};
+let Client;
+function getClient() {
+  if (!Client) {
+    try { ({ Client } = require('ssh2')); }
+    catch (err) { throw new Error('未安装 ssh2 依赖，请先运行 npm install'); }
+  }
+  return Client;
+}
 
-let conn = null;      // 当前 SSH 连接
-let connInfo = null;  // 当前使用的连接信息（不含明文密码下发前端）
-let homeDir = null;   // 远程用户主目录（连接成功后缓存，用于展开 ~ 路径）
+const DEFAULT_CONFIG = { host: config.ssh.host, port: config.ssh.port, username: config.ssh.username, password: config.ssh.password };
+let conn = null;
+let connInfo = null;
+let homeDir = null;
+let connectGeneration = 0;
 
-// 部分服务器的 SFTP 不展开 ~ 路径，这里统一在前置处理
-function expandTilde(p) {
+function shellQuote(value) { return `'${String(value == null ? '' : value).replace(/'/g, `'\\''`)}'`; }
+function expandTilde(value) {
+  const p = String(value == null ? '' : value);
   if (!homeDir) return p;
   if (p === '~') return homeDir;
   if (p.startsWith('~/')) return homeDir + p.slice(1);
   return p;
 }
-
-// 连接信息脱敏（密码不下发明文）
-function maskConfig(cfg) {
-  return {
-    host: cfg.host,
-    port: cfg.port,
-    username: cfg.username,
-    hasPassword: true, // 密码保存在服务端，不下发明文
-  };
-}
-
+function maskConfig(cfg) { return { host: cfg.host, port: Number(cfg.port) || 22, username: cfg.username, hasPassword: Boolean(cfg.password) }; }
 function disconnect() {
-  if (conn) {
-    try { conn.end(); } catch (e) { /* ignore */ }
-    conn = null;
-    connInfo = null;
-  }
+  connectGeneration += 1;
+  const old = conn;
+  conn = null;
+  connInfo = null;
   homeDir = null;
+  if (old) { try { old.end(); } catch (_) {} }
 }
-
-function connect(overrides) {
+function friendlyConnectionError(raw) {
+  const text = String(raw || '连接失败');
+  if (/All configured authentication methods|authentication/i.test(text)) return '认证失败：用户名或密码不正确';
+  if (/ECONNREFUSED/i.test(text)) return '连接被拒绝：22 端口未开放或 SSH 服务未启动';
+  if (/ETIMEDOUT|timed? ?out/i.test(text)) return '连接超时：网络不可达或主机未开机';
+  if (/ENOTFOUND|EAI_AGAIN/i.test(text)) return '无法解析主机地址：请检查 IP 是否正确';
+  if (/EHOSTUNREACH|ENETUNREACH/i.test(text)) return '网络不可达：请确认已连入公司内网 / VPN';
+  return text;
+}
+function connect(overrides = {}) {
+  const cfg = { ...DEFAULT_CONFIG, ...overrides };
+  if (!cfg.host || !cfg.username) return Promise.reject(new Error('缺少主机地址或用户名，请先填写连接配置'));
+  const ClientCtor = getClient();
+  disconnect();
+  const attempt = connectGeneration;
   return new Promise((resolve, reject) => {
-    const cfg = Object.assign({}, DEFAULT_CONFIG, overrides || {});
-    if (!cfg.host || !cfg.username) {
-      return reject(new Error('缺少主机地址或用户名'));
-    }
-    disconnect();
-    const c = new Client();
+    const c = new ClientCtor();
     let settled = false;
-
-    const timer = setTimeout(() => {
+    let timer;
+    const finishError = (err) => {
       if (settled) return;
       settled = true;
-      try { c.end(); } catch (e) { /* ignore */ }
-      reject(new Error('连接超时（15 秒）：请确认服务器网络可达、22 端口已开放'));
-    }, config.sshTimeoutMs);
-
+      clearTimeout(timer);
+      try { c.end(); } catch (_) {}
+      reject(err instanceof Error ? err : new Error(String(err)));
+    };
+    timer = setTimeout(() => finishError(new Error(`连接超时（${Math.round(config.ssh.timeoutMs / 1000)} 秒）：请确认服务器网络可达、22 端口已开放`)), config.ssh.timeoutMs);
     c.on('ready', () => {
-      if (settled) return;
+      if (settled || attempt !== connectGeneration) return finishError(new Error('连接请求已过期'));
       settled = true;
       clearTimeout(timer);
       conn = c;
       connInfo = cfg;
-      c.on('close', () => { conn = null; connInfo = null; homeDir = null; });
-      c.on('error', () => { /* 连接期间错误由 close 兜底 */ });
-      // 缓存主目录，供 ~ 路径展开使用
-      c.exec('echo $HOME', (e2, s2) => {
-        if (e2) return;
-        let h = '';
-        s2.on('data', (d) => { h += d.toString('utf8'); });
-        s2.on('close', () => { homeDir = (h.trim().split('\n').pop() || null); });
+      c.on('close', () => { if (conn === c) { conn = null; connInfo = null; homeDir = null; } });
+      c.on('error', () => {});
+      c.exec('echo $HOME', (err, stream) => {
+        if (err || !stream) return;
+        let output = '';
+        stream.on('data', (chunk) => { output += chunk.toString('utf8'); });
+        stream.on('close', () => { if (conn === c) homeDir = output.trim().split('\n').pop() || null; });
       });
       resolve(maskConfig(cfg));
     });
-
-    c.on('error', (err) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      const raw = String((err && err.message) || err);
-      let friendly = raw;
-      if (/All configured authentication methods|authentication/i.test(raw)) {
-        friendly = '认证失败：用户名或密码不正确';
-      } else if (/ECONNREFUSED/i.test(raw)) {
-        friendly = '连接被拒绝：22 端口未开放或 SSH 服务未启动';
-      } else if (/ETIMEDOUT|timed? ?out/i.test(raw)) {
-        friendly = '连接超时：网络不可达或主机未开机';
-      } else if (/ENOTFOUND|EAI_AGAIN/i.test(raw)) {
-        friendly = '无法解析主机地址：请检查 IP 是否正确';
-      } else if (/EHOSTUNREACH|ENETUNREACH/i.test(raw)) {
-        friendly = '网络不可达：请确认已连入公司内网 / VPN';
-      }
-      reject(new Error(friendly));
-    });
-
-    c.connect({
-      host: cfg.host,
-      port: Number(cfg.port) || 22,
-      username: cfg.username,
-      password: cfg.password,
-      readyTimeout: config.sshTimeoutMs,
-      keepaliveInterval: 15000,
-    });
+    c.on('error', (err) => finishError(new Error(friendlyConnectionError(err?.message || err))));
+    try {
+      c.connect({ host: cfg.host, port: Number(cfg.port) || 22, username: cfg.username, password: cfg.password, readyTimeout: config.ssh.timeoutMs, keepaliveInterval: 15000 });
+    } catch (err) { finishError(err); }
   });
 }
 
-// ---------- 命令执行 ----------
-// 交互式命令无法在非交互通道里使用，直接拦截并给出替代建议
-const INTERACTIVE_RE = /(^|\s|;|&&|\|)(vim|vi|less|more|nano|man|htop|top|tail\s+-f|watch)\b/;
-// 绝对禁止的自杀式删除
-const FORBIDDEN_RE = /rm\s+(-[a-zA-Z]*r[a-zA-Z]*f|-[a-zA-Z]*f[a-zA-Z]*r)\s+(\/|\/\*|"\/"|'\/')(\s|$|\*)/;
+const INTERACTIVE_RE = /(^|\s|;|&&|\||\n)(?:vim|vi|less|more|nano|man|htop|top|tail\s+-f|watch)\b/i;
+// 只拦截明确指向根目录的递归强制删除，允许用户在确认后处理普通路径。
+const FORBIDDEN_RE = /(?:^|[;&|\n])\s*(?:sudo\s+)?rm\b(?=[^;&|\n]*\s(?:-[A-Za-z]*r[A-Za-z]*|--recursive)(?:\s|$))(?=[^;&|\n]*\s(?:-[A-Za-z]*f[A-Za-z]*|--force)(?:\s|$))[^;&|\n]*\s+['"]?\/(?:\*)?['"]?(?=\s|$)/i;
+const DANGEROUS_RE = /(?:^|[;&|\n])\s*(?:sudo\s+)?(?:rm|rmdir|del|erase|format)\b/i;
+function isDangerousCommand(cmd) { return DANGEROUS_RE.test(String(cmd || '')); }
 
-function execCommand(cmd, timeoutMs) {
+function execCommand(command, timeoutMs) {
+  const cmd = String(command || '');
   return new Promise((resolve, reject) => {
-    if (!conn) return reject(new Error('尚未连接服务器：请先点击右上角【连接】按钮'));
-    if (FORBIDDEN_RE.test(cmd)) {
-      return reject(new Error('已拦截：不允许执行针对根目录的递归强制删除（rm -rf /）'));
-    }
-    if (INTERACTIVE_RE.test(cmd)) {
-      return reject(new Error(
-        '该命令需要交互式终端（vim / less / top / tail -f 等），工作台暂不支持。\n' +
-        '替代方案：查看文件内容用左侧【查看文件内容】指令；查看进程用【系统 · 运行中的进程】；'
-      ));
-    }
-    const limit = Math.min(Number(timeoutMs) || config.execTimeoutMs, config.execMaxTimeoutMs);
-    conn.exec(cmd, (err, stream) => {
+    const active = conn;
+    if (!active) return reject(new Error('尚未连接服务器：请先点击右上角【连接】按钮'));
+    if (FORBIDDEN_RE.test(cmd)) return reject(new Error('已拦截：不允许执行针对根目录的递归强制删除（rm -rf /）'));
+    if (INTERACTIVE_RE.test(cmd)) return reject(new Error('该命令需要交互式终端（vim / less / top / tail -f 等），工作台暂不支持。'));
+    const limit = Math.min(Number(timeoutMs) || config.ssh.execTimeoutMs, config.ssh.execMaxTimeoutMs);
+    const maxBytes = Math.max(1024, Number(config.ssh.execMaxOutputBytes) || 2 * 1024 * 1024);
+    active.exec(cmd, (err, stream) => {
       if (err) return reject(err);
       let stdout = '';
       let stderr = '';
-      const t0 = Date.now();
-      stream.on('data', (d) => { stdout += d.toString('utf8'); });
-      stream.stderr.on('data', (d) => { stderr += d.toString('utf8'); });
-      const timer = setTimeout(() => {
-        try { stream.close(); } catch (e) { /* ignore */ }
-        resolve({ stdout, stderr, code: 124, duration: limit, timedOut: true });
-      }, limit);
-      stream.on('close', (code) => {
-        clearTimeout(timer);
-        resolve({ stdout, stderr, code: code == null ? 0 : code, duration: Date.now() - t0 });
-      });
+      let bytes = 0;
+      let truncated = false;
+      const started = Date.now();
+      const append = (target, chunk) => {
+        const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
+        if (bytes >= maxBytes) { truncated = true; return target; }
+        const room = maxBytes - bytes;
+        const used = buf.subarray(0, room);
+        bytes += used.length;
+        if (used.length < buf.length) truncated = true;
+        return target + used.toString('utf8');
+      };
+      active.on?.('error', () => {});
+      stream.on('data', (chunk) => { stdout = append(stdout, chunk); });
+      stream.stderr?.on('data', (chunk) => { stderr = append(stderr, chunk); });
+      let finished = false;
+      const finish = (result) => { if (finished) return; finished = true; clearTimeout(timer); resolve({ ...result, duration: Date.now() - started, truncated }); };
+      const timer = setTimeout(() => { try { stream.close(); } catch (_) {} finish({ stdout, stderr, code: 124, timedOut: true }); }, limit);
+      stream.on('close', (code) => finish({ stdout, stderr, code: code == null ? 0 : code, timedOut: false }));
+      stream.on('error', (streamErr) => { if (!finished) { clearTimeout(timer); reject(streamErr); } });
     });
   });
 }
 
-module.exports = {
-  DEFAULT_CONFIG,
-  expandTilde,
-  maskConfig,
-  disconnect,
-  connect,
-  execCommand,
-  INTERACTIVE_RE,
-  FORBIDDEN_RE,
-  // 供其它模块读取连接状态
-  get conn() { return conn; },
-  get connInfo() { return connInfo; },
-};
+module.exports = { DEFAULT_CONFIG, expandTilde, maskConfig, shellQuote, disconnect, connect, execCommand, isDangerousCommand, INTERACTIVE_RE, FORBIDDEN_RE, get conn() { return conn; }, get connInfo() { return connInfo; } };

@@ -1,79 +1,35 @@
-/**
- * cdr-tool（话单文件数据调整工具）反向代理
- *
- * 把 /cdr/* 请求转发给 cdr-tool 的 Python FastAPI 服务，实现 iframe 同源嵌入。
- * 支持 GET/POST，流式转发响应体与状态码。
- */
+/** Same-origin proxy for the FastAPI CDR service. */
 'use strict';
 
 const http = require('http');
-const config = require('../config');
+const config = require('./config-loader');
 
-// cdr 话单功能模块是项目内的 Python FastAPI 后端（../cdr），由 start.bat 与工作台一起拉起。
-// 工作台通过 /cdr/ 前缀反向代理到该服务，使 iframe 内的前端与 API 同源，避免跨域。
-// 上游地址从统一 config 读取（config.cdr）。
-const CDR_UPSTREAM = { host: config.cdr.host, port: config.cdr.port };
+const upstreamUrl = new URL(config.cdr.upstream || 'http://127.0.0.1:8000');
+const CDR_UPSTREAM = { host: upstreamUrl.hostname, port: Number(upstreamUrl.port) || (upstreamUrl.protocol === 'https:' ? 443 : 80), protocol: upstreamUrl.protocol };
 
-function proxyToCdr(req, res, targetPath) {
-  const upstream = CDR_UPSTREAM;
-  // 去掉 /cdr 前缀，拼接原始 query
-  const parsed = new URL(req.url, 'http://127.0.0.1');
-  const destPath = targetPath + (parsed.search || '');
-
-  const headers = {};
-  if (req.headers['content-type']) headers['content-type'] = req.headers['content-type'];
-  if (req.headers['content-length']) headers['content-length'] = req.headers['content-length'];
-  headers['host'] = `${upstream.host}:${upstream.port}`;
-  headers['accept'] = req.headers['accept'] || '*/*';
-
-  const proxyReq = http.request(
-    {
-      host: upstream.host,
-      port: upstream.port,
-      path: destPath,
-      method: req.method,
-      headers,
-    },
-    (proxyRes) => {
-      // 透传状态码与响应头（内容类型、长度等）
-      const respHeaders = { 'Cache-Control': 'no-store' };
-      if (proxyRes.headers['content-type']) respHeaders['content-type'] = proxyRes.headers['content-type'];
-      if (proxyRes.headers['content-length']) respHeaders['content-length'] = proxyRes.headers['content-length'];
-      if (proxyRes.headers['content-disposition']) respHeaders['content-disposition'] = proxyRes.headers['content-disposition'];
-      res.writeHead(proxyRes.statusCode || 502, respHeaders);
-      proxyRes.pipe(res);
-    },
-  );
-
-  proxyReq.on('error', (err) => {
-    if (err.code === 'ECONNREFUSED') {
-      // cdr-tool 服务未启动：给 iframe 一个可读的提示页
-      res.writeHead(503, { 'Content-Type': 'text/html; charset=utf-8' });
-      res.end(
-        '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">' +
-        '<style>body{font-family:-apple-system,"Segoe UI",sans-serif;background:#1a1f26;color:#d0d6de;' +
-        'display:flex;align-items:center;justify-content:center;height:100vh;margin:0;text-align:center}' +
-        '.box{max-width:420px;padding:32px;line-height:1.8}.b{color:#e8eef5;font-weight:600;margin-bottom:8px}' +
-        '.t{color:#7a8494;font-size:13px}</style></head><body>' +
-        '<div class="box"><div class="b">话单工具服务未启动</div>' +
-        '<div class="t">请通过 start.bat 启动工作台（会自动同时拉起话单工具后端）。<br>' +
-        '若已启动仍提示此页，请检查端口 8000 是否被占用。</div></div></body></html>'
-      );
-      return;
-    }
-    res.writeHead(502, { 'Content-Type': 'text/plain; charset=utf-8' });
-    res.end('话单工具代理失败：' + (err.message || err));
-  });
-
-  // 转发请求体（POST 等）
-  if (req.method !== 'GET' && req.method !== 'HEAD') {
-    req.pipe(proxyReq);
-  } else {
-    proxyReq.end();
-  }
+function errorPage(message, detail) {
+  const safe = String(detail || '').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+  return `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>${message}</title><style>body{font-family:system-ui,sans-serif;background:#fff;color:#1a1a1a;display:grid;place-items:center;min-height:100vh;margin:0}.box{max-width:520px;padding:32px;border:1px solid #e8e8e8;border-radius:8px}.detail{color:#767676;font-size:13px;margin-top:8px}</style><main class="box"><strong>${message}</strong><div class="detail">${safe}</div></main></html>`;
 }
 
-module.exports = {
-  CDR_UPSTREAM,
-  proxyToCdr,
-};
+function proxyToCdr(req, res, targetPath) {
+  const parsed = new URL(req.url, 'http://127.0.0.1');
+  const destPath = targetPath + (parsed.search || '');
+  const headers = { host: `${CDR_UPSTREAM.host}:${CDR_UPSTREAM.port}`, accept: req.headers.accept || '*/*' };
+  for (const key of ['content-type', 'content-length', 'if-none-match', 'if-modified-since']) if (req.headers[key]) headers[key] = req.headers[key];
+  const request = http.request({ host: CDR_UPSTREAM.host, port: CDR_UPSTREAM.port, path: destPath, method: req.method, headers, timeout: 30000 }, (upstreamRes) => {
+    const responseHeaders = { 'Cache-Control': 'no-store' };
+    for (const key of ['content-type', 'content-length', 'content-disposition', 'etag']) if (upstreamRes.headers[key]) responseHeaders[key] = upstreamRes.headers[key];
+    res.writeHead(upstreamRes.statusCode || 502, responseHeaders);
+    upstreamRes.pipe(res);
+  });
+  request.on('timeout', () => request.destroy(new Error('CDR 服务响应超时')));
+  request.on('error', (error) => {
+    if (res.headersSent) return res.destroy(error);
+    const unavailable = error.code === 'ECONNREFUSED' || error.code === 'ETIMEDOUT';
+    res.writeHead(unavailable ? 503 : 502, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+    res.end(errorPage(unavailable ? '话单工具服务暂不可用' : '话单工具代理失败', unavailable ? '请先启动 FastAPI 服务后重试。' : error.message));
+  });
+  if (req.method !== 'GET' && req.method !== 'HEAD') req.pipe(request); else request.end();
+}
+module.exports = { CDR_UPSTREAM, proxyToCdr };

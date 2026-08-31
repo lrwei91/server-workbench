@@ -17,3 +17,10 @@ desktop.ini
 *.swp
 .idea/
 .vscode/
+.npm/
+node_modules/
+__pycache__/
+.pytest_cache/
+*.pyc
+test-results/
+playwright-report/

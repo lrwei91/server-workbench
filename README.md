@@ -1,137 +1,54 @@
 # Server Workbench
 
-面向测试人员的本地 Web 远程服务器管理工作台。通过浏览器完成 SSH 命令执行、SFTP 文件浏览、HDFS 浏览、执行日志留存，以及计费测试话单的浏览、改数、造数和导出校验。
-
-> 工作台仅监听 `127.0.0.1`。远程服务器地址、账号和密码保存在本地 `config.js` 中，该文件已被 `.gitignore` 排除。
-
-## 主要功能
-
-- **SSH 工作台**：连接远程服务器、执行常用或自定义命令。
-- **SFTP 文件浏览**：浏览目录、查看和下载文件、新建文件或目录。
-- **HDFS 浏览**：可视化浏览 HDFS 目录、预览和下载文件。
-- **执行日志**：按日期保存命令、结果和耗时，支持恢复与导出。
-- **计费速查**：集中查看常用 HDFS 路径、话单表、HBase 表和服务信息。
-- **话单工具**：加载、筛选、修改和批量生成测试话单，导出时执行完整性校验。
-
-## 技术结构
-
-```text
-浏览器
-  └─ Node.js 本地桥接服务（127.0.0.1:17755）
-       ├─ SSH / SFTP / HDFS
-       ├─ 静态页面 public/
-       └─ /cdr/ 反向代理
-            └─ Python FastAPI 话单服务（127.0.0.1:8000）
-```
-
-```text
-server-workbench/
-├─ start.bat          # Windows 一键启动入口
-├─ config.js          # 本地配置，不提交到 Git
-├─ overview.md        # 完整功能、架构和验证记录
-├─ public/            # 工作台前端
-├─ server/            # Node.js 桥接服务
-└─ cdr/               # Python FastAPI 话单模块
-```
+面向测试人员的 Windows 优先本地工具工作台，集中处理 SSH 命令、SFTP 文件、HDFS 浏览、执行日志和 CDR 话单。当前交付重点是 PC 端；移动端专用布局、深色模式和运行时迁移不在范围内。
 
 ## 快速开始
 
-### 1. 准备运行环境
+1. 安装 Node.js 18+、Python 3.10+，在项目根目录运行：
 
-- Windows 10/11
-- Node.js 18 或更高版本
-- Node.js 依赖：`ssh2`
-- Python 3.10 或更高版本
-- Python 依赖：见 `cdr/requirements.txt`
-- 目标服务器可通过 SSH 访问；HDFS 功能还要求目标服务器可执行 `hadoop fs`
+   ```powershell
+   npm install
+   python -m pip install -r .\cdr\requirements.txt
+   ```
 
-安装依赖：
+2. 复制 `config.example.js` 为根目录 `config.js`，填写 SSH 主机、用户名和密码。`config.js` 已被 `.gitignore` 排除，不要提交真实凭据。
+3. Windows 双击 `start.bat`，或分别运行 `python .\cdr\server.py` 和 `node .\server\server.js`。
+4. 浏览器打开 <http://127.0.0.1:17755>。
 
-```powershell
-npm install ssh2
-python -m pip install -r .\cdr\requirements.txt
-```
+启动入口从 PATH 查找 Node/Python，不依赖个人绝对路径。缺少 `config.js` 时服务仍可启动，但会在连接时提示配置问题。
 
-### 2. 创建本地配置
+## 功能与安全边界
 
-在项目根目录创建 `config.js`：
+- 主工作台采用纯白工具主题：黑墨层级、荧光黄主操作/选中、独立成功/警告/错误色；固定浅色，PC 视口支持 1024–1920 宽度和浏览器缩放。
+- 文件浏览使用结构化 SFTP 接口：目录列表、预览、新建文件/目录、删除文件或空目录、下载。删除需要二次确认，根路径受保护。
+- HDFS 浏览只读，路径使用单引号 shell 转义；高级自由命令仍保留在 `/api/exec`，删除类命令需要确认，根目录递归强删会被拦截。
+- 命令输出默认限制 2 MiB，日志异步排队写入并分页读取，页面默认最多挂载 200 条；隐藏页面暂停状态检查和自动刷新，单个刷新请求不会重入。
+- 自定义密码只存在当前页面内存；浏览器仅保存主机、端口和用户名。
+- CDR 源 NDJSON 只读，修改留在内存；支持版本冲突检测、10 万条记录上限、批量预览/应用一致性、O(1) ID 索引和原子导出校验。
 
-```js
-'use strict';
-
-module.exports = {
-  workbench: {
-    host: '127.0.0.1',
-    port: 17755,
-  },
-  ssh: {
-    host: 'TARGET',
-    port: 22,
-    username: 'USERNAME',
-    password: 'PASSWORD',
-  },
-  cdr: {
-    host: '127.0.0.1',
-    port: 8000,
-  },
-  logs: {
-    dir: 'logs',
-    maxDays: 90,
-  },
-  sshTimeoutMs: 15000,
-  execTimeoutMs: 25000,
-  execMaxTimeoutMs: 120000,
-  hdfsTimeoutMs: 90000,
-};
-```
-
-请勿将含真实凭据的 `config.js` 提交到仓库。
-
-### 3. 启动
-
-当前已配置环境可直接双击：
+## 目录
 
 ```text
-start.bat
+server-workbench/
+├─ start.bat                 # Windows 启动入口（PATH 查找运行时）
+├─ config.example.js         # 无凭据配置样例
+├─ package.json / lock        # 可复现 Node 依赖和质量门禁
+├─ shared/                   # 共享令牌、图标精灵、请求/DOM/对话框工具
+├─ public/                   # PC 主工作台（原生 ES Modules）
+├─ server/                   # Node HTTP、SSH、SFTP、HDFS、日志、CDR 代理
+├─ cdr/                      # FastAPI + 内存 CDR 引擎与前端
+└─ tests/                    # Node builtin test、Python unittest、fixture
 ```
 
-`start.bat` 中的 Node.js 和 Python 路径是本机路径；在其他电脑使用时，先按实际安装位置调整 `NODE_EXE`、`NODE_PATH` 和 `PY_EXE`。
-
-也可以分别启动两个服务：
+## 质量检查
 
 ```powershell
-$env:CDR_PORT = '8000'
-python .\cdr\server.py
+npm run check
+npm run test:node
+npm run test:python
+git diff --check
 ```
 
-另开一个终端：
+测试不需要真实 SSH/SFTP/HDFS 或凭据；真实远端链路需在本机准备 `config.js` 和 `ssh2` 后另行 smoke。项目不在本次任务中提交、推送或部署。
 
-```powershell
-node .\server\server.js
-```
-
-浏览器访问：<http://127.0.0.1:17755>
-
-## 基本使用流程
-
-1. 启动工作台并打开页面。
-2. 点击右上角 **连接**，确认 SSH 连接成功。
-3. 在 **服务器文件** 或 **HDFS** 页面浏览目标目录。
-4. 通过 **快捷指令** 或底部输入框执行命令。
-5. 通过 **计费速查** 查看常用路径、表和服务信息。
-6. 通过 **话单工具** 加载、改数、造数并导出测试话单。
-7. 在日志区核对执行结果并保存证据。
-
-## 数据与安全说明
-
-- 服务只监听本机回环地址，不直接对局域网或公网开放。
-- 删除类命令需要二次确认，根目录递归删除会被拦截。
-- 话单源文件保持只读；修改内容仅存在于内存，导出时才写入输出目录。
-- `logs/` 与 `cdr/data/logs/` 可能包含业务信息，均已排除在版本控制之外。
-- 首次使用前应检查 `config.js`、常用 HDFS 路径和计费速查数据是否适用于当前环境。
-
-## 更多文档
-
-- [项目总览与完整实现说明](./overview.md)
-- [话单工具使用说明](./cdr/README.md)
-
+更多说明见 [overview.md](./overview.md) 和 [cdr/README.md](./cdr/README.md)。

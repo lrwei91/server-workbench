@@ -1,114 +1,101 @@
-/**
- * SFTP 文件浏览（通道复用 + 列目录 + 下载）
- *
- * 关键：复用单一 SFTP 通道，避免每次 conn.sftp() 新开 channel
- * 耗尽服务器 sshd MaxSessions 上限（"Channel open failure"）。
- */
+/** Structured SFTP operations with a reused channel. */
 'use strict';
 
 const ssh = require('./ssh');
 
-let sftpChannel = null; // 复用的 SFTP 通道（每次 conn.sftp() 都会在服务器开新 channel，
-                        // 用完不关会耗尽 sshd MaxSessions 上限，导致 Channel open failure）
-let sftpConnRef = null; // 通道所属的连接对象引用，用于判断通道是否随连接失效
+let sftpChannel = null;
+let sftpConnRef = null;
 
 function openSftpOnce() {
   return new Promise((resolve, reject) => {
-    const conn = ssh.conn;
-    if (!conn) return reject(new Error('尚未连接服务器：请先点击右上角【连接】按钮'));
-    conn.sftp((err, sftp) => {
+    const connection = ssh.conn;
+    if (!connection) return reject(new Error('尚未连接服务器：请先点击右上角【连接】按钮'));
+    connection.sftp((err, channel) => {
       if (err) return reject(err);
-      // 通道异常/被服务器关闭时置空，下次调用自动重建
-      sftp.on('close', () => { if (sftpChannel === sftp) sftpChannel = null; });
-      sftp.on('error', () => {
-        if (sftpChannel === sftp) sftpChannel = null;
-        try { sftp.end(); } catch (e) { /* ignore */ }
-      });
-      sftpChannel = sftp;
-      sftpConnRef = conn;
-      resolve(sftp);
+      sftpChannel = channel;
+      sftpConnRef = connection;
+      channel.on('close', () => { if (sftpChannel === channel) { sftpChannel = null; sftpConnRef = null; } });
+      channel.on('error', () => { if (sftpChannel === channel) { sftpChannel = null; sftpConnRef = null; } });
+      resolve(channel);
     });
   });
 }
 
 async function getSftp() {
-  // 通道随连接失效（断开/重连）时丢弃重建
-  if (sftpChannel && sftpConnRef !== ssh.conn) {
-    sftpChannel = null;
-    sftpConnRef = null;
-  }
+  if (sftpChannel && sftpConnRef !== ssh.conn) { sftpChannel = null; sftpConnRef = null; }
   if (sftpChannel) return sftpChannel;
-  if (!ssh.conn) throw new Error('尚未连接服务器：请先点击右上角【连接】按钮');
-  // 服务器 MaxSessions 有限，偶发 "Channel open failure"：等待后重试一次
-  try {
-    return await openSftpOnce();
-  } catch (firstErr) {
-    await new Promise((r) => setTimeout(r, 600));
+  try { return await openSftpOnce(); }
+  catch (first) {
+    await new Promise((resolve) => setTimeout(resolve, 250));
     sftpChannel = null;
-    try {
-      return await openSftpOnce();
-    } catch (secondErr) {
-      throw new Error('SFTP 通道建立失败：' + ((secondErr && secondErr.message) || secondErr) +
-        '。已自动重试仍失败，请点击右上角【断开】后重新【连接】');
-    }
+    try { return await openSftpOnce(); }
+    catch (second) { throw new Error('SFTP 通道建立失败：' + (second?.message || first?.message || second)); }
   }
 }
 
-async function withSftp(fn) {
-  const sftp = await getSftp();
-  try {
-    return await new Promise((resolve, reject) => { fn(sftp, resolve, reject); });
-  } catch (e) {
-    // 复用的通道可能已失效（服务器端已关闭但未触发本地事件）：重开一次再试
+async function withSftp(operation, { retry = true } = {}) {
+  const channel = await getSftp();
+  try { return await operation(channel); }
+  catch (error) {
+    if (!retry) throw error;
     sftpChannel = null;
-    const sftp2 = await getSftp();
-    return new Promise((resolve, reject) => { fn(sftp2, resolve, reject); });
+    return operation(await getSftp());
   }
+}
+
+function call(channel, method, ...args) {
+  return new Promise((resolve, reject) => {
+    channel[method](...args, (err, result) => err ? reject(err) : resolve(result));
+  });
 }
 
 function sftpList(remotePath) {
-  return withSftp((sftp, resolve, reject) => {
-    sftp.stat(remotePath, (statErr, st) => {
-      if (statErr) {
-        return reject(new Error('读取失败：路径不存在或无权限（' + (statErr.message || statErr) + '）'));
-      }
-      if (!st.isDirectory()) {
-        return reject(new Error('该路径不是文件夹：' + remotePath));
-      }
-      sftp.readdir(remotePath, (err, list) => {
-        if (err) return reject(new Error('读取目录失败：' + (err.message || err)));
-        const items = list.map((e) => {
-          const a = e.attrs || {};
-          const isDir = a.mode != null ? ((a.mode & 0o170000) === 0o040000) : (a.longname || '')[0] === 'd';
-          const isLink = (a.longname || '')[0] === 'l';
-          return {
-            name: e.filename,
-            isDir: !!isDir,
-            isLink: !!isLink,
-            size: a.size || 0,
-            mtime: a.mtime ? new Date(a.mtime * 1000).toISOString() : '',
-            longname: a.longname || '',
-          };
-        });
-        items.sort((a, b) => (b.isDir - a.isDir) || a.name.localeCompare(b.name));
-        resolve(items);
-      });
-    });
-  });
+  return withSftp(async (sftp) => {
+    const st = await call(sftp, 'stat', remotePath);
+    if (!st.isDirectory()) throw new Error('该路径不是文件夹：' + remotePath);
+    const list = await call(sftp, 'readdir', remotePath);
+    return list.map((entry) => {
+      const attrs = entry.attrs || {};
+      const mode = attrs.mode == null ? 0 : attrs.mode;
+      return {
+        name: entry.filename,
+        isDir: (mode & 0o170000) === 0o040000 || (entry.longname || '')[0] === 'd',
+        isLink: (entry.longname || '')[0] === 'l',
+        size: Number(attrs.size) || 0,
+        mtime: attrs.mtime ? new Date(attrs.mtime * 1000).toISOString() : '',
+        longname: entry.longname || '',
+      };
+    }).sort((a, b) => (Number(b.isDir) - Number(a.isDir)) || a.name.localeCompare(b.name));
+  }).catch((error) => { throw new Error('读取目录失败：' + (error?.message || error)); });
 }
 
 function sftpRealpath(remotePath) {
-  return withSftp((sftp, resolve, reject) => {
-    sftp.realpath(remotePath, (err, abs) => {
-      if (err) return resolve(remotePath); // 解析失败时退回原路径
-      resolve(abs);
-    });
+  return withSftp(async (sftp) => {
+    try { return await call(sftp, 'realpath', remotePath); }
+    catch (_) { return remotePath; }
   });
 }
 
-module.exports = {
-  getSftp,
-  withSftp,
-  sftpList,
-  sftpRealpath,
-};
+function sftpStat(remotePath) { return withSftp((sftp) => call(sftp, 'stat', remotePath)); }
+
+function sftpMkdir(remotePath) { return withSftp((sftp) => call(sftp, 'mkdir', remotePath, { mode: 0o755 }), { retry: false }); }
+// 独占创建，避免“新建文件”误把已有文件截断。
+function sftpTouch(remotePath) { return withSftp((sftp) => call(sftp, 'open', remotePath, 'wx').then((handle) => call(sftp, 'close', handle)), { retry: false }); }
+function sftpDelete(remotePath, kind = 'file') {
+  const method = kind === 'dir' ? 'rmdir' : 'unlink';
+  return withSftp((sftp) => call(sftp, method, remotePath), { retry: false });
+}
+
+async function sftpPreview(remotePath, maxBytes = 256 * 1024) {
+  const limit = Math.max(1024, Math.min(Number(maxBytes) || 256 * 1024, 2 * 1024 * 1024));
+  return withSftp((sftp) => new Promise((resolve, reject) => {
+    const stream = sftp.createReadStream(remotePath, { start: 0, end: limit - 1 });
+    const chunks = [];
+    let size = 0;
+    stream.on('data', (chunk) => { chunks.push(chunk); size += chunk.length; if (size >= limit) stream.destroy(); });
+    stream.on('error', reject);
+    stream.on('close', () => resolve({ text: Buffer.concat(chunks).subarray(0, limit).toString('utf8'), truncated: size >= limit, bytes: Math.min(size, limit) }));
+  }));
+}
+
+module.exports = { getSftp, withSftp, sftpList, sftpRealpath, sftpStat, sftpMkdir, sftpTouch, sftpDelete, sftpPreview };

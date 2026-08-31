@@ -8,7 +8,7 @@
 'use strict';
 
 const ssh = require('./ssh');
-const config = require('../config');
+const config = require('./config-loader');
 
 // 单引号 shell 转义，防止路径中的特殊字符被解释
 function shellQuote(s) {
@@ -37,16 +37,18 @@ function parseHdfsLsLine(line) {
 async function hdfsList(hdfsPath) {
   // Hadoop 客户端冷启动极慢（首次可达 60~70s：JVM 初始化 + Kerberos 认证 + 连 NameNode），
   // 热启动仅 2~3s。因此：超时放宽到 90s，并在超时/失败时自动重试一次（此时进程已热）。
-  let r = await ssh.execCommand('hadoop fs -ls ' + shellQuote(hdfsPath), config.hdfsTimeoutMs);
+  const safePath = String(hdfsPath || '/').trim();
+  if (!safePath.startsWith('/')) throw new Error('HDFS 路径必须以 / 开头');
+  let r = await ssh.execCommand('hadoop fs -ls ' + shellQuote(safePath), config.hdfsTimeoutMs || 90000);
   if (r.timedOut || (r.code !== 0 && !(r.stdout || '').trim())) {
     // 冷启动超时或偶发失败：重试一次，进程已热，通常秒回
-    r = await ssh.execCommand('hadoop fs -ls ' + shellQuote(hdfsPath), config.hdfsTimeoutMs);
+    r = await ssh.execCommand('hadoop fs -ls ' + shellQuote(safePath), config.hdfsTimeoutMs || 90000);
   }
   const out = (r.stdout || '');
   const err = (r.stderr || '');
   if (r.code !== 0 && !out.trim()) {
     if (/No such file or directory/i.test(err) || /No such file or directory/i.test(out)) {
-      throw new Error('HDFS 上不存在该路径：' + hdfsPath + '（注意与本地磁盘路径是两回事）');
+      throw new Error('HDFS 上不存在该路径：' + safePath + '（注意与本地磁盘路径是两回事）');
     }
     if (r.timedOut || r.code === 124) {
       throw new Error('HDFS 列目录超时（Hadoop 客户端冷启动较慢），请稍等几秒后点「刷新」重试');
@@ -64,9 +66,14 @@ async function hdfsList(hdfsPath) {
 
 // 连接建立后预热 HDFS：后台跑一次让 JVM/认证/NameNode 连接先热起来，避免用户首次操作撞冷启动
 function warmupHdfs() {
-  if (!ssh.conn) return;
-  ssh.execCommand('hadoop fs -ls /apps', config.hdfsTimeoutMs).catch(() => { /* 预热失败静默，不影响使用 */ });
+  if (!ssh.conn || warmupPromise) return warmupPromise;
+  warmupPromise = ssh.execCommand('hadoop fs -ls /apps', config.hdfsTimeoutMs || 90000)
+    .catch(() => null)
+    .finally(() => { warmupPromise = null; });
+  return warmupPromise;
 }
+
+let warmupPromise = null;
 
 module.exports = {
   shellQuote,

@@ -1,145 +1,22 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="zh-CN">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>话单文件数据调整工具</title>
-<link rel="stylesheet" href="static/style.css">
-</head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>话单工具</title><link rel="stylesheet" href="/shared/tokens.css"><link rel="stylesheet" href="static/style.css?v=2"></head>
 <body>
-<header class="topbar">
-  <h1>话单文件数据调整工具</h1>
-  <span class="sub" id="srcDir"></span>
-</header>
-
-<main>
-  <!-- 1. 文件区 -->
-  <section class="card" id="fileCard">
-    <div class="card-head">1 · 文件加载 <span class="tip">源目录只读，修改后导出到 outputs，绝不覆盖原文件</span></div>
-    <div class="row">
-      <select id="fileSelect"></select>
-      <button id="loadBtn" class="btn primary">加载</button>
-      <span id="loadMsg" class="msg"></span>
-    </div>
-    <div id="stats" class="hidden">
-      <div class="stat-grid" id="statCards"></div>
-      <div id="bizBars" class="biz-bars"></div>
-      <div id="warnings" class="warn hidden"></div>
-    </div>
-  </section>
-
-  <!-- 2. 记录区 -->
-  <section class="card" id="recordCard">
-    <div class="card-head">2 · 记录浏览与编辑
-      <span class="tip">点击行打开编辑抽屉；勾选行作为批量造数模板</span>
-    </div>
-    <div id="bizTabs" class="tabs hidden"></div>
-    <div id="filterBar" class="filter-bar hidden">
-      <div id="filterRows"></div>
-      <div class="row">
-        <button id="addFilterBtn" class="btn small">+ 条件</button>
-        <button id="applyFilterBtn" class="btn small primary">筛选</button>
-        <button id="resetFilterBtn" class="btn small">清空</button>
-        <label class="ml">列显示：
-          <select id="colMode">
-            <option value="common">常用字段</option>
-            <option value="all">全部字段</option>
-          </select>
-        </label>
-        <label>每页
-          <select id="pageSizeSel">
-            <option>50</option><option selected>100</option><option>200</option>
-          </select>
-        </label>
-        <span id="recCount" class="msg"></span>
-      </div>
-    </div>
-    <div class="table-wrap hidden" id="tableWrap">
-      <table id="recTable"><thead id="recThead"></thead><tbody id="recTbody"></tbody></table>
-    </div>
-    <div id="pager" class="pager hidden"></div>
-  </section>
-
-  <!-- 3. 操作区 -->
-  <section class="card hidden" id="opCard">
-    <div class="card-head">3 · 批量操作 <span class="tip">先预览后应用，支持一键撤销</span></div>
-    <div class="op-grid">
-      <div class="panel">
-        <h3>批量修改</h3>
-        <div class="panel-body">
-          <div class="p-title">匹配条件（AND）</div>
-          <div id="buFilters"></div>
-          <button id="buAddFilter" class="btn small">+ 条件</button>
-          <div class="p-title">目标字段 = 新值（可多条）</div>
-          <div id="buUpdates"></div>
-          <button id="buAddUpdate" class="btn small">+ 修改项</button>
-          <div class="row mt">
-            <button id="buPreview" class="btn">预览</button>
-            <button id="buApply" class="btn primary">应用</button>
-            <button id="undoBtn" class="btn">撤销</button>
-            <span id="undoMsg" class="msg"></span>
-          </div>
-          <pre id="buResult" class="result"></pre>
-        </div>
-      </div>
-      <div class="panel">
-        <h3>批量造数 <span id="tplCount" class="msg"></span></h3>
-        <div class="panel-body">
-          <div class="row">
-            <label>每模板份数 <input type="number" id="genCopies" value="10" min="1" max="10000"></label>
-          </div>
-          <div class="p-title">ID 重生成</div>
-          <div class="row wrap">
-            <label><input type="checkbox" id="rgCollect" checked> COLLECT_CDR_ID</label>
-            <label><input type="checkbox" id="rgOrg" checked> ORG_CDR_ID</label>
-            <label><input type="checkbox" id="rgRecSeq" checked> REC_SEQ</label>
-            <label><input type="checkbox" id="rgCdrKey" checked> CDR_KEY</label>
-            <label><input type="checkbox" id="rgUuid"> SESSION_ID/OCS_SESSION_ID/MSG_ID</label>
-          </div>
-          <div class="p-title">字段变换规则（可选）</div>
-          <div id="genTransforms"></div>
-          <button id="genAddTransform" class="btn small">+ 变换规则</button>
-          <div class="row mt">
-            <button id="genBtn" class="btn primary">生成</button>
-            <span id="genMsg" class="msg"></span>
-          </div>
-          <pre id="genResult" class="result"></pre>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <!-- 4. 导出区 -->
-  <section class="card hidden" id="exportCard">
-    <div class="card-head">4 · 导出（自动重算 TICKET_COUNT 并校验）</div>
-    <div class="row">
-      <label>输出目录 <input type="text" id="outDir" class="wide"></label>
-    </div>
-    <div class="row">
-      <label>文件名 <input type="text" id="outName" class="wide" placeholder="留空自动生成（带时间戳）"></label>
-      <button id="exportBtn" class="btn primary">导出</button>
-      <span id="exportMsg" class="msg"></span>
-    </div>
-    <pre id="exportResult" class="result"></pre>
-    <div class="p-title">导出历史</div>
-    <div id="exportHistory" class="history"></div>
-  </section>
-</main>
-
-<!-- 编辑抽屉 -->
-<div id="drawer" class="drawer hidden">
-  <div class="drawer-head">
-    <span id="drawerTitle">编辑记录</span>
-    <button id="drawerClose" class="btn small">×</button>
-  </div>
-  <div class="drawer-body" id="drawerBody"></div>
-  <div class="drawer-foot">
-    <span id="drawerMsg" class="msg"></span>
-    <button id="drawerSave" class="btn primary">保存</button>
-  </div>
+<div class="cdr-shell">
+  <header class="cdr-header"><div><strong>话单文件数据调整</strong><span>NDJSON · 内存工作区 · PC 工具模式</span></div><div class="cdr-session"><span id="sessionState" class="wb-status" aria-live="polite">未加载文件</span><span id="revisionText" class="revision">revision —</span></div></header>
+  <main class="cdr-main">
+    <section class="cdr-card load-card"><div class="card-title"><div><h1>1. 文件与会话状态</h1><p>源文件只读；所有修改都发生在当前内存会话。</p></div><button id="btnReloadFiles" class="wb-button" type="button">刷新文件</button></div><div class="load-controls"><label class="grow"><span class="wb-label">源话单文件</span><select id="fileSelect" class="wb-field"></select></label><button id="btnLoad" class="wb-button primary" type="button">加载到会话</button><button id="btnUndo" class="wb-button" type="button" disabled>撤销上一操作</button></div><div id="loadStatus" class="wb-status" role="status" aria-live="polite"></div></section>
+    <section class="stats-grid" id="statsGrid" aria-live="polite"><div class="stat"><span>记录总数</span><strong id="statTotal">—</strong></div><div class="stat"><span>业务类型</span><strong id="statBiz">—</strong></div><div class="stat"><span>字段数</span><strong id="statFields">—</strong></div><div class="stat"><span>导出状态</span><strong id="statExport">未导出</strong></div></section>
+    <section class="cdr-card browser-card"><div class="card-title"><div><h1>2. 记录浏览</h1><p id="recordsSummary">加载文件后显示记录</p></div><button id="btnRefreshRecords" class="wb-button" type="button">刷新记录</button></div><div class="filter-toolbar"><label><span class="wb-label">业务类型</span><select id="bizSelect" class="wb-field" aria-describedby="recordsSummary"><option value="">全部类型</option></select></label><label class="filter-grow"><span class="wb-label">快速筛选（字段包含）</span><input id="quickFilter" class="wb-field" aria-describedby="recordsSummary" placeholder="例如 IMSI_NBR=138"></label><button id="btnApplyFilter" class="wb-button" type="button">应用筛选</button><button id="btnClearFilter" class="wb-button" type="button">清除</button></div><div class="table-wrap"><table><thead id="recordHead"></thead><tbody id="recordBody"><tr><td class="table-empty" colspan="5">尚未加载记录</td></tr></tbody></table></div><div class="pager"><button id="btnPrev" class="wb-button" type="button" disabled>上一页</button><span id="pageText">第 — 页</span><button id="btnNext" class="wb-button" type="button" disabled>下一页</button></div></section>
+    <section class="operation-grid">
+      <section class="cdr-card"><div class="card-title"><div><h1>3. 批量修改</h1><p>必须提供筛选条件；先预览，再应用。</p></div></div><div id="batchFilters" class="filter-rows"></div><button id="btnAddFilter" class="wb-button" type="button">添加筛选条件</button><label class="field-line"><span class="wb-label">修改字段</span><input id="batchField" class="wb-field" aria-describedby="batchStatus" placeholder="例如 COMM_CHARGE"></label><label class="field-line"><span class="wb-label">新值</span><input id="batchValue" class="wb-field" aria-describedby="batchStatus" placeholder="按字段类型转换并校验"></label><div class="op-actions"><button id="btnBatchPreview" class="wb-button" type="button">预览影响</button><button id="btnBatchApply" class="wb-button primary" type="button" disabled>应用预览</button></div><div id="batchStatus" class="wb-status" role="status" aria-live="polite"></div></section>
+      <section class="cdr-card"><div class="card-title"><div><h1>4. 批量造数</h1><p>预先计算新增量和最终总量，超过 100,000 条会拒绝。</p></div></div><label class="field-line"><span class="wb-label">模板记录 idx（逗号分隔）</span><input id="templateIdxs" class="wb-field" placeholder="例如 0,1"></label><label class="field-line"><span class="wb-label">每模板复制份数</span><input id="copies" class="wb-field" type="number" min="1" max="10000" value="1"></label><div id="generateImpact" class="impact-box">填写模板和份数后显示影响数量</div><div class="op-actions"><button id="btnGeneratePreview" class="wb-button" type="button">计算影响</button><button id="btnGenerate" class="wb-button primary" type="button" disabled>确认造数</button></div><div id="generateStatus" class="wb-status" role="status" aria-live="polite"></div></section>
+    </section>
+    <section class="cdr-card export-card"><div class="card-title"><div><h1>5. 导出</h1><p>临时文件校验通过后原子替换目标文件。</p></div><button id="btnExport" class="wb-button primary" type="button">导出当前会话</button></div><div id="exportStatus" class="wb-status" role="status" aria-live="polite"></div><div id="exportHistory" class="export-history"></div></section>
+  </main>
 </div>
-<div id="overlay" class="overlay hidden"></div>
-
-<script src="static/app.js"></script>
-</body>
-</html>
+<dialog id="editDialog" class="wb-dialog edit-dialog" aria-labelledby="editTitle"><header class="wb-dialog__header"><h2 id="editTitle" class="wb-dialog__title">编辑记录</h2><button class="wb-button ghost" type="button" data-close="editDialog" aria-label="关闭编辑">关闭</button></header><div class="wb-dialog__body"><div id="editFields" class="edit-fields"></div><p id="editStatus" class="wb-status" role="alert"></p></div><footer class="wb-dialog__footer"><button class="wb-button" type="button" data-close="editDialog">取消</button><button id="btnSaveEdit" class="wb-button primary" type="button">保存修改</button></footer></dialog>
+<dialog id="confirmDialog" class="wb-dialog" aria-labelledby="confirmTitle"><header class="wb-dialog__header"><h2 id="confirmTitle" class="wb-dialog__title">确认操作</h2><button class="wb-button ghost" type="button" data-close="confirmDialog" aria-label="关闭确认">关闭</button></header><div class="wb-dialog__body"><p id="confirmMessage"></p></div><footer class="wb-dialog__footer"><button class="wb-button" type="button" data-close="confirmDialog">取消</button><button id="btnConfirm" class="wb-button primary" type="button">确认</button></footer></dialog>
+<div id="cdrToast" class="toast-region" role="status" aria-live="polite"></div>
+<script type="module" src="static/js/main.js"></script>
+</body></html>

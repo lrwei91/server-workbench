@@ -1,0 +1,16 @@
+{
+  "name": "server-workbench",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Windows-first SSH/SFTP/HDFS and CDR workbench",
+  "type": "commonjs",
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "start": "node server/server.js",
+    "check": "node --check server/server.js && node --check server/config-loader.js && node --check server/ssh.js && node --check server/sftp.js && node --check server/hdfs.js && node --check server/log.js && node --check server/proxy.js && node --input-type=module --check < shared/ui.js && node --input-type=module --check < public/app.js && node --input-type=module --check < public/js/main.js && node --input-type=module --check < cdr/static/app.js && node --input-type=module --check < cdr/static/js/main.js && python3 -m compileall -q cdr",
+    "test:node": "node --test tests/node/*.test.js",
+    "test:python": "python3 -m unittest discover -s tests/python -p 'test_*.py'",
+    "test": "npm run check && npm run test:node && npm run test:python"
+  },
+  "dependencies": { "ssh2": "^1.17.0" }
+}
