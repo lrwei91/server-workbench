@@ -1,5 +1,5 @@
 body { overflow: hidden; }
-.wb-shell { min-height: 100vh; display: flex; flex-direction: column; }
+.wb-shell { height: 100vh; min-height: 0; display: flex; flex-direction: column; }
 .topbar { min-height: 68px; display: flex; align-items: center; gap: 24px; padding: 12px 24px; border-bottom: 1px solid var(--wb-border); background: var(--wb-surface); }
 .brand { display: flex; align-items: center; gap: 10px; min-width: 220px; }
 .brand-mark { display: grid; place-items: center; width: 32px; height: 32px; border-radius: 5px; color: var(--wb-text); background: var(--wb-accent); font-size: 11px; font-weight: 800; letter-spacing: .05em; }
@@ -33,6 +33,7 @@ h1 { margin: 0; font-size: 18px; letter-spacing: -.02em; }
 .resource-list { min-height: 0; flex: 1; overflow: auto; }
 .resource-row { min-height: 46px; border-bottom: 1px solid var(--wb-border); }
 .resource-row:hover { background: var(--wb-surface-subtle); }
+.row-icon { width: 16px; height: 16px; flex: 0 0 16px; color: var(--wb-text-secondary); fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
 .resource-name { min-width: 0; display: flex; align-items: center; gap: 8px; padding-left: 8px; overflow: hidden; }
 .resource-name button { min-width: 0; overflow: hidden; border: 0; padding: 4px 0; color: var(--wb-text); background: transparent; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
 .resource-name button.dir { font-weight: 650; }
