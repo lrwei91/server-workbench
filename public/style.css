@@ -37,6 +37,7 @@ h1 { margin: 0; font-size: 18px; letter-spacing: -.02em; }
 .resource-name { min-width: 0; display: flex; align-items: center; gap: 8px; padding-left: 8px; overflow: hidden; }
 .resource-name button { min-width: 0; overflow: hidden; border: 0; padding: 4px 0; color: var(--wb-text); background: transparent; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
 .resource-name button.dir { font-weight: 650; }
+.resource-name .dir-alias { flex: none; overflow: hidden; color: var(--wb-text-subtle); font-size: 11px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
 .resource-size, .resource-date { color: var(--wb-text-secondary); font-family: var(--wb-mono); font-size: 12px; }
 .resource-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px; padding-right: 4px; }
 .fact { min-height: 30px; border: 1px solid var(--wb-border); border-radius: 3px; padding: 0 8px; color: var(--wb-text-secondary); background: var(--wb-surface); font-size: 12px; }

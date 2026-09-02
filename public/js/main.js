@@ -4,7 +4,14 @@ const state = {
   connected: false, config: null, home: '~', cwd: '~', hdfsCwd: localStorage.getItem('wb_hdfs_cwd') || '/apps', hbaseCwd: localStorage.getItem('wb_hbase_cwd') || '/',
   history: [], historyIndex: 0, sessionPassword: '', pendingConfirm: null, pendingName: null, pendingParam: null,
   gates: { files: createRequestGate(), hdfs: createRequestGate(), hbase: createRequestGate() }, refreshBlocks: new Map(), statusTimer: null, statusRunning: false, pendingUpload: null, loaded: { files: false, hdfs: false, hbase: false },
+  annotations: {}, pendingAnnotationPath: '',
 };
+const ANNOTATIONS_KEY = 'wb_annotations';
+function loadAnnotations() { try { return JSON.parse(localStorage.getItem(ANNOTATIONS_KEY) || '{}') || {}; } catch (_) { return {}; } }
+function saveAnnotations(map) { localStorage.setItem(ANNOTATIONS_KEY, JSON.stringify(map)); }
+function getAlias(path) { return (state.annotations || {})[path] || ''; }
+function setAlias(path, text) { state.annotations = { ...state.annotations, [path]: text }; saveAnnotations(state.annotations); }
+function removeAlias(path) { const next = { ...state.annotations }; delete next[path]; state.annotations = next; saveAnnotations(state.annotations); }
 
 const COMMANDS = [
   { group: '查看', label: '当前位置', command: 'pwd', desc: '显示远程主目录和当前工作位置。' },
@@ -25,7 +32,7 @@ const BILLING = [
   { title: '排障提示', rows: [['分发', 'STRA / MR'], ['处理批次', 'pro_ 前缀表示在途'], ['命名空间', '按当前环境填写并复制']] },
 ];
 
-const dialogs = new Map(['settingsDialog', 'commandsDialog', 'paramDialog', 'billingDialog', 'confirmDialog', 'nameDialog', 'uploadDialog', 'previewDialog', 'hbaseScanDialog', 'cdrDialog'].map((id) => [id, new DialogController(document.getElementById(id))]));
+const dialogs = new Map(['settingsDialog', 'commandsDialog', 'paramDialog', 'billingDialog', 'confirmDialog', 'nameDialog', 'uploadDialog', 'annotationDialog', 'previewDialog', 'hbaseScanDialog', 'cdrDialog'].map((id) => [id, new DialogController(document.getElementById(id))]));
 function openDialog(id, focus) { dialogs.get(id)?.open(focus); }
 function closeDialog(id) { dialogs.get(id)?.close(); }
 $$('[data-dialog-close]').forEach((button) => button.addEventListener('click', () => closeDialog(button.dataset.dialogClose)));
@@ -148,15 +155,17 @@ function renderBreadcrumbs(container, current, rootLabel, navigate) {
 }
 function resourceRow(item, kind) {
   const fullPath = item.path || pathJoin(kind === 'files' ? state.cwd : kind === 'hbase' ? state.hbaseCwd : state.hdfsCwd, item.name); const nameButton = el('button', { type: 'button', class: item.isDir ? 'dir' : '', text: `${item.name}${item.isDir ? '/' : ''}`, title: fullPath });
-  const row = el('div', { class: 'resource-row' }, el('div', { class: 'resource-name' }, icon(item.isDir ? 'folder' : 'file'), nameButton), el('span', { class: 'resource-size', text: item.isDir ? '—' : (kind === 'hbase' ? '表' : formatBytes(item.size)) }), el('span', { class: 'resource-date', text: item.mtime || '—' }), el('div', { class: 'resource-actions' }));
+  const nameCell = el('div', { class: 'resource-name' }, icon(item.isDir ? 'folder' : 'file'), nameButton);
+  if (item.isDir) { const alias = getAlias(fullPath); if (alias) nameCell.append(el('span', { class: 'dir-alias', text: `[${alias}]`, title: alias })); }
+  const row = el('div', { class: 'resource-row' }, nameCell, el('span', { class: 'resource-size', text: item.isDir ? '—' : (kind === 'hbase' ? '表' : formatBytes(item.size)) }), el('span', { class: 'resource-date', text: item.mtime || '—' }), el('div', { class: 'resource-actions' }));
   const actions = row.querySelector('.resource-actions');
   if (kind === 'hbase') {
-    if (item.isDir) { const enter = el('button', { class: 'fact', type: 'button', text: '进入' }); enter.addEventListener('click', () => { state.hbaseCwd = fullPath; localStorage.setItem('wb_hbase_cwd', fullPath); refreshHbase(); }); actions.append(enter); }
+    if (item.isDir) { const enter = el('button', { class: 'fact', type: 'button', text: '进入' }); enter.addEventListener('click', () => { state.hbaseCwd = fullPath; localStorage.setItem('wb_hbase_cwd', fullPath); refreshHbase(); }); actions.append(enter); const note = el('button', { class: 'fact', type: 'button', text: '备注' }); note.addEventListener('click', () => openAnnotationDialog(fullPath, getAlias(fullPath))); actions.append(note); }
     else { const scan = el('button', { class: 'fact', type: 'button', text: '查看' }); scan.addEventListener('click', () => scanHbase(fullPath)); actions.append(scan); }
     nameButton.addEventListener('dblclick', () => item.isDir ? (state.hbaseCwd = fullPath, localStorage.setItem('wb_hbase_cwd', fullPath), refreshHbase()) : scanHbase(fullPath));
     return row;
   }
-  if (item.isDir) { const enter = el('button', { class: 'fact', type: 'button', text: '进入' }); enter.addEventListener('click', () => kind === 'files' ? (state.cwd = fullPath, refreshFiles()) : (state.hdfsCwd = fullPath, localStorage.setItem('wb_hdfs_cwd', fullPath), refreshHdfs())); actions.append(enter); if (kind === 'files') { const remove = el('button', { class: 'fact danger', type: 'button', text: '删除' }); remove.addEventListener('click', () => confirmDelete(fullPath, 'dir')); actions.append(remove); } }
+  if (item.isDir) { const enter = el('button', { class: 'fact', type: 'button', text: '进入' }); enter.addEventListener('click', () => kind === 'files' ? (state.cwd = fullPath, refreshFiles()) : (state.hdfsCwd = fullPath, localStorage.setItem('wb_hdfs_cwd', fullPath), refreshHdfs())); actions.append(enter); const note = el('button', { class: 'fact', type: 'button', text: '备注' }); note.addEventListener('click', () => openAnnotationDialog(fullPath, getAlias(fullPath))); actions.append(note); if (kind === 'files') { const remove = el('button', { class: 'fact danger', type: 'button', text: '删除' }); remove.addEventListener('click', () => confirmDelete(fullPath, 'dir')); actions.append(remove); } }
   else { const view = el('button', { class: 'fact', type: 'button', text: '查看' }); view.addEventListener('click', () => previewRemote(fullPath, kind)); const download = el('button', { class: 'fact', type: 'button', text: '下载' }); download.addEventListener('click', () => downloadRemote(fullPath, kind)); actions.append(view, download); if (kind === 'files') { const remove = el('button', { class: 'fact danger', type: 'button', text: '删除' }); remove.addEventListener('click', () => confirmDelete(fullPath, 'file')); const upload = el('button', { class: 'fact', type: 'button', text: '上传到 HDFS' }); upload.addEventListener('click', () => openUploadDialog(fullPath)); actions.append(remove, upload); } }
   nameButton.addEventListener('dblclick', () => item.isDir ? (kind === 'files' ? (state.cwd = fullPath, refreshFiles()) : (state.hdfsCwd = fullPath, refreshHdfs())) : previewRemote(fullPath, kind)); return row;
 }
@@ -207,6 +216,10 @@ async function uploadLocalFile(file) {
   }
 }
 function openUploadDialog(localPath) { state.pendingUpload = localPath; $('#uploadLocal').value = localPath; $('#uploadDir').value = state.hdfsCwd; $('#uploadDir').removeAttribute('aria-invalid'); setText($('#uploadError'), ''); openDialog('uploadDialog', $('#uploadDir')); }
+function openAnnotationDialog(path, currentAlias) { state.pendingAnnotationPath = path; $('#annotationPath').value = path; $('#annotationAlias').value = currentAlias || ''; $('#annotationAlias').removeAttribute('aria-invalid'); setText($('#annotationError'), ''); $('#btnAnnotationRemove').style.display = currentAlias ? '' : 'none'; openDialog('annotationDialog', $('#annotationAlias')); }
+$('#btnAnnotationSave').addEventListener('click', () => { const text = $('#annotationAlias').value.trim(); if (text.length > 40) { $('#annotationAlias').setAttribute('aria-invalid', 'true'); setText($('#annotationError'), '备注最多 40 个字符'); return; } const path = state.pendingAnnotationPath; if (!path) { setText($('#annotationError'), '路径为空'); return; } setAlias(path, text); closeDialog('annotationDialog'); toast(text ? `已保存备注：${text}` : '已清空备注', 'ok'); const kind = path.startsWith('/') ? (state.hbaseCwd.startsWith(path) || path === state.hbaseCwd ? 'hbase' : 'hdfs') : 'files'; if (kind === 'files' && state.loaded.files) refreshFiles(); else if (kind === 'hdfs' && state.loaded.hdfs) refreshHdfs(); else if (kind === 'hbase' && state.loaded.hbase) refreshHbase(); });
+$('#btnAnnotationRemove').addEventListener('click', () => { const path = state.pendingAnnotationPath; if (!path) return; removeAlias(path); closeDialog('annotationDialog'); toast('已删除备注', 'ok'); if (state.cwd === path || state.cwd.startsWith(path + '/') || state.cwd.startsWith(path)) refreshFiles(); if (state.hdfsCwd === path || state.hdfsCwd.startsWith(path + '/')) refreshHdfs(); if (state.hbaseCwd === path || state.hbaseCwd.startsWith(path + '/')) refreshHbase(); });
+$('#annotationAlias').addEventListener('keydown', (event) => { if (event.key === 'Enter') { event.preventDefault(); $('#btnAnnotationSave').click(); } });
 $('#btnUploadSubmit').addEventListener('click', async () => { const localPath = state.pendingUpload; const hdfsDir = $('#uploadDir').value.trim(); if (!localPath) { setText($('#uploadError'), '未指定要上传的文件'); return; } if (!hdfsDir.startsWith('/')) { $('#uploadDir').setAttribute('aria-invalid', 'true'); setText($('#uploadError'), 'HDFS 目标目录必须以 / 开头'); return; } $('#uploadDir').removeAttribute('aria-invalid'); try { const result = await postJson('/api/hdfs/upload', { localPath, hdfsDir }); closeDialog('uploadDialog'); toast(`已上传到 ${result.hdfsPath}`, 'ok'); if (state.hdfsCwd.replace(/\/+$/, '') === hdfsDir.replace(/\/+$/, '')) refreshHdfs(); } catch (error) { setText($('#uploadError'), error.message); } });
 function confirmDelete(remotePath, kind) { state.pendingConfirm = { action: async () => { await postJson('/api/sftp/delete', { path: remotePath, kind, confirmed: true }); toast('删除成功', 'ok'); refreshFiles(); } }; setText($('#confirmTitle'), `确认删除${kind === 'dir' ? '空目录' : '文件'}`); setText($('#confirmMessage'), '删除不可恢复，请确认目标路径正确。'); setText($('#confirmTarget'), remotePath); openDialog('confirmDialog', $('#btnConfirmAction')); }
 $('#btnConfirmAction').addEventListener('click', async () => { const pending = state.pendingConfirm; state.pendingConfirm = null; closeDialog('confirmDialog'); if (!pending) return; try { await pending.action(); } catch (error) { toast(error.message, 'err'); } });
@@ -248,6 +261,7 @@ $('#autoStatus').checked = true; $('#autoStatus').addEventListener('change', () 
 
 renderCommands(); renderBreadcrumbs($('#crumbs'), state.cwd, state.home, (value) => { state.cwd = value; refreshFiles(); }); renderBreadcrumbs($('#hdfsCrumbs'), state.hdfsCwd, '/', (value) => { state.hdfsCwd = value; refreshHdfs(); });
 (async function init() {
+  state.annotations = loadAnnotations();
   try { const cfg = await getJson('/api/config'); state.config = cfg.config || storedConfig(); $('#cfgHost').value = state.config.host || ''; $('#cfgPort').value = state.config.port || 22; $('#cfgUser').value = state.config.username || ''; } catch (_) {}
   await restoreLogs();
   await restoreSession();
