@@ -40,6 +40,12 @@ function toast(message, tone = '') { const node = el('div', { class: `toast ${to
 function status(message, tone = 'info') { announce($('#explorerState'), message, tone); announce($('#live'), message, tone); }
 function shellQuote(value) { return `'${String(value ?? '').replace(/'/g, `'\\''`)}'`; }
 function nowTime() { return new Date().toLocaleTimeString('zh-CN', { hour12: false }); }
+// 若整段输出是 JSON，则按 2 空格缩进美化（一行一个结构）；否则原样返回，不影响普通日志
+function prettifyJson(text) {
+  const trimmed = String(text == null ? '' : text).trim();
+  if (!trimmed || (trimmed[0] !== '{' && trimmed[0] !== '[')) return text;
+  try { return JSON.stringify(JSON.parse(trimmed), null, 2); } catch (_) { return text; }
+}
 function pathJoin(dir, name) { return `${dir.replace(/\/+$/, '') || '/'}/${name}`.replace(/^\/\//, '/'); }
 function storedConfig() { try { const value = JSON.parse(localStorage.getItem('wb_conn_cfg') || '{}'); return { host: value.host || '', port: value.port || 22, username: value.username || '' }; } catch (_) { return {}; } }
 function saveStoredConfig(value) { localStorage.setItem('wb_conn_cfg', JSON.stringify({ host: value.host, port: Number(value.port) || 22, username: value.username })); }
@@ -66,7 +72,7 @@ function createLogBlock(command, { refreshable = false, buildCommand = null, his
   const blocks = $$('#logFlow .log-block'); if (blocks.length > 200) blocks.slice(0, blocks.length - 200).forEach((old) => old.remove());
   const block = {
     node, command, badge, output, refreshable, buildCommand, running: false, timer: null,
-    setResult(text, code, duration, truncated = false) { badge.className = `badge ${code === 0 ? 'ok' : 'err'}`; setText(badge, code === 0 ? `成功 · ${(duration / 1000).toFixed(1)}s` : `退出码 ${code}`); setText(output, `${text || '（无输出）'}${truncated ? '\n\n[输出已达到 2 MiB 上限，后续内容已截断]' : ''}`); },
+    setResult(text, code, duration, truncated = false) { badge.className = `badge ${code === 0 ? 'ok' : 'err'}`; setText(badge, code === 0 ? `成功 · ${(duration / 1000).toFixed(1)}s` : `退出码 ${code}`); setText(output, `${prettifyJson(text) || '（无输出）'}${truncated ? '\n\n[输出已达到 2 MiB 上限，后续内容已截断]' : ''}`); },
     setError(message) { badge.className = 'badge err'; setText(badge, '失败'); setText(output, `✕ ${message}`); },
     serialize() { return { t: node.querySelector('.log-time')?.textContent || '', cmd: command, badge: badge.textContent || '', out: output.textContent || '' }; },
   };
@@ -98,7 +104,7 @@ async function restoreLogs() {
   try {
     const date = $('#logDate').value; const query = date ? `?date=${encodeURIComponent(date)}&limit=200` : '?limit=200'; const result = await getJson(`/api/log/list${query}`);
     if (!result.entries?.length) { $('#emptyState').classList.remove('hidden'); return; }
-    result.entries.forEach((entry) => { const block = createLogBlock(entry.cmd || '', { historic: true }); setText(block.node.querySelector('.log-time'), entry.t || ''); block.badge.className = /失败|退出码/.test(entry.badge || '') ? 'badge err' : 'badge ok'; setText(block.badge, entry.badge || '历史记录'); setText(block.output, entry.out || ''); });
+    result.entries.forEach((entry) => { const block = createLogBlock(entry.cmd || '', { historic: true }); setText(block.node.querySelector('.log-time'), entry.t || ''); block.badge.className = /失败|退出码/.test(entry.badge || '') ? 'badge err' : 'badge ok'; setText(block.badge, entry.badge || '历史记录'); setText(block.output, prettifyJson(entry.out) || ''); });
     toast(`已恢复最近 ${result.entries.length} 条日志`, 'ok');
   } catch (_) {}
 }
