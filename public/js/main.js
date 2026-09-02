@@ -1,9 +1,9 @@
 import { $, $$, announce, ApiError, createRequestGate, DialogController, el, formatBytes, getJson, postJson, setText } from '/shared/ui.js';
 
 const state = {
-  connected: false, config: null, home: '~', cwd: '~', hdfsCwd: localStorage.getItem('wb_hdfs_cwd') || '/apps',
+  connected: false, config: null, home: '~', cwd: '~', hdfsCwd: localStorage.getItem('wb_hdfs_cwd') || '/apps', hbaseCwd: localStorage.getItem('wb_hbase_cwd') || '/',
   history: [], historyIndex: 0, sessionPassword: '', pendingConfirm: null, pendingName: null, pendingParam: null,
-  gates: { files: createRequestGate(), hdfs: createRequestGate() }, refreshBlocks: new Map(), statusTimer: null, statusRunning: false, pendingUpload: null,
+  gates: { files: createRequestGate(), hdfs: createRequestGate(), hbase: createRequestGate() }, refreshBlocks: new Map(), statusTimer: null, statusRunning: false, pendingUpload: null,
 };
 
 const COMMANDS = [
@@ -25,7 +25,7 @@ const BILLING = [
   { title: '排障提示', rows: [['分发', 'STRA / MR'], ['处理批次', 'pro_ 前缀表示在途'], ['命名空间', '按当前环境填写并复制']] },
 ];
 
-const dialogs = new Map(['settingsDialog', 'commandsDialog', 'paramDialog', 'billingDialog', 'confirmDialog', 'nameDialog', 'uploadDialog', 'previewDialog', 'cdrDialog'].map((id) => [id, new DialogController(document.getElementById(id))]));
+const dialogs = new Map(['settingsDialog', 'commandsDialog', 'paramDialog', 'billingDialog', 'confirmDialog', 'nameDialog', 'uploadDialog', 'previewDialog', 'hbaseScanDialog', 'cdrDialog'].map((id) => [id, new DialogController(document.getElementById(id))]));
 function openDialog(id, focus) { dialogs.get(id)?.open(focus); }
 function closeDialog(id) { dialogs.get(id)?.close(); }
 $$('[data-dialog-close]').forEach((button) => button.addEventListener('click', () => closeDialog(button.dataset.dialogClose)));
@@ -55,7 +55,7 @@ function setConnected(connected, cfg = null) {
   const dot = $('#statusDot'); dot.className = `status-dot ${connected ? 'on' : ''}`;
   setText($('#statusText'), connected ? `已连接 · ${state.config?.host || ''} · ${state.config?.username || ''}` : '未连接');
   const button = $('#btnConnect'); setText(button, connected ? '断开' : '连接'); button.classList.toggle('primary', !connected);
-  if (!connected) { $('#fileList').replaceChildren(el('div', { class: 'empty-tip', text: '尚未连接服务器\n请先点击右上角“连接”' })); $('#hdfsList').replaceChildren(el('div', { class: 'empty-tip', text: '尚未连接服务器' })); state.gates.files.cancel(); state.gates.hdfs.cancel(); stopRefreshBlocks(); }
+  if (!connected) { $('#fileList').replaceChildren(el('div', { class: 'empty-tip', text: '尚未连接服务器\n请先点击右上角“连接”' })); $('#hdfsList').replaceChildren(el('div', { class: 'empty-tip', text: '尚未连接服务器' })); $('#hbaseList').replaceChildren(el('div', { class: 'empty-tip', text: '尚未连接服务器' })); state.gates.files.cancel(); state.gates.hdfs.cancel(); state.gates.hbase.cancel(); stopRefreshBlocks(); }
 }
 
 function createLogBlock(command, { refreshable = false, buildCommand = null, historic = false } = {}) {
@@ -115,9 +115,15 @@ function renderBreadcrumbs(container, current, rootLabel, navigate) {
   parts.forEach((part) => { const sep = el('span', { class: 'sep', text: '/' }); built = rootLabel === '~' && built === '~' ? `~/${part}` : `${built}/${part}`; const target = built; container.append(sep, el('button', { type: 'button', text: part, on: { click: () => navigate(target) } })); });
 }
 function resourceRow(item, kind) {
-  const fullPath = item.path || pathJoin(kind === 'files' ? state.cwd : state.hdfsCwd, item.name); const nameButton = el('button', { type: 'button', class: item.isDir ? 'dir' : '', text: `${item.name}${item.isDir ? '/' : ''}`, title: fullPath });
-  const row = el('div', { class: 'resource-row' }, el('div', { class: 'resource-name' }, icon(item.isDir ? 'folder' : 'file'), nameButton), el('span', { class: 'resource-size', text: item.isDir ? '—' : formatBytes(item.size) }), el('span', { class: 'resource-date', text: item.mtime || '—' }), el('div', { class: 'resource-actions' }));
+  const fullPath = item.path || pathJoin(kind === 'files' ? state.cwd : kind === 'hbase' ? state.hbaseCwd : state.hdfsCwd, item.name); const nameButton = el('button', { type: 'button', class: item.isDir ? 'dir' : '', text: `${item.name}${item.isDir ? '/' : ''}`, title: fullPath });
+  const row = el('div', { class: 'resource-row' }, el('div', { class: 'resource-name' }, icon(item.isDir ? 'folder' : 'file'), nameButton), el('span', { class: 'resource-size', text: item.isDir ? '—' : (kind === 'hbase' ? '表' : formatBytes(item.size)) }), el('span', { class: 'resource-date', text: item.mtime || '—' }), el('div', { class: 'resource-actions' }));
   const actions = row.querySelector('.resource-actions');
+  if (kind === 'hbase') {
+    if (item.isDir) { const enter = el('button', { class: 'fact', type: 'button', text: '进入' }); enter.addEventListener('click', () => { state.hbaseCwd = fullPath; localStorage.setItem('wb_hbase_cwd', fullPath); refreshHbase(); }); actions.append(enter); }
+    else { const scan = el('button', { class: 'fact', type: 'button', text: '扫描' }); scan.addEventListener('click', () => scanHbase(fullPath)); actions.append(scan); }
+    nameButton.addEventListener('dblclick', () => item.isDir ? (state.hbaseCwd = fullPath, localStorage.setItem('wb_hbase_cwd', fullPath), refreshHbase()) : scanHbase(fullPath));
+    return row;
+  }
   if (item.isDir) { const enter = el('button', { class: 'fact', type: 'button', text: '进入' }); enter.addEventListener('click', () => kind === 'files' ? (state.cwd = fullPath, refreshFiles()) : (state.hdfsCwd = fullPath, localStorage.setItem('wb_hdfs_cwd', fullPath), refreshHdfs())); actions.append(enter); if (kind === 'files') { const remove = el('button', { class: 'fact danger', type: 'button', text: '删除' }); remove.addEventListener('click', () => confirmDelete(fullPath, 'dir')); actions.append(remove); } }
   else { const view = el('button', { class: 'fact', type: 'button', text: '查看' }); view.addEventListener('click', () => previewRemote(fullPath, kind)); const download = el('button', { class: 'fact', type: 'button', text: '下载' }); download.addEventListener('click', () => downloadRemote(fullPath, kind)); actions.append(view, download); if (kind === 'files') { const remove = el('button', { class: 'fact danger', type: 'button', text: '删除' }); remove.addEventListener('click', () => confirmDelete(fullPath, 'file')); const upload = el('button', { class: 'fact', type: 'button', text: '上传到 HDFS' }); upload.addEventListener('click', () => openUploadDialog(fullPath)); actions.append(remove, upload); } }
   nameButton.addEventListener('dblclick', () => item.isDir ? (kind === 'files' ? (state.cwd = fullPath, refreshFiles()) : (state.hdfsCwd = fullPath, refreshHdfs())) : previewRemote(fullPath, kind)); return row;
@@ -133,6 +139,16 @@ async function refreshHdfs() {
   if (!state.connected) return; const request = state.gates.hdfs.next(); $('#hdfsList').replaceChildren(el('div', { class: 'empty-tip', text: '正在读取 HDFS 目录…' }));
   try { const result = await postJson('/api/hdfs/list', { path: state.hdfsCwd }, { signal: request.signal }); if (!request.isCurrent()) return; state.hdfsCwd = result.path || state.hdfsCwd; $('#hdfsPathInput').value = state.hdfsCwd; renderBreadcrumbs($('#hdfsCrumbs'), state.hdfsCwd, '/', (value) => { state.hdfsCwd = value; localStorage.setItem('wb_hdfs_cwd', value); refreshHdfs(); }); renderResourceList($('#hdfsList'), result.items, 'hdfs'); status(`${result.items?.length || 0} 项`, 'success'); }
   catch (error) { if (error.code === 'REQUEST_ABORTED') return; $('#hdfsList').replaceChildren(el('div', { class: 'empty-tip', text: error.message })); status(error.message, 'error'); }
+}
+async function refreshHbase() {
+  if (!state.connected) return; const request = state.gates.hbase.next(); $('#hbaseList').replaceChildren(el('div', { class: 'empty-tip', text: '正在读取 HBase 命名空间…' }));
+  try { const result = await postJson('/api/hbase/list', { path: state.hbaseCwd }, { signal: request.signal }); if (!request.isCurrent()) return; state.hbaseCwd = result.path || state.hbaseCwd; $('#hbasePathInput').value = state.hbaseCwd; renderBreadcrumbs($('#hbaseCrumbs'), state.hbaseCwd, '/', (value) => { state.hbaseCwd = value; localStorage.setItem('wb_hbase_cwd', value); refreshHbase(); }); renderResourceList($('#hbaseList'), result.items, 'hbase'); status(`${result.items?.length || 0} 项`, 'success'); }
+  catch (error) { if (error.code === 'REQUEST_ABORTED') return; $('#hbaseList').replaceChildren(el('div', { class: 'empty-tip', text: error.message })); status(error.message, 'error'); }
+}
+async function scanHbase(tablePath) {
+  setText($('#hbaseScanTitle'), 'HBase 表扫描'); setText($('#hbaseScanMeta'), tablePath); setText($('#hbaseScanText'), '正在扫描…'); openDialog('hbaseScanDialog');
+  try { const result = await postJson('/api/hbase/scan', { path: tablePath, limit: 20 }); setText($('#hbaseScanMeta'), `${result.table} · 最多 ${result.limit} 行`); setText($('#hbaseScanText'), prettifyJson(result.text) || '（无数据）'); }
+  catch (error) { setText($('#hbaseScanText'), error.message); }
 }
 async function previewRemote(remotePath, kind) {
   openDialog('previewDialog'); setText($('#previewTitle'), kind === 'hdfs' ? 'HDFS 文件预览' : '文件预览'); setText($('#previewMeta'), remotePath); setText($('#previewText'), '正在读取…');
@@ -182,12 +198,13 @@ $('#btnBilling').addEventListener('click', () => { renderBilling(); openDialog('
 $('#btnCdr').addEventListener('click', () => { if (!$('#cdrFrame').getAttribute('src')) $('#cdrFrame').src = '/cdr/'; openDialog('cdrDialog'); });
 $('#billSearch').addEventListener('input', renderBilling); ['billSuffix', 'billMonth', 'billNs'].forEach((id) => $( `#${id}`).addEventListener('input', renderBilling));
 
-function switchTab(tab) { $$('.tab').forEach((button) => { const active = button.dataset.tab === tab; button.classList.toggle('active', active); button.setAttribute('aria-selected', String(active)); }); $('#filesPane').classList.toggle('hidden', tab !== 'files'); $('#hdfsPane').classList.toggle('hidden', tab !== 'hdfs'); if (tab === 'hdfs' && state.connected) refreshHdfs(); }
+function switchTab(tab) { $$('.tab').forEach((button) => { const active = button.dataset.tab === tab; button.classList.toggle('active', active); button.setAttribute('aria-selected', String(active)); }); $('#filesPane').classList.toggle('hidden', tab !== 'files'); $('#hdfsPane').classList.toggle('hidden', tab !== 'hdfs'); $('#hbasePane').classList.toggle('hidden', tab !== 'hbase'); if (tab === 'hdfs' && state.connected) refreshHdfs(); if (tab === 'hbase' && state.connected) refreshHbase(); }
 $$('.tab').forEach((button) => button.addEventListener('click', () => switchTab(button.dataset.tab)));
 $('#btnRefresh').addEventListener('click', refreshFiles); $('#btnHdfsRefresh').addEventListener('click', refreshHdfs); $('#btnMkdir').addEventListener('click', () => state.connected ? openNameDialog('mkdir') : toast('请先连接服务器', 'err')); $('#btnTouch').addEventListener('click', () => state.connected ? openNameDialog('touch') : toast('请先连接服务器', 'err'));
 $('#btnUploadLocal').addEventListener('click', () => { if (!state.connected) { toast('请先连接服务器', 'err'); return; } const input = $('#localFileInput'); input.value = ''; input.click(); });
 $('#localFileInput').addEventListener('change', () => { const file = $('#localFileInput').files && $('#localFileInput').files[0]; if (!file) return; void uploadLocalFile(file); });
 $('#btnUp').addEventListener('click', () => { if (state.cwd === '~' || state.cwd === state.home) return; state.cwd = state.cwd.replace(/\/[^/]+\/?$/, '') || '/'; refreshFiles(); }); $('#btnHdfsUp').addEventListener('click', () => { if (state.hdfsCwd !== '/') { state.hdfsCwd = state.hdfsCwd.replace(/\/[^/]+\/?$/, '') || '/'; localStorage.setItem('wb_hdfs_cwd', state.hdfsCwd); refreshHdfs(); } });
+$('#btnHbaseRefresh').addEventListener('click', refreshHbase); $('#btnHbaseUp').addEventListener('click', () => { if (state.hbaseCwd !== '/') { state.hbaseCwd = '/'; localStorage.setItem('wb_hbase_cwd', '/'); refreshHbase(); } }); $('#btnHbaseGoto').addEventListener('click', () => { const value = $('#hbasePathInput').value.trim(); if (!value) return; if (value !== '/' && !/^\/[^/]+$/.test(value)) return toast('HBase 路径只能为 / 或 /namespace', 'err'); state.hbaseCwd = value; localStorage.setItem('wb_hbase_cwd', value); refreshHbase(); }); $('#hbasePathInput').addEventListener('keydown', (event) => { if (event.key === 'Enter') $('#btnHbaseGoto').click(); });
 $('#btnGoto').addEventListener('click', () => { const value = $('#pathInput').value.trim(); if (value) { state.cwd = value; refreshFiles(); } }); $('#pathInput').addEventListener('keydown', (event) => { if (event.key === 'Enter') $('#btnGoto').click(); }); $('#btnHdfsGoto').addEventListener('click', () => { const value = $('#hdfsPathInput').value.trim(); if (!value.startsWith('/')) return toast('HDFS 路径必须以 / 开头', 'err'); state.hdfsCwd = value; localStorage.setItem('wb_hdfs_cwd', value); refreshHdfs(); }); $('#hdfsPathInput').addEventListener('keydown', (event) => { if (event.key === 'Enter') $('#btnHdfsGoto').click(); }); $$('[data-hdfs-path]').forEach((button) => button.addEventListener('click', () => { state.hdfsCwd = button.dataset.hdfsPath; localStorage.setItem('wb_hdfs_cwd', state.hdfsCwd); switchTab('hdfs'); refreshHdfs(); }));
 
 async function submitCommand() { const input = $('#cmdInput'); const command = input.value.trim(); if (!command) return; state.history.push(command); state.historyIndex = state.history.length; input.value = ''; if (!state.connected) return toast('请先连接服务器', 'err'); if (/\b(?:rm|rmdir|del|erase|format)\b/i.test(command)) { setText($('#confirmTitle'), '确认执行删除命令'); setText($('#confirmMessage'), '删除类自由命令需要二次确认。'); setText($('#confirmTarget'), command); state.pendingConfirm = { action: () => runCommand(command, { confirmed: true }) }; openDialog('confirmDialog', $('#btnConfirmAction')); return; } runCommand(command); }

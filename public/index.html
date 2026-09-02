@@ -27,6 +27,7 @@
         <div class="tabs" role="tablist" aria-label="资源类型">
           <button class="tab active" id="tabFiles" type="button" role="tab" aria-selected="true" aria-controls="filesPane" data-tab="files">服务器文件</button>
           <button class="tab" id="tabHdfs" type="button" role="tab" aria-selected="false" aria-controls="hdfsPane" data-tab="hdfs">HDFS</button>
+          <button class="tab" id="tabHbase" type="button" role="tab" aria-selected="false" aria-controls="hbasePane" data-tab="hbase">HBase</button>
         </div>
         <section id="filesPane" class="tab-pane" role="tabpanel" aria-labelledby="tabFiles">
           <div class="path-toolbar"><button id="btnUp" class="wb-button" type="button" aria-label="返回上级目录">上级</button><input id="pathInput" class="wb-field" aria-label="服务器文件路径" value="~"><button id="btnGoto" class="wb-button" type="button">跳转</button><button id="btnRefresh" class="wb-button" type="button">刷新</button></div>
@@ -41,6 +42,13 @@
           <div class="list-head" aria-hidden="true"><span>名称</span><span>大小</span><span>修改时间</span><span>操作</span></div>
           <div id="hdfsList" class="resource-list" aria-live="polite"><div class="empty-tip">尚未连接服务器</div></div>
           <div class="quick-paths"><span>常用目录</span><button class="wb-button ghost" type="button" data-hdfs-path="/apps">/apps</button><button class="wb-button ghost" type="button" data-hdfs-path="/apps/bill_cnos_jf_test/prep">采预 prep</button><button class="wb-button ghost" type="button" data-hdfs-path="/apps/bill_cnos_jf/cal">批价 cal</button></div>
+        </section>
+        <section id="hbasePane" class="tab-pane hidden" role="tabpanel" aria-labelledby="tabHbase">
+          <div class="path-toolbar"><button id="btnHbaseUp" class="wb-button" type="button" aria-label="返回命名空间列表">上级</button><input id="hbasePathInput" class="wb-field" aria-label="HBase 路径" value="/"><button id="btnHbaseGoto" class="wb-button" type="button">跳转</button><button id="btnHbaseRefresh" class="wb-button" type="button">刷新</button></div>
+          <nav id="hbaseCrumbs" class="breadcrumbs" aria-label="HBase 路径"></nav>
+          <div class="list-head" aria-hidden="true"><span>名称</span><span>大小</span><span>修改时间</span><span>操作</span></div>
+          <div id="hbaseList" class="resource-list" aria-live="polite"><div class="empty-tip">尚未连接服务器</div></div>
+          <div class="quick-paths"><span>命名空间</span><span class="dialog-note">点击命名空间查看表，点击表扫描数据（只读）</span></div>
         </section>
       </section>
 
@@ -72,6 +80,8 @@
   <dialog id="uploadDialog" class="wb-dialog" aria-labelledby="uploadTitle"><header class="wb-dialog__header"><h2 id="uploadTitle" class="wb-dialog__title">上传到 HDFS</h2><button class="wb-button ghost" type="button" data-dialog-close="uploadDialog" aria-label="关闭上传">关闭</button></header><div class="wb-dialog__body"><p class="dialog-note">把服务器上的文件上传到 HDFS 指定目录（执行 <code>hadoop fs -put</code>）。</p><label><span class="wb-label">本地文件（服务器路径）</span><input id="uploadLocal" class="wb-field" readonly></label><label><span class="wb-label">HDFS 目标目录</span><input id="uploadDir" class="wb-field" aria-describedby="uploadError" autocomplete="off"></label><p id="uploadError" class="wb-status" role="alert"></p></div><footer class="wb-dialog__footer"><button class="wb-button" type="button" data-dialog-close="uploadDialog">取消</button><button id="btnUploadSubmit" class="wb-button primary" type="button">上传</button></footer></dialog>
 
   <dialog id="previewDialog" class="wb-dialog preview-dialog" aria-labelledby="previewTitle"><header class="wb-dialog__header"><h2 id="previewTitle" class="wb-dialog__title">文件预览</h2><button class="wb-button ghost" type="button" data-dialog-close="previewDialog" aria-label="关闭预览">关闭</button></header><div class="wb-dialog__body"><p id="previewMeta" class="dialog-note"></p><pre id="previewText" class="preview-text"></pre></div></dialog>
+
+  <dialog id="hbaseScanDialog" class="wb-dialog preview-dialog" aria-labelledby="hbaseScanTitle"><header class="wb-dialog__header"><h2 id="hbaseScanTitle" class="wb-dialog__title">HBase 表扫描</h2><button class="wb-button ghost" type="button" data-dialog-close="hbaseScanDialog" aria-label="关闭扫描">关闭</button></header><div class="wb-dialog__body"><p id="hbaseScanMeta" class="dialog-note"></p><pre id="hbaseScanText" class="preview-text"></pre></div></dialog>
 
   <dialog id="cdrDialog" class="wb-dialog cdr-dialog" aria-labelledby="cdrTitle"><header class="wb-dialog__header"><h2 id="cdrTitle" class="wb-dialog__title">话单工具</h2><button class="wb-button ghost" type="button" data-dialog-close="cdrDialog" aria-label="关闭话单工具">关闭</button></header><div class="cdr-frame-wrap"><iframe id="cdrFrame" title="话单文件数据调整工具" loading="lazy"></iframe></div></dialog>
   <script type="module" src="/js/main.js"></script>

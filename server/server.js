@@ -10,6 +10,7 @@ const config = require('./config-loader');
 const ssh = require('./ssh');
 const sftp = require('./sftp');
 const hdfs = require('./hdfs');
+const hbase = require('./hbase');
 const proxy = require('./proxy');
 const log = require('./log');
 
@@ -226,6 +227,15 @@ async function handle(req, res) {
       stream.on('data', (chunk) => { if (!sent) { sent = true; res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(fileName)}` }); } res.write(chunk); });
       stream.on('close', (code) => { if (!sent) sendError(res, new RequestError(/is a directory/i.test(stderr) ? 400 : 404, 'HDFS_DOWNLOAD_FAILED', stderr.trim() || `下载失败（退出码 ${code}）`, true)); else res.end(); resolve(); });
     }));
+  }
+  if (req.method === 'POST' && p === '/api/hbase/list') {
+    const body = await readBody(req); assertObject(body, ['path']); requireConnected(); const target = String(body.path || '/').trim() || '/';
+    if (target !== '/' && !/^\/[^\\/]+$/.test(target)) throw new RequestError(400, 'INVALID_INPUT', 'HBase 路径只能为 / 或 /namespace');
+    const result = await hbase.hbaseList(target); return sendJson(res, 200, { ok: true, path: result.path, items: result.items });
+  }
+  if (req.method === 'POST' && p === '/api/hbase/scan') {
+    const body = await readBody(req); assertObject(body, ['path', 'limit']); requireConnected(); const target = requireString(body.path, 'path');
+    const limit = Math.min(Math.max(Number(body.limit) || 20, 1), 200); const result = await hbase.hbaseScan(target, limit); return sendJson(res, 200, { ok: true, ...result });
   }
   return sendError(res, new RequestError(404, 'NOT_FOUND', `接口不存在: ${p}`));
 }
