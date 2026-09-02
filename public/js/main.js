@@ -139,6 +139,25 @@ async function previewRemote(remotePath, kind) {
   try { if (kind === 'files') { const result = await postJson('/api/sftp/preview', { path: remotePath, maxBytes: 262144 }); setText($('#previewText'), result.text || '（空文件）'); if (result.truncated) setText($('#previewMeta'), `${remotePath} · 已显示前 256 KiB，内容已截断`); } else { const result = await runCommand(`hadoop fs -cat ${shellQuote(remotePath)} | head -c 262144`, { timeout: 60000 }); closeDialog('previewDialog'); if (result?.ok) toast('HDFS 内容已写入执行日志', 'ok'); } } catch (error) { setText($('#previewText'), error.message); }
 }
 function downloadRemote(remotePath, kind) { const a = document.createElement('a'); a.href = `${kind === 'hdfs' ? '/api/hdfs/download' : '/api/sftp/download'}?path=${encodeURIComponent(remotePath)}`; a.download = ''; document.body.append(a); a.click(); a.remove(); toast(`开始下载：${remotePath.split('/').pop()}`, 'ok'); }
+async function uploadLocalFile(file) {
+  if (!state.connected) { toast('请先连接服务器', 'err'); return; }
+  const targetDir = state.cwd;
+  const block = createLogBlock(`上传本地文件 → ${targetDir}/${file.name}`);
+  try {
+    const buf = await file.arrayBuffer();
+    const res = await fetch('/api/sftp/upload', { method: 'POST', headers: { 'X-Target-Dir': targetDir, 'X-File-Name': encodeURIComponent(file.name), 'Content-Type': 'application/octet-stream' }, body: buf });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok || !json.ok) throw new Error(json.error?.message || `上传失败（HTTP ${res.status}）`);
+    block.setResult(`已上传：${json.remotePath}\n大小：${formatBytes(json.size)}`, 0, 0);
+    toast(`已上传到 ${json.remotePath}`, 'ok');
+    await persistLog(block);
+    refreshFiles();
+  } catch (error) {
+    block.setError(error.message);
+    await persistLog(block);
+    toast(error.message, 'err');
+  }
+}
 function openUploadDialog(localPath) { state.pendingUpload = localPath; $('#uploadLocal').value = localPath; $('#uploadDir').value = state.hdfsCwd; $('#uploadDir').removeAttribute('aria-invalid'); setText($('#uploadError'), ''); openDialog('uploadDialog', $('#uploadDir')); }
 $('#btnUploadSubmit').addEventListener('click', async () => { const localPath = state.pendingUpload; const hdfsDir = $('#uploadDir').value.trim(); if (!localPath) { setText($('#uploadError'), '未指定要上传的文件'); return; } if (!hdfsDir.startsWith('/')) { $('#uploadDir').setAttribute('aria-invalid', 'true'); setText($('#uploadError'), 'HDFS 目标目录必须以 / 开头'); return; } $('#uploadDir').removeAttribute('aria-invalid'); try { const result = await postJson('/api/hdfs/upload', { localPath, hdfsDir }); closeDialog('uploadDialog'); toast(`已上传到 ${result.hdfsPath}`, 'ok'); if (state.hdfsCwd.replace(/\/+$/, '') === hdfsDir.replace(/\/+$/, '')) refreshHdfs(); } catch (error) { setText($('#uploadError'), error.message); } });
 function confirmDelete(remotePath, kind) { state.pendingConfirm = { action: async () => { await postJson('/api/sftp/delete', { path: remotePath, kind, confirmed: true }); toast('删除成功', 'ok'); refreshFiles(); } }; setText($('#confirmTitle'), `确认删除${kind === 'dir' ? '空目录' : '文件'}`); setText($('#confirmMessage'), '删除不可恢复，请确认目标路径正确。'); setText($('#confirmTarget'), remotePath); openDialog('confirmDialog', $('#btnConfirmAction')); }
@@ -166,6 +185,8 @@ $('#billSearch').addEventListener('input', renderBilling); ['billSuffix', 'billM
 function switchTab(tab) { $$('.tab').forEach((button) => { const active = button.dataset.tab === tab; button.classList.toggle('active', active); button.setAttribute('aria-selected', String(active)); }); $('#filesPane').classList.toggle('hidden', tab !== 'files'); $('#hdfsPane').classList.toggle('hidden', tab !== 'hdfs'); if (tab === 'hdfs' && state.connected) refreshHdfs(); }
 $$('.tab').forEach((button) => button.addEventListener('click', () => switchTab(button.dataset.tab)));
 $('#btnRefresh').addEventListener('click', refreshFiles); $('#btnHdfsRefresh').addEventListener('click', refreshHdfs); $('#btnMkdir').addEventListener('click', () => state.connected ? openNameDialog('mkdir') : toast('请先连接服务器', 'err')); $('#btnTouch').addEventListener('click', () => state.connected ? openNameDialog('touch') : toast('请先连接服务器', 'err'));
+$('#btnUploadLocal').addEventListener('click', () => { if (!state.connected) { toast('请先连接服务器', 'err'); return; } const input = $('#localFileInput'); input.value = ''; input.click(); });
+$('#localFileInput').addEventListener('change', () => { const file = $('#localFileInput').files && $('#localFileInput').files[0]; if (!file) return; void uploadLocalFile(file); });
 $('#btnUp').addEventListener('click', () => { if (state.cwd === '~' || state.cwd === state.home) return; state.cwd = state.cwd.replace(/\/[^/]+\/?$/, '') || '/'; refreshFiles(); }); $('#btnHdfsUp').addEventListener('click', () => { if (state.hdfsCwd !== '/') { state.hdfsCwd = state.hdfsCwd.replace(/\/[^/]+\/?$/, '') || '/'; localStorage.setItem('wb_hdfs_cwd', state.hdfsCwd); refreshHdfs(); } });
 $('#btnGoto').addEventListener('click', () => { const value = $('#pathInput').value.trim(); if (value) { state.cwd = value; refreshFiles(); } }); $('#pathInput').addEventListener('keydown', (event) => { if (event.key === 'Enter') $('#btnGoto').click(); }); $('#btnHdfsGoto').addEventListener('click', () => { const value = $('#hdfsPathInput').value.trim(); if (!value.startsWith('/')) return toast('HDFS 路径必须以 / 开头', 'err'); state.hdfsCwd = value; localStorage.setItem('wb_hdfs_cwd', value); refreshHdfs(); }); $('#hdfsPathInput').addEventListener('keydown', (event) => { if (event.key === 'Enter') $('#btnHdfsGoto').click(); }); $$('[data-hdfs-path]').forEach((button) => button.addEventListener('click', () => { state.hdfsCwd = button.dataset.hdfsPath; localStorage.setItem('wb_hdfs_cwd', state.hdfsCwd); switchTab('hdfs'); refreshHdfs(); }));
 

@@ -1,6 +1,10 @@
 /** Structured SFTP operations with a reused channel. */
 'use strict';
 
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const crypto = require('crypto');
 const ssh = require('./ssh');
 
 let sftpChannel = null;
@@ -98,4 +102,22 @@ async function sftpPreview(remotePath, maxBytes = 256 * 1024) {
   }));
 }
 
-module.exports = { getSftp, withSftp, sftpList, sftpRealpath, sftpStat, sftpMkdir, sftpTouch, sftpDelete, sftpPreview };
+// 把内存中的文件内容通过 SFTP 写入远端目录（先落本地临时文件再 fastPut，兼容大文件）
+async function sftpUpload(remoteDir, fileName, buffer) {
+  const dir = await sftpRealpath(remoteDir);
+  const safe = String(fileName || '').replace(/[\\/]/g, '').trim();
+  if (!safe) throw new Error('文件名不合法：不能包含路径分隔符且不能为空');
+  const remotePath = `${dir.replace(/\/+$/, '')}/${safe}`;
+  const tmpPath = path.join(os.tmpdir(), `wb-upload-${crypto.randomBytes(6).toString('hex')}-${safe}`);
+  fs.writeFileSync(tmpPath, buffer);
+  try {
+    await withSftp((sftp) => new Promise((resolve, reject) => {
+      sftp.fastPut(tmpPath, remotePath, (err) => err ? reject(err) : resolve());
+    }), { retry: false });
+    return { remotePath, fileName: safe, size: buffer.length };
+  } finally {
+    try { fs.unlinkSync(tmpPath); } catch (_) {}
+  }
+}
+
+module.exports = { getSftp, withSftp, sftpList, sftpRealpath, sftpStat, sftpMkdir, sftpTouch, sftpDelete, sftpPreview, sftpUpload };

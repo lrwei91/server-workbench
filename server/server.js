@@ -71,6 +71,23 @@ function assertObject(body, fields = []) {
   const unknown = Object.keys(body).filter((key) => !fields.includes(key));
   if (unknown.length) throw new RequestError(400, 'UNKNOWN_FIELD', `不支持的字段：${unknown.join(', ')}`);
 }
+// 读取原始二进制请求体（用于本地文件上传），按字节上限保护内存
+function readRawBody(req, maxBytes) {
+  return new Promise((resolve, reject) => {
+    const limit = Number(maxBytes) || 1024 * 1024;
+    const length = Number(req.headers['content-length'] || 0);
+    if (length > limit) return reject(new RequestError(413, 'BODY_TOO_LARGE', `上传文件不能超过 ${Math.round(limit / 1024 / 1024)} MiB`));
+    const chunks = [];
+    let bytes = 0;
+    req.on('data', (chunk) => {
+      bytes += chunk.length;
+      if (bytes > limit) { req.resume(); return reject(new RequestError(413, 'BODY_TOO_LARGE', `上传文件不能超过 ${Math.round(limit / 1024 / 1024)} MiB`)); }
+      chunks.push(chunk);
+    });
+    req.on('error', reject);
+    req.on('end', () => resolve(Buffer.concat(chunks)));
+  });
+}
 function requireString(value, name, { allowEmpty = false } = {}) {
   if (typeof value !== 'string' || (!allowEmpty && !value.trim())) throw new RequestError(400, 'INVALID_INPUT', `${name} 必须是非空字符串`);
   return value.trim();
@@ -173,6 +190,15 @@ async function handle(req, res) {
     if (!kind) throw new RequestError(400, 'INVALID_INPUT', 'kind 必须是 file 或 dir');
     if (body.confirmed !== true) throw new RequestError(409, 'CONFIRMATION_REQUIRED', '删除操作需要确认');
     const target = safeRemotePath(body.path); await sftp.sftpDelete(target, kind); return sendJson(res, 200, { ok: true, path: target, kind });
+  }
+  if (req.method === 'POST' && p === '/api/sftp/upload') {
+    requireConnected();
+    const dir = ssh.expandTilde(requireString(req.headers['x-target-dir'], 'x-target-dir'));
+    const fileName = decodeURIComponent(requireString(req.headers['x-file-name'], 'x-file-name'));
+    if (/[\\/]/.test(fileName)) throw new RequestError(400, 'INVALID_INPUT', '文件名不能包含路径分隔符');
+    const buffer = await readRawBody(req, config.uploadMaxBytes || 50 * 1024 * 1024);
+    if (!buffer.length) throw new RequestError(400, 'EMPTY_FILE', '不能上传空文件');
+    const result = await sftp.sftpUpload(dir, fileName, buffer); return sendJson(res, 200, { ok: true, ...result });
   }
   if (req.method === 'GET' && p === '/api/sftp/download') {
     requireConnected(); const filePath = ssh.expandTilde(requireString(url.searchParams.get('path'), 'path')); const fileName = filePath.split('/').filter(Boolean).pop() || 'download.bin';

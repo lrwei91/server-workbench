@@ -33,7 +33,7 @@
           <nav id="crumbs" class="breadcrumbs" aria-label="服务器文件路径"></nav>
           <div class="list-head" aria-hidden="true"><span>名称</span><span>大小</span><span>修改时间</span><span>操作</span></div>
           <div id="fileList" class="resource-list" aria-live="polite"><div class="empty-tip">尚未连接服务器<br>请先点击右上角“连接”</div></div>
-          <div class="list-actions"><button id="btnMkdir" class="wb-button" type="button">新建目录</button><button id="btnTouch" class="wb-button" type="button">新建文件</button></div>
+          <div class="list-actions"><button id="btnMkdir" class="wb-button" type="button">新建目录</button><button id="btnTouch" class="wb-button" type="button">新建文件</button><button id="btnUploadLocal" class="wb-button" type="button">上传</button><input id="localFileInput" type="file" hidden></div>
         </section>
         <section id="hdfsPane" class="tab-pane hidden" role="tabpanel" aria-labelledby="tabHdfs">
           <div class="path-toolbar"><button id="btnHdfsUp" class="wb-button" type="button" aria-label="返回上级 HDFS 目录">上级</button><input id="hdfsPathInput" class="wb-field" aria-label="HDFS 路径" value="/apps"><button id="btnHdfsGoto" class="wb-button" type="button">跳转</button><button id="btnHdfsRefresh" class="wb-button" type="button">刷新</button></div>
