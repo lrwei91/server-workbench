@@ -3,7 +3,7 @@ import { $, $$, announce, ApiError, createRequestGate, DialogController, el, for
 const state = {
   connected: false, config: null, home: '~', cwd: '~', hdfsCwd: localStorage.getItem('wb_hdfs_cwd') || '/apps',
   history: [], historyIndex: 0, sessionPassword: '', pendingConfirm: null, pendingName: null, pendingParam: null,
-  gates: { files: createRequestGate(), hdfs: createRequestGate() }, refreshBlocks: new Map(), statusTimer: null, statusRunning: false,
+  gates: { files: createRequestGate(), hdfs: createRequestGate() }, refreshBlocks: new Map(), statusTimer: null, statusRunning: false, pendingUpload: null,
 };
 
 const COMMANDS = [
@@ -25,7 +25,7 @@ const BILLING = [
   { title: '排障提示', rows: [['分发', 'STRA / MR'], ['处理批次', 'pro_ 前缀表示在途'], ['命名空间', '按当前环境填写并复制']] },
 ];
 
-const dialogs = new Map(['settingsDialog', 'commandsDialog', 'paramDialog', 'billingDialog', 'confirmDialog', 'nameDialog', 'previewDialog', 'cdrDialog'].map((id) => [id, new DialogController(document.getElementById(id))]));
+const dialogs = new Map(['settingsDialog', 'commandsDialog', 'paramDialog', 'billingDialog', 'confirmDialog', 'nameDialog', 'uploadDialog', 'previewDialog', 'cdrDialog'].map((id) => [id, new DialogController(document.getElementById(id))]));
 function openDialog(id, focus) { dialogs.get(id)?.open(focus); }
 function closeDialog(id) { dialogs.get(id)?.close(); }
 $$('[data-dialog-close]').forEach((button) => button.addEventListener('click', () => closeDialog(button.dataset.dialogClose)));
@@ -113,7 +113,7 @@ function resourceRow(item, kind) {
   const row = el('div', { class: 'resource-row' }, el('div', { class: 'resource-name' }, icon(item.isDir ? 'folder' : 'file'), nameButton), el('span', { class: 'resource-size', text: item.isDir ? '—' : formatBytes(item.size) }), el('span', { class: 'resource-date', text: item.mtime || '—' }), el('div', { class: 'resource-actions' }));
   const actions = row.querySelector('.resource-actions');
   if (item.isDir) { const enter = el('button', { class: 'fact', type: 'button', text: '进入' }); enter.addEventListener('click', () => kind === 'files' ? (state.cwd = fullPath, refreshFiles()) : (state.hdfsCwd = fullPath, localStorage.setItem('wb_hdfs_cwd', fullPath), refreshHdfs())); actions.append(enter); if (kind === 'files') { const remove = el('button', { class: 'fact danger', type: 'button', text: '删除' }); remove.addEventListener('click', () => confirmDelete(fullPath, 'dir')); actions.append(remove); } }
-  else { const view = el('button', { class: 'fact', type: 'button', text: '查看' }); view.addEventListener('click', () => previewRemote(fullPath, kind)); const download = el('button', { class: 'fact', type: 'button', text: '下载' }); download.addEventListener('click', () => downloadRemote(fullPath, kind)); actions.append(view, download); if (kind === 'files') { const remove = el('button', { class: 'fact danger', type: 'button', text: '删除' }); remove.addEventListener('click', () => confirmDelete(fullPath, 'file')); actions.append(remove); } }
+  else { const view = el('button', { class: 'fact', type: 'button', text: '查看' }); view.addEventListener('click', () => previewRemote(fullPath, kind)); const download = el('button', { class: 'fact', type: 'button', text: '下载' }); download.addEventListener('click', () => downloadRemote(fullPath, kind)); actions.append(view, download); if (kind === 'files') { const remove = el('button', { class: 'fact danger', type: 'button', text: '删除' }); remove.addEventListener('click', () => confirmDelete(fullPath, 'file')); const upload = el('button', { class: 'fact', type: 'button', text: '上传到 HDFS' }); upload.addEventListener('click', () => openUploadDialog(fullPath)); actions.append(remove, upload); } }
   nameButton.addEventListener('dblclick', () => item.isDir ? (kind === 'files' ? (state.cwd = fullPath, refreshFiles()) : (state.hdfsCwd = fullPath, refreshHdfs())) : previewRemote(fullPath, kind)); return row;
 }
 function renderResourceList(container, items, kind) { container.replaceChildren(); if (!items?.length) { container.append(el('div', { class: 'empty-tip', text: '该目录为空' })); return; } items.forEach((item) => container.append(resourceRow(item, kind))); }
@@ -133,6 +133,8 @@ async function previewRemote(remotePath, kind) {
   try { if (kind === 'files') { const result = await postJson('/api/sftp/preview', { path: remotePath, maxBytes: 262144 }); setText($('#previewText'), result.text || '（空文件）'); if (result.truncated) setText($('#previewMeta'), `${remotePath} · 已显示前 256 KiB，内容已截断`); } else { const result = await runCommand(`hadoop fs -cat ${shellQuote(remotePath)} | head -c 262144`, { timeout: 60000 }); closeDialog('previewDialog'); if (result?.ok) toast('HDFS 内容已写入执行日志', 'ok'); } } catch (error) { setText($('#previewText'), error.message); }
 }
 function downloadRemote(remotePath, kind) { const a = document.createElement('a'); a.href = `${kind === 'hdfs' ? '/api/hdfs/download' : '/api/sftp/download'}?path=${encodeURIComponent(remotePath)}`; a.download = ''; document.body.append(a); a.click(); a.remove(); toast(`开始下载：${remotePath.split('/').pop()}`, 'ok'); }
+function openUploadDialog(localPath) { state.pendingUpload = localPath; $('#uploadLocal').value = localPath; $('#uploadDir').value = state.hdfsCwd; $('#uploadDir').removeAttribute('aria-invalid'); setText($('#uploadError'), ''); openDialog('uploadDialog', $('#uploadDir')); }
+$('#btnUploadSubmit').addEventListener('click', async () => { const localPath = state.pendingUpload; const hdfsDir = $('#uploadDir').value.trim(); if (!localPath) { setText($('#uploadError'), '未指定要上传的文件'); return; } if (!hdfsDir.startsWith('/')) { $('#uploadDir').setAttribute('aria-invalid', 'true'); setText($('#uploadError'), 'HDFS 目标目录必须以 / 开头'); return; } $('#uploadDir').removeAttribute('aria-invalid'); try { const result = await postJson('/api/hdfs/upload', { localPath, hdfsDir }); closeDialog('uploadDialog'); toast(`已上传到 ${result.hdfsPath}`, 'ok'); if (state.hdfsCwd.replace(/\/+$/, '') === hdfsDir.replace(/\/+$/, '')) refreshHdfs(); } catch (error) { setText($('#uploadError'), error.message); } });
 function confirmDelete(remotePath, kind) { state.pendingConfirm = { action: async () => { await postJson('/api/sftp/delete', { path: remotePath, kind, confirmed: true }); toast('删除成功', 'ok'); refreshFiles(); } }; setText($('#confirmTitle'), `确认删除${kind === 'dir' ? '空目录' : '文件'}`); setText($('#confirmMessage'), '删除不可恢复，请确认目标路径正确。'); setText($('#confirmTarget'), remotePath); openDialog('confirmDialog', $('#btnConfirmAction')); }
 $('#btnConfirmAction').addEventListener('click', async () => { const pending = state.pendingConfirm; state.pendingConfirm = null; closeDialog('confirmDialog'); if (!pending) return; try { await pending.action(); } catch (error) { toast(error.message, 'err'); } });
 

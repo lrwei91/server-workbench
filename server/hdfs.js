@@ -64,6 +64,31 @@ async function hdfsList(hdfsPath) {
   return items;
 }
 
+async function hdfsUpload(localPath, hdfsDir) {
+  if (!localPath || typeof localPath !== 'string') throw new Error('本地文件路径不能为空');
+  const cleanDir = String(hdfsDir || '/').trim();
+  if (!cleanDir.startsWith('/')) throw new Error('HDFS 目标目录必须以 / 开头');
+  const target = cleanDir.endsWith('/') ? cleanDir : cleanDir + '/';
+  const fileName = localPath.split('/').filter(Boolean).pop() || '';
+  // hadoop fs -put 把本地（远程服务器上的）文件复制到 HDFS 目录；超时放宽为 90s（大文件+冷启动更慢）
+  const r = await ssh.execCommand('hadoop fs -put ' + shellQuote(localPath) + ' ' + shellQuote(target), config.hdfsTimeoutMs || 90000);
+  const err = (r.stderr || '').trim();
+  const out = (r.stdout || '').trim();
+  if (r.timedOut || r.code === 124) {
+    throw new Error('HDFS 上传超时（Hadoop 客户端冷启动较慢，大文件更慢），请稍后重试');
+  }
+  if (r.code !== 0) {
+    if (/File exists/.test(err) || /already exists/i.test(err)) {
+      throw new Error('HDFS 目标已存在同名文件：' + target + fileName);
+    }
+    if (/No such file or directory/i.test(err) || /No such file or directory/i.test(out)) {
+      throw new Error('本地文件不存在或 HDFS 目标目录不存在：' + cleanDir);
+    }
+    throw new Error('HDFS 上传失败：' + (err || ('退出码 ' + r.code)));
+  }
+  return { localPath, fileName, hdfsDir: cleanDir, hdfsPath: target + fileName };
+}
+
 // 连接建立后预热 HDFS：后台跑一次让 JVM/认证/NameNode 连接先热起来，避免用户首次操作撞冷启动
 function warmupHdfs() {
   if (!ssh.conn || warmupPromise) return warmupPromise;
@@ -79,5 +104,6 @@ module.exports = {
   shellQuote,
   parseHdfsLsLine,
   hdfsList,
+  hdfsUpload,
   warmupHdfs,
 };

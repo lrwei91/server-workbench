@@ -186,6 +186,12 @@ async function handle(req, res) {
   if (req.method === 'POST' && p === '/api/hdfs/list') {
     const body = await readBody(req); assertObject(body, ['path']); requireConnected(); const target = String(body.path || '/').trim() || '/'; if (!target.startsWith('/')) throw new RequestError(400, 'INVALID_INPUT', 'HDFS 路径必须以 / 开头'); const items = await hdfs.hdfsList(target); return sendJson(res, 200, { ok: true, path: target, items });
   }
+  if (req.method === 'POST' && p === '/api/hdfs/upload') {
+    const body = await readBody(req); assertObject(body, ['localPath', 'hdfsDir']); requireConnected();
+    const localPath = ssh.expandTilde(requireString(body.localPath, 'localPath'));
+    const hdfsDir = requireString(body.hdfsDir, 'hdfsDir'); if (!hdfsDir.startsWith('/')) throw new RequestError(400, 'INVALID_INPUT', 'HDFS 目标目录必须以 / 开头');
+    const result = await hdfs.hdfsUpload(localPath, hdfsDir); return sendJson(res, 200, { ok: true, ...result });
+  }
   if (req.method === 'GET' && p === '/api/hdfs/download') {
     requireConnected(); const hpath = String(url.searchParams.get('path') || '').trim(); if (!hpath.startsWith('/')) throw new RequestError(400, 'INVALID_INPUT', '缺少合法的 HDFS 路径'); const fileName = hpath.split('/').filter(Boolean).pop() || 'download.bin';
     return new Promise((resolve) => ssh.conn.exec('hadoop fs -cat ' + hdfs.shellQuote(hpath), (err, stream) => {
