@@ -128,4 +128,4 @@ function execCommand(command, timeoutMs) {
   });
 }
 
-module.exports = { DEFAULT_CONFIG, expandTilde, maskConfig, shellQuote, disconnect, connect, execCommand, isDangerousCommand, INTERACTIVE_RE, FORBIDDEN_RE, get conn() { return conn; }, get connInfo() { return connInfo; } };
+module.exports = { DEFAULT_CONFIG, expandTilde, maskConfig, shellQuote, disconnect, connect, execCommand, isDangerousCommand, INTERACTIVE_RE, FORBIDDEN_RE, get conn() { return conn; }, get connInfo() { return connInfo; }, get home() { return homeDir; } };

@@ -147,7 +147,7 @@ async function handle(req, res) {
   }
   if (req.method === 'GET' && p === '/api/log/dates') return sendJson(res, 200, { ok: true, dates: await log.dates() });
   if (req.method === 'GET' && p === '/api/config') return sendJson(res, 200, { ok: true, config: ssh.maskConfig(ssh.DEFAULT_CONFIG), configured: !config.isExample, errors: config.validate() });
-  if (req.method === 'GET' && p === '/api/status') return sendJson(res, 200, { ok: true, connected: Boolean(ssh.conn), conn: ssh.connInfo ? ssh.maskConfig(ssh.connInfo) : null });
+  if (req.method === 'GET' && p === '/api/status') return sendJson(res, 200, { ok: true, connected: Boolean(ssh.conn), conn: ssh.connInfo ? ssh.maskConfig(ssh.connInfo) : null, home: ssh.home || null });
   if (req.method === 'POST' && p === '/api/connect') {
     const body = await readBody(req); assertObject(body, ['host', 'port', 'username', 'password']);
     if (body.host !== undefined && typeof body.host !== 'string') throw new RequestError(400, 'INVALID_INPUT', 'host 必须是字符串');
