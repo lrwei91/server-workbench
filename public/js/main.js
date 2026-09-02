@@ -7,9 +7,71 @@ const state = {
   annotations: {}, pendingAnnotationPath: '',
 };
 const ANNOTATIONS_KEY = 'wb_annotations';
+// 业务侧默认备注字典：本地未自定义时展示；用户手动保存即覆盖（清空可置空字符串表示不使用默认）
+const DEFAULT_ANNOTATIONS = {
+  // HDFS 目录流转规范（来源：目录流转规则文档）
+  '/apps/bill_cnos_jf_test/prep/normal/input': '输入（测试数据入口，程序自动拉取）',
+  '/apps/bill_cnos_jf_test/prep/normal/working': '处理中（在途）',
+  '/apps/bill_cnos_jf_test/prep/normal/archive': '归档（处理完成）',
+  '/apps/bill_cnos_jf_test/prep/normal/errstyle': '错误样式（格式错误的话单）',
+  '/apps/bill_cnos_jf_test/prep/normal/overLoad': '重单（重复话单）',
+  '/apps/bill_cnos_jf_test/prep/normal/upload': '上传',
+
+  // HBase 命名空间
+  '/ns_cnos': '生产话单环境（话单/HBase 业务表）',
+  '/ns_aibcp_dev': '开发环境（量本/账户）',
+  '/ns_bill_cnos_jf': '生产话单',
+  '/ns_bill_cnos_jf_test': '测试话单',
+  '/ns_ffcmp': 'FF 全网比对',
+
+  // 话单类型表（事件类型 → 表名 → 业务含义）
+  '/ns_cnos/TICKET_CDMA_GROUP_597_2606': 'CDMA分组话单 (206080000)',
+  '/ns_cnos/TICKET_CDMA_VOICE_597_2606': 'CDMA语音话单 (206070000)',
+  '/ns_cnos/TICKET_CDMA_SMS_597_2606': 'CDMA短信话单 (206110000)',
+  '/ns_cnos/TICKET_CDMA_OPERA_597_2606': 'CDMA增值业务话单 (206120000)',
+  '/ns_cnos/TICKET_DATA_597_2606': '数据业务话单 (202010000)',
+  '/ns_cnos/TICKET_VOICE_597_2606': '语音话单 (201010000)',
+  '/ns_cnos/TICKET_IN_597_2606': '智能网话单 (205060000)',
+  '/ns_cnos/TICKET_INFO_STATION_597_2606': '信息台话单 (203030000)',
+  '/ns_cnos/TICKET_IVPN_597_2606': '综合VPN话单 (206190000)',
+  '/ns_cnos/TICKET_COMM_VOICE_597_2606': '协同通信语音 (204210000)',
+  '/ns_cnos/TICKET_BLOC_NCR_597_2606': '彩铃话单 (204350000)',
+  '/ns_cnos/TICKET_COMM_SMS_597_2606': '协同通信短信 (204220100)',
+  '/ns_cnos/TICKET_QBUG_597_2606': '全国商务领航 (204470000)',
+  '/ns_cnos/TICKET_BNG_597_2606': '商务领航声讯外包 (204410000)',
+  '/ns_cnos/TICKET_ROAM_VOICE_597_2606': '国漫语音 (208520000)',
+  '/ns_cnos/TICKET_ROAM_DATA_597_2606': '国漫数据 (208530000)',
+  '/ns_cnos/TICKET_ROAM_SMS_597_2606': '国漫短信 (208540000)',
+  '/ns_cnos/TICKET_ROAM_PACKAGE_597_2606': '国漫套餐费 (208550000)',
+  '/ns_cnos/TICKET_ABNORMAL': '异常单',
+  '/ns_cnos/TICKET_OTHER': '不计费话单',
+
+  // 分发表
+  '/ns_cnos/TICKET_DISPATCH_FILE': '分发表（未处理；STRA→策略中心，MR→话单入库）',
+  '/ns_cnos/TICKET_DISPATCHED_FILE': '分发表（已处理）',
+
+  // 量本表
+  '/ns_cnos/ACCUMULATOR_0': '永久累积量表（长期有效）',
+  '/ns_cnos/ACCUMULATOR_202606': '量本主表（用户量本；24A独享→产品实例 / 非24A共享→销售品实例；ACCUM 100=结转 200=使用量）',
+  '/ns_cnos/ACCUMULATOR_DETAIL_202606': '量本从表（量本明细）',
+
+  // 批次表（pro_ 前缀=在途，无前缀=已完成；major/minor = 主/子）
+  '/ns_cnos/pro_preproc_batch_major_info': '采预批次主表（在途）',
+  '/ns_cnos/pro_preproc_batch_minor_info': '采预批次子表（在途）',
+  '/ns_cnos/preproc_batch_major_info': '采预批次主表（已完成）',
+  '/ns_cnos/preproc_batch_minor_info': '采预批次子表（已完成）',
+  '/ns_cnos/pro_rating_batch_major_info': '批价批次主表（在途）',
+  '/ns_cnos/pro_rating_batch_minor_info': '批价批次子表（在途）',
+  '/ns_cnos/rating_batch_major_info': '批价批次主表（已完成）',
+  '/ns_cnos/rating_batch_minor_info': '批价批次子表（已完成）',
+
+  // 采预排重表
+  '/ns_cnos/source_file_index_202608': '采预排重表（同文件重跑会被排重；改文件名或清表可处理）',
+};
 function loadAnnotations() { try { return JSON.parse(localStorage.getItem(ANNOTATIONS_KEY) || '{}') || {}; } catch (_) { return {}; } }
 function saveAnnotations(map) { localStorage.setItem(ANNOTATIONS_KEY, JSON.stringify(map)); }
-function getAlias(path) { return (state.annotations || {})[path] || ''; }
+// 用户自定义优先（localStorage），其次默认业务字典；显式空字符串表示用户主动清空（覆盖默认）
+function getAlias(path) { const override = (state.annotations || {})[path]; if (override !== undefined) return override; return DEFAULT_ANNOTATIONS[path] || ''; }
 function setAlias(path, text) { state.annotations = { ...state.annotations, [path]: text }; saveAnnotations(state.annotations); }
 function removeAlias(path) { const next = { ...state.annotations }; delete next[path]; state.annotations = next; saveAnnotations(state.annotations); }
 
@@ -30,6 +92,16 @@ const BILLING = [
   { title: '话单表映射', rows: [['语音话单', 'TICKET_CDMA_VOICE'], ['数据业务', 'TICKET_DATA'], ['异常单', 'TICKET_ABNORMAL'], ['不计费话单', 'TICKET_OTHER']] },
   { title: 'HBase 速查', rows: [['分发表', '{ns}:TICKET_DISPATCH_FILE'], ['量本主表', '{ns}:ACCUMULATION_{month}'], ['排重表', '{ns}:source_file_index_{month}']] },
   { title: '排障提示', rows: [['分发', 'STRA / MR'], ['处理批次', 'pro_ 前缀表示在途'], ['命名空间', '按当前环境填写并复制']] },
+  { title: '服务清单（Kubernetes）', rows: [
+    ['量本初始化', 'idis-rating-accuminit-process-prod'],
+    ['采预程序（话单增强）', 'idis-prep-prep-normal-process-prod'],
+    ['批价程序（算费）', 'idis-rating-cal-process-prod'],
+    ['入库进程（话单→Doris）', 'idis-rating-ticket2pg-process-prod'],
+    ['消息发送（→策略中心）', 'idis-rating-msgsend-process-prod'],
+    ['达量降速', 'idis-plca-usage-notification-dljs-cmp-prod'],
+    ['大流量提醒', 'idis-plca-usage-notification-dljs-cmp-prod'],
+    ['阈值提醒', 'idis-plca-usage-notification-process-prod'],
+  ] },
 ];
 
 const dialogs = new Map(['settingsDialog', 'commandsDialog', 'paramDialog', 'billingDialog', 'confirmDialog', 'nameDialog', 'uploadDialog', 'annotationDialog', 'previewDialog', 'hbaseScanDialog', 'cdrDialog'].map((id) => [id, new DialogController(document.getElementById(id))]));
@@ -156,12 +228,12 @@ function renderBreadcrumbs(container, current, rootLabel, navigate) {
 function resourceRow(item, kind) {
   const fullPath = item.path || pathJoin(kind === 'files' ? state.cwd : kind === 'hbase' ? state.hbaseCwd : state.hdfsCwd, item.name); const nameButton = el('button', { type: 'button', class: item.isDir ? 'dir' : '', text: `${item.name}${item.isDir ? '/' : ''}`, title: fullPath });
   const nameCell = el('div', { class: 'resource-name' }, icon(item.isDir ? 'folder' : 'file'), nameButton);
-  if (item.isDir) { const alias = getAlias(fullPath); if (alias) nameCell.append(el('span', { class: 'dir-alias', text: `[${alias}]`, title: alias })); }
+  const alias = getAlias(fullPath); if (alias) nameCell.append(el('span', { class: 'dir-alias', text: `[${alias}]`, title: alias }));
   const row = el('div', { class: 'resource-row' }, nameCell, el('span', { class: 'resource-size', text: item.isDir ? '—' : (kind === 'hbase' ? '表' : formatBytes(item.size)) }), el('span', { class: 'resource-date', text: item.mtime || '—' }), el('div', { class: 'resource-actions' }));
   const actions = row.querySelector('.resource-actions');
   if (kind === 'hbase') {
     if (item.isDir) { const enter = el('button', { class: 'fact', type: 'button', text: '进入' }); enter.addEventListener('click', () => { state.hbaseCwd = fullPath; localStorage.setItem('wb_hbase_cwd', fullPath); refreshHbase(); }); actions.append(enter); const note = el('button', { class: 'fact', type: 'button', text: '备注' }); note.addEventListener('click', () => openAnnotationDialog(fullPath, getAlias(fullPath))); actions.append(note); }
-    else { const scan = el('button', { class: 'fact', type: 'button', text: '查看' }); scan.addEventListener('click', () => scanHbase(fullPath)); actions.append(scan); }
+    else { const scan = el('button', { class: 'fact', type: 'button', text: '查看' }); scan.addEventListener('click', () => scanHbase(fullPath)); actions.append(scan); const note = el('button', { class: 'fact', type: 'button', text: '备注' }); note.addEventListener('click', () => openAnnotationDialog(fullPath, getAlias(fullPath))); actions.append(note); }
     nameButton.addEventListener('dblclick', () => item.isDir ? (state.hbaseCwd = fullPath, localStorage.setItem('wb_hbase_cwd', fullPath), refreshHbase()) : scanHbase(fullPath));
     return row;
   }
