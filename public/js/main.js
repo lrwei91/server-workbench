@@ -3,7 +3,7 @@ import { $, $$, announce, ApiError, createRequestGate, DialogController, el, for
 const state = {
   connected: false, config: null, home: '~', cwd: '~', hdfsCwd: localStorage.getItem('wb_hdfs_cwd') || '/apps', hbaseCwd: localStorage.getItem('wb_hbase_cwd') || '/',
   history: [], historyIndex: 0, sessionPassword: '', pendingConfirm: null, pendingName: null, pendingParam: null,
-  gates: { files: createRequestGate(), hdfs: createRequestGate(), hbase: createRequestGate() }, refreshBlocks: new Map(), statusTimer: null, statusRunning: false, pendingUpload: null,
+  gates: { files: createRequestGate(), hdfs: createRequestGate(), hbase: createRequestGate() }, refreshBlocks: new Map(), statusTimer: null, statusRunning: false, pendingUpload: null, loaded: { files: false, hdfs: false, hbase: false },
 };
 
 const COMMANDS = [
@@ -41,10 +41,42 @@ function status(message, tone = 'info') { announce($('#explorerState'), message,
 function shellQuote(value) { return `'${String(value ?? '').replace(/'/g, `'\\''`)}'`; }
 function nowTime() { return new Date().toLocaleTimeString('zh-CN', { hour12: false }); }
 // 若整段输出是 JSON，则按 2 空格缩进美化（一行一个结构）；否则原样返回，不影响普通日志
+// 支持四种情况：(1) 完整 JSON / (2) 多行 NDJSON（每行一个 JSON）/ (3) 末尾被截断的 JSON（启发式补全）/ (4) 普通文本原样返回
 function prettifyJson(text) {
-  const trimmed = String(text == null ? '' : text).trim();
+  const raw = String(text == null ? '' : text);
+  const trimmed = raw.trim();
   if (!trimmed || (trimmed[0] !== '{' && trimmed[0] !== '[')) return text;
-  try { return JSON.stringify(JSON.parse(trimmed), null, 2); } catch (_) { return text; }
+  const tryParse = (s) => { try { return JSON.parse(s); } catch (_) { return null; } };
+  const format = (value) => JSON.stringify(value, null, 2);
+  // 1. 直接 parse（单行紧凑 JSON 或已格式化 JSON）
+  const direct = tryParse(trimmed);
+  if (direct !== null) return format(direct);
+  // 2. NDJSON：多行多对象，每行单独 parse 后逐个格式化
+  const lines = trimmed.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  if (lines.length > 1) {
+    const parsed = lines.map(tryParse);
+    if (parsed.every((value) => value !== null)) {
+      return parsed.map((value) => format(value)).join('\n\n');
+    }
+  }
+  // 3. 启发式补全截断：跟踪未闭合的 "、(、[、{ 深度，按相反顺序补齐
+  const stack = []; let i = 0; let inString = false; let escaped = false;
+  while (i < trimmed.length) {
+    const ch = trimmed[i];
+    if (inString) {
+      if (escaped) { escaped = false; }
+      else if (ch === '\\') { escaped = true; }
+      else if (ch === '"') { inString = false; stack.pop(); }
+    } else if (ch === '"') { inString = true; stack.push('"'); }
+    else if (ch === '{' || ch === '[') { stack.push(ch === '{' ? '}' : ']'); }
+    i++;
+  }
+  if (stack.length > 0) {
+    const suffix = stack.reverse().join('');
+    const value = tryParse(trimmed + suffix);
+    if (value !== null) return format(value);
+  }
+  return text;
 }
 function pathJoin(dir, name) { return `${dir.replace(/\/+$/, '') || '/'}/${name}`.replace(/^\/\//, '/'); }
 function storedConfig() { try { const value = JSON.parse(localStorage.getItem('wb_conn_cfg') || '{}'); return { host: value.host || '', port: value.port || 22, username: value.username || '' }; } catch (_) { return {}; } }
@@ -55,7 +87,7 @@ function setConnected(connected, cfg = null) {
   const dot = $('#statusDot'); dot.className = `status-dot ${connected ? 'on' : ''}`;
   setText($('#statusText'), connected ? `已连接 · ${state.config?.host || ''} · ${state.config?.username || ''}` : '未连接');
   const button = $('#btnConnect'); setText(button, connected ? '断开' : '连接'); button.classList.toggle('primary', !connected);
-  if (!connected) { $('#fileList').replaceChildren(el('div', { class: 'empty-tip', text: '尚未连接服务器\n请先点击右上角“连接”' })); $('#hdfsList').replaceChildren(el('div', { class: 'empty-tip', text: '尚未连接服务器' })); $('#hbaseList').replaceChildren(el('div', { class: 'empty-tip', text: '尚未连接服务器' })); state.gates.files.cancel(); state.gates.hdfs.cancel(); state.gates.hbase.cancel(); stopRefreshBlocks(); }
+  if (!connected) { $('#fileList').replaceChildren(el('div', { class: 'empty-tip', text: '尚未连接服务器\n请先点击右上角“连接”' })); $('#hdfsList').replaceChildren(el('div', { class: 'empty-tip', text: '尚未连接服务器' })); $('#hbaseList').replaceChildren(el('div', { class: 'empty-tip', text: '尚未连接服务器' })); state.loaded.files = false; state.loaded.hdfs = false; state.loaded.hbase = false; state.gates.files.cancel(); state.gates.hdfs.cancel(); state.gates.hbase.cancel(); stopRefreshBlocks(); }
 }
 
 function createLogBlock(command, { refreshable = false, buildCommand = null, historic = false } = {}) {
@@ -120,7 +152,7 @@ function resourceRow(item, kind) {
   const actions = row.querySelector('.resource-actions');
   if (kind === 'hbase') {
     if (item.isDir) { const enter = el('button', { class: 'fact', type: 'button', text: '进入' }); enter.addEventListener('click', () => { state.hbaseCwd = fullPath; localStorage.setItem('wb_hbase_cwd', fullPath); refreshHbase(); }); actions.append(enter); }
-    else { const scan = el('button', { class: 'fact', type: 'button', text: '扫描' }); scan.addEventListener('click', () => scanHbase(fullPath)); actions.append(scan); }
+    else { const scan = el('button', { class: 'fact', type: 'button', text: '查看' }); scan.addEventListener('click', () => scanHbase(fullPath)); actions.append(scan); }
     nameButton.addEventListener('dblclick', () => item.isDir ? (state.hbaseCwd = fullPath, localStorage.setItem('wb_hbase_cwd', fullPath), refreshHbase()) : scanHbase(fullPath));
     return row;
   }
@@ -132,27 +164,27 @@ function renderResourceList(container, items, kind) { container.replaceChildren(
 
 async function refreshFiles() {
   if (!state.connected) return; const request = state.gates.files.next(); $('#fileList').replaceChildren(el('div', { class: 'empty-tip', text: '正在读取目录…' })); status('正在读取服务器文件目录…');
-  try { const result = await postJson('/api/sftp/list', { path: state.cwd }, { signal: request.signal }); if (!request.isCurrent()) return; state.cwd = result.path || state.cwd; $('#pathInput').value = state.cwd; renderBreadcrumbs($('#crumbs'), state.cwd, state.home || '~', (value) => { state.cwd = value; refreshFiles(); }); renderResourceList($('#fileList'), result.items, 'files'); status(`${result.items?.length || 0} 项`, 'success'); }
+  try { const result = await postJson('/api/sftp/list', { path: state.cwd }, { signal: request.signal }); if (!request.isCurrent()) return; state.cwd = result.path || state.cwd; state.loaded.files = true; $('#pathInput').value = state.cwd; renderBreadcrumbs($('#crumbs'), state.cwd, state.home || '~', (value) => { state.cwd = value; refreshFiles(); }); renderResourceList($('#fileList'), result.items, 'files'); status(`${result.items?.length || 0} 项`, 'success'); }
   catch (error) { if (error.code === 'REQUEST_ABORTED') return; $('#fileList').replaceChildren(el('div', { class: 'empty-tip', text: error.message })); status(error.message, 'error'); }
 }
 async function refreshHdfs() {
   if (!state.connected) return; const request = state.gates.hdfs.next(); $('#hdfsList').replaceChildren(el('div', { class: 'empty-tip', text: '正在读取 HDFS 目录…' }));
-  try { const result = await postJson('/api/hdfs/list', { path: state.hdfsCwd }, { signal: request.signal }); if (!request.isCurrent()) return; state.hdfsCwd = result.path || state.hdfsCwd; $('#hdfsPathInput').value = state.hdfsCwd; renderBreadcrumbs($('#hdfsCrumbs'), state.hdfsCwd, '/', (value) => { state.hdfsCwd = value; localStorage.setItem('wb_hdfs_cwd', value); refreshHdfs(); }); renderResourceList($('#hdfsList'), result.items, 'hdfs'); status(`${result.items?.length || 0} 项`, 'success'); }
+  try { const result = await postJson('/api/hdfs/list', { path: state.hdfsCwd }, { signal: request.signal }); if (!request.isCurrent()) return; state.hdfsCwd = result.path || state.hdfsCwd; state.loaded.hdfs = true; $('#hdfsPathInput').value = state.hdfsCwd; renderBreadcrumbs($('#hdfsCrumbs'), state.hdfsCwd, '/', (value) => { state.hdfsCwd = value; localStorage.setItem('wb_hdfs_cwd', value); refreshHdfs(); }); renderResourceList($('#hdfsList'), result.items, 'hdfs'); status(`${result.items?.length || 0} 项`, 'success'); }
   catch (error) { if (error.code === 'REQUEST_ABORTED') return; $('#hdfsList').replaceChildren(el('div', { class: 'empty-tip', text: error.message })); status(error.message, 'error'); }
 }
 async function refreshHbase() {
   if (!state.connected) return; const request = state.gates.hbase.next(); $('#hbaseList').replaceChildren(el('div', { class: 'empty-tip', text: '正在读取 HBase 命名空间…' }));
-  try { const result = await postJson('/api/hbase/list', { path: state.hbaseCwd }, { signal: request.signal }); if (!request.isCurrent()) return; state.hbaseCwd = result.path || state.hbaseCwd; $('#hbasePathInput').value = state.hbaseCwd; renderBreadcrumbs($('#hbaseCrumbs'), state.hbaseCwd, '/', (value) => { state.hbaseCwd = value; localStorage.setItem('wb_hbase_cwd', value); refreshHbase(); }); renderResourceList($('#hbaseList'), result.items, 'hbase'); status(`${result.items?.length || 0} 项`, 'success'); }
+  try { const result = await postJson('/api/hbase/list', { path: state.hbaseCwd }, { signal: request.signal }); if (!request.isCurrent()) return; state.hbaseCwd = result.path || state.hbaseCwd; state.loaded.hbase = true; $('#hbasePathInput').value = state.hbaseCwd; renderBreadcrumbs($('#hbaseCrumbs'), state.hbaseCwd, '/', (value) => { state.hbaseCwd = value; localStorage.setItem('wb_hbase_cwd', value); refreshHbase(); }); renderResourceList($('#hbaseList'), result.items, 'hbase'); status(`${result.items?.length || 0} 项`, 'success'); }
   catch (error) { if (error.code === 'REQUEST_ABORTED') return; $('#hbaseList').replaceChildren(el('div', { class: 'empty-tip', text: error.message })); status(error.message, 'error'); }
 }
 async function scanHbase(tablePath) {
-  setText($('#hbaseScanTitle'), 'HBase 表扫描'); setText($('#hbaseScanMeta'), tablePath); setText($('#hbaseScanText'), '正在扫描…'); openDialog('hbaseScanDialog');
+  setText($('#hbaseScanTitle'), 'HBase 表查看'); setText($('#hbaseScanMeta'), tablePath); setText($('#hbaseScanText'), '正在读取…'); openDialog('hbaseScanDialog');
   try { const result = await postJson('/api/hbase/scan', { path: tablePath, limit: 20 }); setText($('#hbaseScanMeta'), `${result.table} · 最多 ${result.limit} 行`); setText($('#hbaseScanText'), prettifyJson(result.text) || '（无数据）'); }
   catch (error) { setText($('#hbaseScanText'), error.message); }
 }
 async function previewRemote(remotePath, kind) {
   openDialog('previewDialog'); setText($('#previewTitle'), kind === 'hdfs' ? 'HDFS 文件预览' : '文件预览'); setText($('#previewMeta'), remotePath); setText($('#previewText'), '正在读取…');
-  try { if (kind === 'files') { const result = await postJson('/api/sftp/preview', { path: remotePath, maxBytes: 262144 }); setText($('#previewText'), result.text || '（空文件）'); if (result.truncated) setText($('#previewMeta'), `${remotePath} · 已显示前 256 KiB，内容已截断`); } else { const result = await runCommand(`hadoop fs -cat ${shellQuote(remotePath)} | head -c 262144`, { timeout: 60000 }); closeDialog('previewDialog'); if (result?.ok) toast('HDFS 内容已写入执行日志', 'ok'); } } catch (error) { setText($('#previewText'), error.message); }
+  try { if (kind === 'files') { const result = await postJson('/api/sftp/preview', { path: remotePath, maxBytes: 262144 }); setText($('#previewText'), prettifyJson(result.text) || '（空文件）'); if (result.truncated) setText($('#previewMeta'), `${remotePath} · 已显示前 256 KiB，内容已截断`); } else { const result = await runCommand(`hadoop fs -cat ${shellQuote(remotePath)} | head -c 262144`, { timeout: 60000 }); closeDialog('previewDialog'); if (result?.ok) toast('HDFS 内容已写入执行日志', 'ok'); } } catch (error) { setText($('#previewText'), error.message); }
 }
 function downloadRemote(remotePath, kind) { const a = document.createElement('a'); a.href = `${kind === 'hdfs' ? '/api/hdfs/download' : '/api/sftp/download'}?path=${encodeURIComponent(remotePath)}`; a.download = ''; document.body.append(a); a.click(); a.remove(); toast(`开始下载：${remotePath.split('/').pop()}`, 'ok'); }
 async function uploadLocalFile(file) {
@@ -198,7 +230,7 @@ $('#btnBilling').addEventListener('click', () => { renderBilling(); openDialog('
 $('#btnCdr').addEventListener('click', () => { if (!$('#cdrFrame').getAttribute('src')) $('#cdrFrame').src = '/cdr/'; openDialog('cdrDialog'); });
 $('#billSearch').addEventListener('input', renderBilling); ['billSuffix', 'billMonth', 'billNs'].forEach((id) => $( `#${id}`).addEventListener('input', renderBilling));
 
-function switchTab(tab) { $$('.tab').forEach((button) => { const active = button.dataset.tab === tab; button.classList.toggle('active', active); button.setAttribute('aria-selected', String(active)); }); $('#filesPane').classList.toggle('hidden', tab !== 'files'); $('#hdfsPane').classList.toggle('hidden', tab !== 'hdfs'); $('#hbasePane').classList.toggle('hidden', tab !== 'hbase'); if (tab === 'hdfs' && state.connected) refreshHdfs(); if (tab === 'hbase' && state.connected) refreshHbase(); }
+function switchTab(tab) { $$('.tab').forEach((button) => { const active = button.dataset.tab === tab; button.classList.toggle('active', active); button.setAttribute('aria-selected', String(active)); }); $('#filesPane').classList.toggle('hidden', tab !== 'files'); $('#hdfsPane').classList.toggle('hidden', tab !== 'hdfs'); $('#hbasePane').classList.toggle('hidden', tab !== 'hbase'); if (tab === 'hdfs' && state.connected && !state.loaded.hdfs) refreshHdfs(); if (tab === 'hbase' && state.connected && !state.loaded.hbase) refreshHbase(); }
 $$('.tab').forEach((button) => button.addEventListener('click', () => switchTab(button.dataset.tab)));
 $('#btnRefresh').addEventListener('click', refreshFiles); $('#btnHdfsRefresh').addEventListener('click', refreshHdfs); $('#btnMkdir').addEventListener('click', () => state.connected ? openNameDialog('mkdir') : toast('请先连接服务器', 'err')); $('#btnTouch').addEventListener('click', () => state.connected ? openNameDialog('touch') : toast('请先连接服务器', 'err'));
 $('#btnUploadLocal').addEventListener('click', () => { if (!state.connected) { toast('请先连接服务器', 'err'); return; } const input = $('#localFileInput'); input.value = ''; input.click(); });
@@ -215,4 +247,38 @@ async function checkStatus() { if (document.hidden || state.statusRunning) retur
 $('#autoStatus').checked = true; $('#autoStatus').addEventListener('change', () => { clearTimeout(state.statusTimer); if ($('#autoStatus').checked) checkStatus(); }); document.addEventListener('visibilitychange', () => { if (document.hidden) { clearTimeout(state.statusTimer); state.refreshBlocks.forEach((block) => { clearTimeout(block.timer); block.timer = null; }); } else { if ($('#autoStatus').checked) checkStatus(); [...state.refreshBlocks.values()].forEach((block) => startRefreshBlock(block)); } });
 
 renderCommands(); renderBreadcrumbs($('#crumbs'), state.cwd, state.home, (value) => { state.cwd = value; refreshFiles(); }); renderBreadcrumbs($('#hdfsCrumbs'), state.hdfsCwd, '/', (value) => { state.hdfsCwd = value; refreshHdfs(); });
-(async function init() { try { const cfg = await getJson('/api/config'); state.config = cfg.config || storedConfig(); $('#cfgHost').value = state.config.host || ''; $('#cfgPort').value = state.config.port || 22; $('#cfgUser').value = state.config.username || ''; } catch (_) {} await restoreLogs(); checkStatus(); })();
+(async function init() {
+  try { const cfg = await getJson('/api/config'); state.config = cfg.config || storedConfig(); $('#cfgHost').value = state.config.host || ''; $('#cfgPort').value = state.config.port || 22; $('#cfgUser').value = state.config.username || ''; } catch (_) {}
+  await restoreLogs();
+  await restoreSession();
+  checkStatus();
+})();
+
+// 页面刷新/重开后的会话恢复：SSH 长连接存活在后端 Node 进程里，刷新页面并不会真的断开，
+// 这里探测后端状态直接恢复前端 UI（无需重新输密码）；若后端也已断开则用保存的配置自动重连。
+async function restoreSession() {
+  try {
+    const saved = storedConfig();
+    const status = await getJson('/api/status');
+    if (status?.connected) {
+      // 后端 SSH 会话仍在：直接恢复前端状态，不重新认证
+      const conn = status.conn || { host: saved.host, port: saved.port, username: saved.username };
+      setConnected(true, conn);
+      state.home = status.home || '~';
+      state.cwd = state.home;
+      status(`已恢复连接 · ${conn.host || ''}`, 'success');
+      toast(`已恢复 ${conn.host || ''} 的连接会话`, 'ok');
+      if ($('#filesPane') && !$('#filesPane').classList.contains('hidden')) refreshFiles();
+      return;
+    }
+    // 后端无会话：尝试用已保存的主机/端口/用户名自动重连（密码由后端配置文件提供，不落浏览器）
+    if (saved.host && saved.username) {
+      try {
+        const result = await postJson('/api/connect', { host: saved.host, port: saved.port, username: saved.username });
+        setConnected(true, result.config); state.home = result.home || '~'; state.cwd = state.home;
+        toast(`已自动重连 ${result.config.host}`, 'ok');
+        if ($('#filesPane') && !$('#filesPane').classList.contains('hidden')) refreshFiles();
+      } catch (_) { /* 自动重连失败（如密码未配置）：保持未连接，等待用户手动连接 */ }
+    }
+  } catch (_) { /* 桥接服务不可用：保持默认未连接状态 */ }
+}
