@@ -6,7 +6,12 @@ const postJson = (path, body, options = {}) => requestPost(`${API_PREFIX}${path}
 
 const state = { session: { loaded: false, revision: 0 }, page: 1, pageSize: 100, totalPages: 1, bizType: '', filters: [], records: [], fields: [], pendingEdit: null, pendingConfirm: null, gate: createRequestGate(), batchPreview: null, generateImpact: null };
 const editDialog = new DialogController($('#editDialog')); const confirmDialog = new DialogController($('#confirmDialog'));
-$$('[data-close]').forEach((button) => button.addEventListener('click', () => { (button.dataset.close === 'editDialog' ? editDialog : confirmDialog).close(); }));
+const cdrDialogs = { editDialog, confirmDialog };
+document.addEventListener('click', (event) => {
+  const button = event.target.closest?.('[data-close]');
+  if (!button) return;
+  cdrDialogs[button.dataset.close]?.close();
+});
 function openConfirm(message, action) { setText($('#confirmMessage'), message); state.pendingConfirm = action; confirmDialog.open($('#btnConfirm')); }
 $('#btnConfirm').addEventListener('click', async () => { const action = state.pendingConfirm; state.pendingConfirm = null; confirmDialog.close(); if (!action) return; try { await action(); } catch (error) { handleError(error, 'generateStatus'); } });
 function toast(message, tone = '') { const node = el('div', { class: `toast ${tone}`, text: message }); $('#cdrToast').append(node); setTimeout(() => node.remove(), 3600); }

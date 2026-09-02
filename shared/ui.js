@@ -56,7 +56,33 @@ export function formatDate(value) { if (!value) return '—'; const date = new D
 export function createRequestGate() { let seq = 0; let controller = null; return { next() { controller?.abort(); controller = new AbortController(); const id = ++seq; return { id, signal: controller.signal, isCurrent: () => id === seq }; }, cancel() { controller?.abort(); controller = null; ++seq; } }; }
 export class DialogController {
   constructor(dialog) { this.dialog = dialog; this.previous = null; this.onCancel = this.onCancel.bind(this); }
-  open(initialFocus) { if (!this.dialog) return; this.previous = document.activeElement; this.dialog.addEventListener('cancel', this.onCancel); if (typeof this.dialog.showModal === 'function') this.dialog.showModal(); else this.dialog.setAttribute('open', ''); queueMicrotask(() => (initialFocus || this.dialog.querySelector('[autofocus],button,input,select,textarea,[tabindex]:not([tabindex="-1"])'))?.focus()); }
-  close() { if (!this.dialog) return; this.dialog.removeEventListener('cancel', this.onCancel); if (this.dialog.open && typeof this.dialog.close === 'function') this.dialog.close(); else this.dialog.removeAttribute('open'); queueMicrotask(() => this.previous?.focus?.()); }
+  get isOpen() { return Boolean(this.dialog?.open); }
+  open(initialFocus) {
+    if (!this.dialog) return null;
+    // 幂等：已在打开状态时直接返回，避免重复 showModal() 抛 InvalidStateError 打断后续流程
+    if (this.dialog.open) return this.dialog;
+    this.previous = document.activeElement;
+    this.dialog.addEventListener('cancel', this.onCancel);
+    try {
+      if (typeof this.dialog.showModal === 'function') this.dialog.showModal();
+      else this.dialog.setAttribute('open', '');
+    } catch (_) { if (!this.dialog.open) this.dialog.setAttribute('open', ''); }
+    queueMicrotask(() => {
+      const target = initialFocus || this.dialog.querySelector('[autofocus],button,input,select,textarea,[tabindex]:not([tabindex="-1"])');
+      // 焦点不能落到 iframe 内部（会吞掉父文档的 Esc/交互），必要时退回聚焦弹窗自身
+      if (target && target.closest?.('iframe')) this.dialog.focus?.();
+      else target?.focus?.();
+    });
+    return this.dialog;
+  }
+  close() {
+    if (!this.dialog) return null;
+    this.dialog.removeEventListener('cancel', this.onCancel);
+    try { if (this.dialog.open && typeof this.dialog.close === 'function') this.dialog.close(); } catch (_) {}
+    // 兜底：无论何种方式关闭，确保 open 属性被清除（幂等，可安全重复调用）
+    this.dialog.removeAttribute('open');
+    queueMicrotask(() => this.previous?.focus?.());
+    return this.dialog;
+  }
   onCancel(event) { event.preventDefault(); this.close(); }
 }

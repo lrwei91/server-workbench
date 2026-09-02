@@ -3,7 +3,7 @@ import { $, $$, announce, ApiError, createRequestGate, DialogController, el, for
 const state = {
   connected: false, config: null, home: '~', cwd: '~', hdfsCwd: localStorage.getItem('wb_hdfs_cwd') || '/apps', hbaseCwd: localStorage.getItem('wb_hbase_cwd') || '/',
   history: [], historyIndex: 0, sessionPassword: '', pendingConfirm: null, pendingName: null, pendingParam: null,
-  gates: { files: createRequestGate(), hdfs: createRequestGate(), hbase: createRequestGate() }, refreshBlocks: new Map(), statusTimer: null, statusRunning: false, pendingUpload: null, loaded: { files: false, hdfs: false, hbase: false },
+  gates: { files: createRequestGate(), hdfs: createRequestGate(), hbase: createRequestGate(), scan: createRequestGate() }, refreshBlocks: new Map(), statusTimer: null, statusRunning: false, pendingUpload: null, loaded: { files: false, hdfs: false, hbase: false },
   annotations: {}, pendingAnnotationPath: '',
 };
 const ANNOTATIONS_KEY = 'wb_annotations';
@@ -75,6 +75,86 @@ function getAlias(path) { const override = (state.annotations || {})[path]; if (
 function setAlias(path, text) { state.annotations = { ...state.annotations, [path]: text }; saveAnnotations(state.annotations); }
 function removeAlias(path) { const next = { ...state.annotations }; delete next[path]; state.annotations = next; saveAnnotations(state.annotations); }
 
+// HBase 表默认备注（按表名匹配，与 namespace 解耦）。
+// 背景：测试环境 HBase 命名空间实际为 ns_aibcp_dev / ns_bill_cnos_jf_test / ns_ffcmp 等，
+// 没有字典里写的 ns_cnos；且表行路径是 /ns:表名（冒号分隔），字典键是 /ns/表名（斜杠），
+// 原「/ns_cnos/表名」形式的表备注在实际环境永远不会命中。改为表名级兜底后，
+// 同表名出现在任何 namespace（aibcp/测试话单/FF 比对）都会显示业务备注。
+const DEFAULT_TABLE_ALIASES = {
+  // 话单类型表（事件类型 → 表名 → 业务含义）
+  TICKET_CDMA_GROUP_597_2606: 'CDMA分组话单 (206080000)',
+  TICKET_CDMA_VOICE_597_2606: 'CDMA语音话单 (206070000)',
+  TICKET_CDMA_SMS_597_2606: 'CDMA短信话单 (206110000)',
+  TICKET_CDMA_OPERA_597_2606: 'CDMA增值业务话单 (206120000)',
+  TICKET_DATA_597_2606: '数据业务话单 (202010000)',
+  TICKET_VOICE_597_2606: '语音话单 (201010000)',
+  TICKET_IN_597_2606: '智能网话单 (205060000)',
+  TICKET_INFO_STATION_597_2606: '信息台话单 (203030000)',
+  TICKET_IVPN_597_2606: '综合VPN话单 (206190000)',
+  TICKET_COMM_VOICE_597_2606: '协同通信语音 (204210000)',
+  TICKET_BLOC_NCR_597_2606: '彩铃话单 (204350000)',
+  TICKET_COMM_SMS_597_2606: '协同通信短信 (204220100)',
+  TICKET_QBUG_597_2606: '全国商务领航 (204470000)',
+  TICKET_BNG_597_2606: '商务领航声讯外包 (204410000)',
+  TICKET_ROAM_VOICE_597_2606: '国漫语音 (208520000)',
+  TICKET_ROAM_DATA_597_2606: '国漫数据 (208530000)',
+  TICKET_ROAM_SMS_597_2606: '国漫短信 (208540000)',
+  TICKET_ROAM_PACKAGE_597_2606: '国漫套餐费 (208550000)',
+  TICKET_ABNORMAL: '异常单',
+  TICKET_OTHER: '不计费话单',
+  TICKET_DISPATCH_FILE: '分发表（未处理；STRA→策略中心，MR→话单入库）',
+  TICKET_DISPATCHED_FILE: '分发表（已处理）',
+  ACCUMULATOR_0: '永久累积量表（长期有效）',
+  ACCUMULATION_0: '永久累积量表（长期有效）',
+  // 批次表（pro_ 前缀=在途，无前缀=已完成；major/minor = 主/子）
+  pro_preproc_batch_major_info: '采预批次主表（在途）',
+  pro_preproc_batch_minor_info: '采预批次子表（在途）',
+  preproc_batch_major_info: '采预批次主表（已完成）',
+  preproc_batch_minor_info: '采预批次子表（已完成）',
+  pro_rating_batch_major_info: '批价批次主表（在途）',
+  pro_rating_batch_minor_info: '批价批次子表（在途）',
+  rating_batch_major_info: '批价批次主表（已完成）',
+  rating_batch_minor_info: '批价批次子表（已完成）',
+};
+// 账期类动态表名（量本/排重按月建表无法穷举）与试算 TRY_/plcatest 变体用规则兜底
+function tableDefaultAlias(name) {
+  const raw = String(name || '');
+  const direct = DEFAULT_TABLE_ALIASES[raw]; if (direct) return direct;
+  const tryLabel = raw.startsWith('TRY_') ? '试算 ' : '';
+  const core = (raw.startsWith('TRY_') ? raw.slice(4) : raw).replace(/_plcatest$/, '');
+  const viaCore = DEFAULT_TABLE_ALIASES[core]; if (viaCore) return tryLabel + viaCore;
+  if (/^(ACCUMULATOR|ACCUMULATION)_DETAIL(_0|_\d{6})$/.test(core)) return tryLabel + '量本从表（量本明细）';
+  if (/^(ACCUMULATOR|ACCUMULATION)_0$/.test(core)) return tryLabel + '永久累积量表（长期有效）';
+  if (/^(ACCUMULATOR|ACCUMULATION)_\d{6}$/.test(core)) return tryLabel + '量本主表（用户量本；24A独享→产品实例 / 非24A共享→销售品实例；ACCUM 100=结转 200=使用量）';
+  if (/^source_file_index_\d{6}$/.test(core)) return tryLabel + '采预排重表（同文件重跑会被排重；改文件名或清表可处理）';
+  return '';
+}
+// 生效备注文案（命中顺序）：用户自定义(按路径，含显式清空) → 默认路径字典 → HBase 表名默认
+function aliasTextFor(path, tableName) {
+  if (Object.prototype.hasOwnProperty.call(state.annotations || {}, path)) return state.annotations[path];
+  const def = DEFAULT_ANNOTATIONS[path]; if (def) return def;
+  if (tableName) return tableDefaultAlias(tableName);
+  return '';
+}
+// 备注文案拆分为「短名（内容）」三段式：
+//   label  = 括号前短名（列表行内始终显示）
+//   status = 括号内的状态类关键词（在途/已处理/已完成/未处理/长期有效…）→ 关键信息，行内保留
+//   desc   = 括号内完整内容（查看弹窗展示；含状态，信息最全）
+// 无括号或括号内无状态词时 status 为空 → 括号内容整体视为说明，只进查看弹窗
+function splitAliasText(text) {
+  const value = String(text || '').trim();
+  const match = value.match(/^(.*?)\s*[（(](.*)[）)]\s*$/);
+  if (!match) return { label: value, status: '', desc: '' };
+  const label = match[1].trim() || value;
+  const inner = match[2].trim();
+  // 注意：不能用 \b 做词边界 —— JS 里 CJK 不属于 \w，汉字与串尾/分隔符之间不构成边界，永远匹配失败
+  const statusMatch = inner.match(/^(在途|已处理|未处理|已完成|进行中|待处理|长期有效)(?:[；;，,]|$)/);
+  return statusMatch ? { label, status: statusMatch[1], desc: inner } : { label, status: '', desc: inner };
+}
+function rowAlias(item, kind, fullPath) {
+  return aliasTextFor(fullPath, kind === 'hbase' && !item.isDir ? String(item.name || '') : '');
+}
+
 const COMMANDS = [
   { group: '查看', label: '当前位置', command: 'pwd', desc: '显示远程主目录和当前工作位置。' },
   { group: '查看', label: '当前目录', command: 'ls -lh', desc: '列出当前目录的文件和目录。', autoCwd: true },
@@ -105,9 +185,23 @@ const BILLING = [
 ];
 
 const dialogs = new Map(['settingsDialog', 'commandsDialog', 'paramDialog', 'billingDialog', 'confirmDialog', 'nameDialog', 'uploadDialog', 'annotationDialog', 'previewDialog', 'hbaseScanDialog', 'cdrDialog'].map((id) => [id, new DialogController(document.getElementById(id))]));
-function openDialog(id, focus) { dialogs.get(id)?.open(focus); }
+function openDialog(id, focus) {
+  // 单 modal 约束：开新弹窗前先收起其它已打开的弹窗。否则两层 modal 叠加时，
+  // 下层弹窗的「关闭」按钮点击会被上层 backdrop 截获，表现为「点击完全无反应」。
+  for (const [otherId, controller] of dialogs) { if (otherId !== id && controller.isOpen) controller.close(); }
+  dialogs.get(id)?.open(focus);
+}
 function closeDialog(id) { dialogs.get(id)?.close(); }
-$$('[data-dialog-close]').forEach((button) => button.addEventListener('click', () => closeDialog(button.dataset.dialogClose)));
+// 关闭按钮统一走 document 级事件委托：即使按钮被动态重建/替换、或监听器因任何原因丢失，点击始终可被捕获
+document.addEventListener('click', (event) => {
+  const button = event.target.closest?.('[data-dialog-close]');
+  if (!button) return;
+  const id = button.dataset.dialogClose;
+  if (id && dialogs.has(id)) closeDialog(id);
+});
+// 暴露到 window：便于同源 iframe（话单工具）与调试台通过 parent.closeDialog('cdrDialog') 联动关闭宿主弹窗
+window.openDialog = openDialog;
+window.closeDialog = closeDialog;
 
 function icon(name, label = '') {
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -228,12 +322,12 @@ function renderBreadcrumbs(container, current, rootLabel, navigate) {
 function resourceRow(item, kind) {
   const fullPath = item.path || pathJoin(kind === 'files' ? state.cwd : kind === 'hbase' ? state.hbaseCwd : state.hdfsCwd, item.name); const nameButton = el('button', { type: 'button', class: item.isDir ? 'dir' : '', text: `${item.name}${item.isDir ? '/' : ''}`, title: fullPath });
   const nameCell = el('div', { class: 'resource-name' }, icon(item.isDir ? 'folder' : 'file'), nameButton);
-  const alias = getAlias(fullPath); if (alias) nameCell.append(el('span', { class: 'dir-alias', text: `[${alias}]`, title: alias }));
+  const alias = rowAlias(item, kind, fullPath); if (alias) { const split = kind === 'hbase' && !item.isDir ? splitAliasText(alias) : null; const inlineLabel = split ? (split.status ? `${split.label}（${split.status}）` : split.label) : alias; nameCell.append(el('span', { class: 'dir-alias', text: `[${inlineLabel}]`, title: alias })); }
   const row = el('div', { class: 'resource-row' }, nameCell, el('span', { class: 'resource-size', text: item.isDir ? '—' : (kind === 'hbase' ? '表' : formatBytes(item.size)) }), el('span', { class: 'resource-date', text: item.mtime || '—' }), el('div', { class: 'resource-actions' }));
   const actions = row.querySelector('.resource-actions');
   if (kind === 'hbase') {
-    if (item.isDir) { const enter = el('button', { class: 'fact', type: 'button', text: '进入' }); enter.addEventListener('click', () => { state.hbaseCwd = fullPath; localStorage.setItem('wb_hbase_cwd', fullPath); refreshHbase(); }); actions.append(enter); const note = el('button', { class: 'fact', type: 'button', text: '备注' }); note.addEventListener('click', () => openAnnotationDialog(fullPath, getAlias(fullPath))); actions.append(note); }
-    else { const scan = el('button', { class: 'fact', type: 'button', text: '查看' }); scan.addEventListener('click', () => scanHbase(fullPath)); actions.append(scan); const note = el('button', { class: 'fact', type: 'button', text: '备注' }); note.addEventListener('click', () => openAnnotationDialog(fullPath, getAlias(fullPath))); actions.append(note); }
+    if (item.isDir) { const enter = el('button', { class: 'fact', type: 'button', text: '进入' }); enter.addEventListener('click', () => { state.hbaseCwd = fullPath; localStorage.setItem('wb_hbase_cwd', fullPath); refreshHbase(); }); actions.append(enter); const note = el('button', { class: 'fact', type: 'button', text: '备注' }); note.addEventListener('click', () => openAnnotationDialog(fullPath, rowAlias(item, kind, fullPath))); actions.append(note); }
+    else { const scan = el('button', { class: 'fact', type: 'button', text: '查看' }); scan.addEventListener('click', () => scanHbase(fullPath)); actions.append(scan); const note = el('button', { class: 'fact', type: 'button', text: '备注' }); note.addEventListener('click', () => openAnnotationDialog(fullPath, rowAlias(item, kind, fullPath))); actions.append(note); }
     nameButton.addEventListener('dblclick', () => item.isDir ? (state.hbaseCwd = fullPath, localStorage.setItem('wb_hbase_cwd', fullPath), refreshHbase()) : scanHbase(fullPath));
     return row;
   }
@@ -259,9 +353,14 @@ async function refreshHbase() {
   catch (error) { if (error.code === 'REQUEST_ABORTED') return; $('#hbaseList').replaceChildren(el('div', { class: 'empty-tip', text: error.message })); status(error.message, 'error'); }
 }
 async function scanHbase(tablePath) {
-  setText($('#hbaseScanTitle'), 'HBase 表查看'); setText($('#hbaseScanMeta'), tablePath); setText($('#hbaseScanText'), '正在读取…'); openDialog('hbaseScanDialog');
-  try { const result = await postJson('/api/hbase/scan', { path: tablePath, limit: 20 }); setText($('#hbaseScanMeta'), `${result.table} · 最多 ${result.limit} 行`); setText($('#hbaseScanText'), prettifyJson(result.text) || '（无数据）'); }
-  catch (error) { setText($('#hbaseScanText'), error.message); }
+  const request = state.gates.scan.next(); // 竞态防护：快速连点不同表时只保留最后一次结果
+  // 行内只显示短名，完整业务说明（括号内解释）移到查看弹窗展示
+  const tableName = String(tablePath).split(':').pop() || '';
+  const desc = aliasTextFor(tablePath, tableName);
+  const descLine = desc ? splitAliasText(desc).desc : '';
+  setText($('#hbaseScanTitle'), 'HBase 表查看'); setText($('#hbaseScanMeta'), tablePath); setText($('#hbaseScanDesc'), descLine ? `说明：${descLine}` : ''); setText($('#hbaseScanText'), '正在读取…'); openDialog('hbaseScanDialog');
+  try { const result = await postJson('/api/hbase/scan', { path: tablePath, limit: 20 }, { signal: request.signal }); if (!request.isCurrent()) return; setText($('#hbaseScanMeta'), `${result.table} · 最多 ${result.limit} 行`); setText($('#hbaseScanText'), prettifyJson(result.text) || '（无数据）'); }
+  catch (error) { if (error.code !== 'REQUEST_ABORTED') setText($('#hbaseScanText'), error.message); }
 }
 async function previewRemote(remotePath, kind) {
   openDialog('previewDialog'); setText($('#previewTitle'), kind === 'hdfs' ? 'HDFS 文件预览' : '文件预览'); setText($('#previewMeta'), remotePath); setText($('#previewText'), '正在读取…');
