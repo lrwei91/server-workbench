@@ -40,7 +40,11 @@ function asRequestError(error) {
   if (/尚未连接|NOT_CONNECTED/i.test(raw)) return new RequestError(409, 'NOT_CONNECTED', '尚未连接服务器，请先点击连接');
   if (/连接超时|超时：/i.test(raw)) return new RequestError(504, 'REMOTE_TIMEOUT', raw, true);
   if (/连接被拒绝|网络不可达|无法解析主机/i.test(raw)) return new RequestError(502, 'REMOTE_CONNECTION', raw, true);
+  if (/^HDFS .*超时/i.test(raw)) return new RequestError(504, 'HDFS_TIMEOUT', raw, true);
   if (/timeout|timed? out|超时/i.test(raw)) return new RequestError(504, 'REMOTE_TIMEOUT', '远端服务响应超时，请稍后重试', true);
+  if (/^HDFS 目标已存在同名文件：/i.test(raw)) return new RequestError(409, 'HDFS_TARGET_EXISTS', raw, false);
+  if (/^HDFS 上不存在该路径：|^本地文件不存在或 HDFS 目标目录不存在：/i.test(raw)) return new RequestError(404, 'HDFS_PATH_NOT_FOUND', raw, false);
+  if (/^HDFS (?:上传|列目录)失败：/i.test(raw)) return new RequestError(502, 'HDFS_OPERATION_FAILED', raw, true);
   if (/SFTP|SSH|hadoop|ECONN|EHOST|ENET|channel/i.test(raw)) return new RequestError(502, 'REMOTE_ERROR', '远端服务请求失败，请检查连接后重试', true);
   return new RequestError(500, 'INTERNAL_ERROR', '服务器内部错误，请稍后重试', true);
 }
@@ -248,4 +252,4 @@ if (require.main === module) {
   server.listen(config.workbench.port, config.workbench.host, () => console.log(`远程服务器管理工作台已启动: http://${config.workbench.host}:${config.workbench.port}`));
   server.on('error', (error) => { console.error('[服务错误]', error); process.exitCode = 1; });
 }
-module.exports = { createServer, handle, RequestError, MAX_BODY_BYTES };
+module.exports = { createServer, handle, RequestError, asRequestError, MAX_BODY_BYTES };

@@ -71,6 +71,8 @@ async function hdfsUpload(localPath, hdfsDir) {
   const target = cleanDir.endsWith('/') ? cleanDir : cleanDir + '/';
   const fileName = localPath.split('/').filter(Boolean).pop() || '';
   // hadoop fs -put 把本地（远程服务器上的）文件复制到 HDFS 目录；超时放宽为 90s（大文件+冷启动更慢）
+  // 若连接后的后台预热尚未结束，先等待预热，避免首次上传与预热争抢 NameNode/认证资源。
+  if (warmupPromise) await warmupPromise;
   const r = await ssh.execCommand('hadoop fs -put ' + shellQuote(localPath) + ' ' + shellQuote(target), config.hdfsTimeoutMs || 90000);
   const err = (r.stderr || '').trim();
   const out = (r.stdout || '').trim();

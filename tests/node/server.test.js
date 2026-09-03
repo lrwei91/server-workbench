@@ -6,7 +6,7 @@ const ssh = require('../../server/ssh');
 const sftp = require('../../server/sftp');
 const log = require('../../server/log');
 const hdfs = require('../../server/hdfs');
-const { createServer, MAX_BODY_BYTES } = require('../../server/server');
+const { createServer, asRequestError, MAX_BODY_BYTES } = require('../../server/server');
 
 function request(server, method, path, body) {
   return new Promise((resolve, reject) => {
@@ -30,6 +30,20 @@ test('HDFS listing parser returns structured safe entries', () => {
   const item = hdfs.parseHdfsLsLine('drwxr-xr-x   - user group          0 2026-08-31 15:02 /apps/a folder');
   assert.equal(item.isDir, true); assert.equal(item.name, 'a folder'); assert.equal(item.path, '/apps/a folder');
   assert.equal(hdfs.parseHdfsLsLine('not an hdfs line'), null);
+});
+
+test('HDFS operation errors keep actionable status and message', () => {
+  const missing = asRequestError(new Error('本地文件不存在或 HDFS 目标目录不存在：/apps/input'));
+  assert.equal(missing.status, 404); assert.equal(missing.code, 'HDFS_PATH_NOT_FOUND');
+  assert.match(missing.message, /HDFS 目标目录不存在/);
+  const exists = asRequestError(new Error('HDFS 目标已存在同名文件：/apps/input/a.json'));
+  assert.equal(exists.status, 409); assert.equal(exists.code, 'HDFS_TARGET_EXISTS');
+  const failed = asRequestError(new Error('HDFS 上传失败：Connection reset by peer'));
+  assert.equal(failed.status, 502); assert.equal(failed.code, 'HDFS_OPERATION_FAILED');
+  assert.equal(failed.retryable, true);
+  const timeout = asRequestError(new Error('HDFS 上传超时（Hadoop 客户端冷启动较慢）'));
+  assert.equal(timeout.status, 504); assert.equal(timeout.code, 'HDFS_TIMEOUT');
+  assert.match(timeout.message, /冷启动/);
 });
 
 test('HTTP errors have real status and normalized shape', async () => {

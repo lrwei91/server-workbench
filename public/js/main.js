@@ -1,5 +1,7 @@
 import { $, $$, announce, ApiError, createRequestGate, DialogController, el, formatBytes, getJson, postJson, setText } from '/shared/ui.js';
 
+const HDFS_UPLOAD_TIMEOUT = 200000;
+
 const state = {
   connected: false, config: null, home: '~', cwd: '~', hdfsCwd: localStorage.getItem('wb_hdfs_cwd') || '/apps', hbaseCwd: localStorage.getItem('wb_hbase_cwd') || '/',
   history: [], historyIndex: 0, sessionPassword: '', pendingConfirm: null, pendingName: null, pendingParam: null,
@@ -391,7 +393,23 @@ function openAnnotationDialog(path, currentAlias) { state.pendingAnnotationPath 
 $('#btnAnnotationSave').addEventListener('click', () => { const text = $('#annotationAlias').value.trim(); if (text.length > 40) { $('#annotationAlias').setAttribute('aria-invalid', 'true'); setText($('#annotationError'), '备注最多 40 个字符'); return; } const path = state.pendingAnnotationPath; if (!path) { setText($('#annotationError'), '路径为空'); return; } setAlias(path, text); closeDialog('annotationDialog'); toast(text ? `已保存备注：${text}` : '已清空备注', 'ok'); const kind = path.startsWith('/') ? (state.hbaseCwd.startsWith(path) || path === state.hbaseCwd ? 'hbase' : 'hdfs') : 'files'; if (kind === 'files' && state.loaded.files) refreshFiles(); else if (kind === 'hdfs' && state.loaded.hdfs) refreshHdfs(); else if (kind === 'hbase' && state.loaded.hbase) refreshHbase(); });
 $('#btnAnnotationRemove').addEventListener('click', () => { const path = state.pendingAnnotationPath; if (!path) return; removeAlias(path); closeDialog('annotationDialog'); toast('已删除备注', 'ok'); if (state.cwd === path || state.cwd.startsWith(path + '/') || state.cwd.startsWith(path)) refreshFiles(); if (state.hdfsCwd === path || state.hdfsCwd.startsWith(path + '/')) refreshHdfs(); if (state.hbaseCwd === path || state.hbaseCwd.startsWith(path + '/')) refreshHbase(); });
 $('#annotationAlias').addEventListener('keydown', (event) => { if (event.key === 'Enter') { event.preventDefault(); $('#btnAnnotationSave').click(); } });
-$('#btnUploadSubmit').addEventListener('click', async () => { const localPath = state.pendingUpload; const hdfsDir = $('#uploadDir').value.trim(); if (!localPath) { setText($('#uploadError'), '未指定要上传的文件'); return; } if (!hdfsDir.startsWith('/')) { $('#uploadDir').setAttribute('aria-invalid', 'true'); setText($('#uploadError'), 'HDFS 目标目录必须以 / 开头'); return; } $('#uploadDir').removeAttribute('aria-invalid'); try { const result = await postJson('/api/hdfs/upload', { localPath, hdfsDir }); closeDialog('uploadDialog'); toast(`已上传到 ${result.hdfsPath}`, 'ok'); if (state.hdfsCwd.replace(/\/+$/, '') === hdfsDir.replace(/\/+$/, '')) refreshHdfs(); } catch (error) { setText($('#uploadError'), error.message); } });
+$('#btnUploadSubmit').addEventListener('click', async () => {
+  const localPath = state.pendingUpload;
+  const hdfsDir = $('#uploadDir').value.trim();
+  const submit = $('#btnUploadSubmit');
+  if (!localPath) { setText($('#uploadError'), '未指定要上传的文件'); return; }
+  if (!hdfsDir.startsWith('/')) { $('#uploadDir').setAttribute('aria-invalid', 'true'); setText($('#uploadError'), 'HDFS 目标目录必须以 / 开头'); return; }
+  $('#uploadDir').removeAttribute('aria-invalid');
+  submit.disabled = true;
+  setText(submit, '上传中…');
+  try {
+    // Hadoop 冷启动、后台预热和大文件传输可能超过通用 30 秒请求上限。
+    const result = await postJson('/api/hdfs/upload', { localPath, hdfsDir }, { timeout: HDFS_UPLOAD_TIMEOUT });
+    closeDialog('uploadDialog'); toast(`已上传到 ${result.hdfsPath}`, 'ok');
+    if (state.hdfsCwd.replace(/\/+$/, '') === hdfsDir.replace(/\/+$/, '')) refreshHdfs();
+  } catch (error) { setText($('#uploadError'), error.message); }
+  finally { submit.disabled = false; setText(submit, '上传'); }
+});
 function confirmDelete(remotePath, kind) { state.pendingConfirm = { action: async () => { await postJson('/api/sftp/delete', { path: remotePath, kind, confirmed: true }); toast('删除成功', 'ok'); refreshFiles(); } }; setText($('#confirmTitle'), `确认删除${kind === 'dir' ? '空目录' : '文件'}`); setText($('#confirmMessage'), '删除不可恢复，请确认目标路径正确。'); setText($('#confirmTarget'), remotePath); openDialog('confirmDialog', $('#btnConfirmAction')); }
 $('#btnConfirmAction').addEventListener('click', async () => { const pending = state.pendingConfirm; state.pendingConfirm = null; closeDialog('confirmDialog'); if (!pending) return; try { await pending.action(); } catch (error) { toast(error.message, 'err'); } });
 
