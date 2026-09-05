@@ -1,6 +1,6 @@
 # Server Workbench 项目总览
 
-本项目保留 Node.js + FastAPI + 原生 ES Modules 双运行时，面向 Windows/PC 工具场景。Node 负责本地 HTTP、SSH、SFTP、HDFS 和 CDR 代理；FastAPI 负责话单内存模型。两者通过同源 `/cdr/` 代理连接，不迁移 React/Vite，也不改变 SSH、SFTP、HDFS、日志和话单源文件格式。
+本项目当前采用 Node.js + FastAPI + 原生 ES Modules 双运行时，面向 Windows/PC 工具场景。Node 负责本地 HTTP、SSH、SFTP、HDFS 和 CDR 代理；FastAPI 负责话单内存模型。两者通过同源 `/cdr/` 代理连接，当前保持 SSH、SFTP、HDFS、日志和话单源文件格式兼容。
 
 ## 运行结构
 
@@ -25,7 +25,7 @@
 - 主工作台保持稳定 PC 双栏：左侧服务器文件/HDFS 浏览，右侧日志和命令；连接状态与主要操作集中在顶栏，引导仅在空态出现。
 - CDR 以「文件与会话 → 记录浏览 → 批量修改/造数 → 导出」顺序组织，字段错误、加载/空/错误状态和影响数量均在原位反馈。
 
-移动端专用布局和深色模式不在本次验收边界；CSS 仅保留窄视口兜底，PC 缩放不应裁切主要操作。
+当前默认聚焦 PC 场景，移动端专用布局和深色模式不属于默认实现范围；CSS 仅保留窄视口兜底，PC 缩放不应裁切主要操作。
 
 ## 后端契约与性能
 
@@ -47,14 +47,6 @@
 
 ## 测试与限制
 
-```powershell
-npm install
-npm run check
-npm run test:node
-npm run test:python
-git diff --check
-```
-
 Node builtin tests 覆盖 shell 转义、危险删除、真实错误状态、日志分页；Python unittest 覆盖非法 NDJSON、混合类型、ID 生成、批量一致性、版本/容量/原子导出等。测试使用假数据和临时目录，不接触真实凭据。
 
-PC 浏览器验收应在 1024×768、1366×768、1440×900、1920×1080 及 125%/150%/200% 缩放检查：无页面横向溢出、键盘可达、对话框 Escape/焦点恢复、减弱动效、加载/空/错误/长内容状态和控制台无错误。真实 SSH/SFTP/HDFS smoke 需要用户提供本机 `config.js` 和已安装 `ssh2`，本次不代为连接，也不提交、推送、部署。
+浏览器验收按受影响流程和布局变化选择环境，规则见 [AGENTS.md](./AGENTS.md)。真实 SSH/SFTP/HDFS smoke 需要本机 `config.js` 和已安装 `ssh2`。

@@ -32,7 +32,7 @@
 server-workbench/
 ├─ start.bat                 # Windows 启动入口（PATH 查找运行时）
 ├─ config.example.js         # 无凭据配置样例
-├─ package.json / lock        # 可复现 Node 依赖和质量门禁
+├─ package.json / lock        # 可复现 Node 依赖和检查脚本
 ├─ shared/                   # 共享令牌、图标精灵、请求/DOM/对话框工具
 ├─ public/                   # PC 主工作台（原生 ES Modules）
 ├─ server/                   # Node HTTP、SSH、SFTP、HDFS、日志、CDR 代理
@@ -42,6 +42,8 @@ server-workbench/
 
 ## 质量检查
 
+按改动范围选择验证项，具体规则见 [AGENTS.md](./AGENTS.md)。常用命令如下：
+
 ```powershell
 npm run check
 npm run test:node
@@ -49,6 +51,6 @@ npm run test:python
 git diff --check
 ```
 
-测试不需要真实 SSH/SFTP/HDFS 或凭据；真实远端链路需在本机准备 `config.js` 和 `ssh2` 后另行 smoke。项目不在本次任务中提交、推送或部署。
+测试不需要真实 SSH/SFTP/HDFS 或凭据；真实远端链路需在本机准备 `config.js` 和 `ssh2` 后另行 smoke。
 
 更多说明见 [overview.md](./overview.md) 和 [cdr/README.md](./cdr/README.md)。
