@@ -6,6 +6,7 @@ const ssh = require('../../server/ssh');
 const sftp = require('../../server/sftp');
 const log = require('../../server/log');
 const hdfs = require('../../server/hdfs');
+const hbase = require('../../server/hbase');
 const { createServer, asRequestError, MAX_BODY_BYTES } = require('../../server/server');
 
 function request(server, method, path, body) {
@@ -44,6 +45,23 @@ test('HDFS operation errors keep actionable status and message', () => {
   const timeout = asRequestError(new Error('HDFS 上传超时（Hadoop 客户端冷启动较慢）'));
   assert.equal(timeout.status, 504); assert.equal(timeout.code, 'HDFS_TIMEOUT');
   assert.match(timeout.message, /冷启动/);
+});
+
+test('HBase scan keeps the requested limit and SSH truncation metadata', async () => {
+  const originalExec = ssh.execCommand;
+  const calls = [];
+  ssh.execCommand = async (command, timeout) => {
+    calls.push({ command, timeout });
+    return { code: 0, stdout: "scan 'ns:t', {LIMIT => 50}\nrow-1\n", stderr: '', truncated: true };
+  };
+  try {
+    const result = await hbase.hbaseScan('/ns:t', 50);
+    assert.equal(result.table, 'ns:t');
+    assert.equal(result.limit, 50);
+    assert.equal(result.truncated, true);
+    assert.match(result.text, /row-1/);
+    assert.match(calls[0].command, /hbase shell/);
+  } finally { ssh.execCommand = originalExec; }
 });
 
 test('HTTP errors have real status and normalized shape', async () => {

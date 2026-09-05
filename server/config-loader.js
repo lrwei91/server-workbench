@@ -34,6 +34,7 @@ function normalize(raw) {
     },
     cdr: { upstream: cdr.upstream || `http://${cdr.host || '127.0.0.1'}:${Number(cdr.port) || 8000}` },
     hdfsTimeoutMs: Number(value.hdfsTimeoutMs) || 90000,
+    hbaseTimeoutMs: Number(value.hbaseTimeoutMs) || 120000,
     logs: {
       dir: logs.dir || './logs',
       maxDays: Number(logs.maxDays) || 30,

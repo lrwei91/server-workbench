@@ -15,6 +15,7 @@ module.exports = {
     execMaxOutputBytes: 2 * 1024 * 1024,
   },
   hdfsTimeoutMs: 90000,
+  hbaseTimeoutMs: 120000,
   cdr: { upstream: 'http://127.0.0.1:8000' },
   logs: { dir: './logs', maxDays: 30, maxEntries: 10000 },
 };

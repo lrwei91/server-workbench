@@ -8,10 +8,11 @@ export class ApiError extends Error {
 
 function timeoutSignal(ms, signal) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), ms);
+  let timedOut = false;
+  const timer = setTimeout(() => { timedOut = true; controller.abort(); }, Math.max(0, Number(ms) || 30000));
   const forward = () => controller.abort();
   if (signal) { if (signal.aborted) controller.abort(); else signal.addEventListener('abort', forward, { once: true }); }
-  return { signal: controller.signal, dispose: () => { clearTimeout(timer); signal?.removeEventListener('abort', forward); } };
+  return { signal: controller.signal, isTimeout: () => timedOut, dispose: () => { clearTimeout(timer); signal?.removeEventListener('abort', forward); } };
 }
 
 export async function apiRequest(url, options = {}) {
@@ -28,7 +29,10 @@ export async function apiRequest(url, options = {}) {
     }
     return payload;
   } catch (error) {
-    if (error?.name === 'AbortError') throw new ApiError('请求已取消或超时', { code: 'REQUEST_ABORTED', retryable: true });
+    if (error?.name === 'AbortError') {
+      if (timed.isTimeout()) throw new ApiError('请求超时，请点击「重试」', { code: 'REQUEST_TIMEOUT', retryable: true });
+      throw new ApiError('请求已取消', { code: 'REQUEST_ABORTED', retryable: true });
+    }
     if (error instanceof ApiError) throw error;
     throw new ApiError(error?.message || '网络请求失败', { code: 'NETWORK_ERROR', retryable: true });
   } finally { timed.dispose(); }

@@ -20,9 +20,10 @@
 ## 前端架构
 
 - `shared/tokens.css` 是纯白工具覆盖：画布/表面白、黑墨层级、荧光黄主操作与选中、蓝色焦点、独立状态色，视觉旋钮按 4/3/6 控制密度、圆角和阴影。
-- `shared/ui.js` 提供统一请求错误模型、超时/取消、DOM 节点创建、状态播报、格式化和原生 `dialog` 焦点进入/恢复。
+- `shared/ui.js` 提供统一请求错误模型、可区分的超时/主动取消、DOM 节点创建、状态播报、格式化和原生 `dialog` 焦点进入/恢复。
 - `shared/icons.svg` 为图标精灵。主工作台和 CDR 前端均使用 `textContent`/节点构造渲染远端数据，不把文件名、路径、字段值拼入 `innerHTML`。
 - 主工作台保持稳定 PC 双栏：左侧服务器文件/HDFS 浏览，右侧日志和命令；连接状态与主要操作集中在顶栏，引导仅在空态出现。
+- 主工作台的三类资源列表在已加载数据上本地搜索/排序并保留收藏；HBase 查看窗口只读取指定行数的样本，查找和高亮不触发额外扫描。
 - CDR 以「文件与会话 → 记录浏览 → 批量修改/造数 → 导出」顺序组织，字段错误、加载/空/错误状态和影响数量均在原位反馈。
 
 当前默认聚焦 PC 场景，移动端专用布局和深色模式不属于默认实现范围；CSS 仅保留窄视口兜底，PC 缩放不应裁切主要操作。
@@ -34,6 +35,7 @@
 - 请求体限制 1 MiB，非法 JSON/未知字段返回真实 HTTP 状态和 `{ok:false,error:{code,message,retryable}}`。
 - `/api/exec` 是明确的高级自由命令入口；交互式命令和根目录递归强删拦截，删除类命令需 `confirmed:true`。所有参数化路径使用单引号 shell 转义。
 - `/api/sftp/list|preview|mkdir|touch|delete|download` 使用结构化 SFTP；删除区分 file/空 dir，根路径保护。
+- `/api/hdfs/list` 沿用后端一次重试，`/api/config` 将 HDFS 列表和 HBase 查询的实际执行时限下发给前端；`/api/hbase/scan` 保留原请求格式并返回 `truncated` 元数据。
 - 命令 stdout/stderr 共用 2 MiB 预算并返回 `truncated`；日志通过异步队列写 JSONL，过期清理每天最多一次，读取支持 `limit/offset`，默认 200 条。
 - 目录刷新、HDFS 刷新和自动刷新有 AbortController/代际门禁；页面隐藏时暂停，单个刷新请求不会重入。
 

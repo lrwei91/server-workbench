@@ -8,7 +8,7 @@
  * 说明：
  *   - HBase shell 输出带 SLF4J 启动日志、版本号、Took 耗时等杂讯，解析时只取
  *     header（NAMESPACE / TABLE）与 row(s) 之间的区域。
- *   - 扫描结果直接返回原始文本，不做复杂结构化（HBase shell 的表格式行/列/值/时间戳
+ *   - 扫描结果直接返回原始文本和输出截断标志，不做复杂结构化（HBase shell 的表格式行/列/值/时间戳
  *     混在一起，整段输出即可满足排障查看）。
  */
 'use strict';
@@ -27,7 +27,7 @@ async function hbaseExec(command) {
   const r = await ssh.execCommand(fullCmd, config.hbaseTimeoutMs || 120000);
   if (r.timedOut || r.code === 124) throw new Error('HBase shell 执行超时（JVM 冷启动较慢），请稍后重试');
   if (r.code !== 0) throw new Error('HBase shell 执行失败：' + (r.stderr || r.stdout || ('退出码 ' + r.code)));
-  return r.stdout || '';
+  return { text: r.stdout || '', truncated: Boolean(r.truncated) };
 }
 
 // 解析 list_namespace / list_namespace_tables 输出：
@@ -50,7 +50,7 @@ async function hbaseList(hbasePath) {
   const p = String(hbasePath || '/').trim() || '/';
   // 根路径：列出 namespace
   if (p === '/' || p === '') {
-    const out = await hbaseExec('list_namespace');
+    const { text: out } = await hbaseExec('list_namespace');
     const namespaces = parseList(out, 'NAMESPACE');
     return {
       path: '/',
@@ -60,7 +60,7 @@ async function hbaseList(hbasePath) {
   // /namespace 路径：列出该 namespace 下的表
   const ns = p.replace(/^\/+/, '').replace(/\/+$/, '').split('/')[0];
   if (!ns) throw new Error('HBase 路径格式应为 / 或 /namespace');
-  const out = await hbaseExec('list_namespace_tables ' + shellQuote(ns));
+  const { text: out } = await hbaseExec('list_namespace_tables ' + shellQuote(ns));
   const tables = parseList(out, 'TABLE');
   return {
     path: '/' + ns,
@@ -74,8 +74,8 @@ async function hbaseScan(tablePath, limit = 20) {
   if (parts.length !== 2 || !parts[0] || !parts[1]) throw new Error('扫描表路径格式应为 /namespace:table');
   const [ns, table] = parts;
   const capped = Math.min(Math.max(Number(limit) || 20, 1), 200);
-  const out = await hbaseExec('scan \'' + ns + ':' + table + '\', {LIMIT => ' + capped + '}');
-  return { table: ns + ':' + table, limit: capped, text: stripBanner(out) };
+  const result = await hbaseExec('scan \'' + ns + ':' + table + '\', {LIMIT => ' + capped + '}');
+  return { table: ns + ':' + table, limit: capped, text: stripBanner(result.text), truncated: result.truncated };
 }
 
 // 剥离 HBase shell 的启动 banner（HBase Shell 提示、Version、首个 Took 等），

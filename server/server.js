@@ -150,7 +150,17 @@ async function handle(req, res) {
     return sendJson(res, 200, { ok: true, date, ...result });
   }
   if (req.method === 'GET' && p === '/api/log/dates') return sendJson(res, 200, { ok: true, dates: await log.dates() });
-  if (req.method === 'GET' && p === '/api/config') return sendJson(res, 200, { ok: true, config: ssh.maskConfig(ssh.DEFAULT_CONFIG), configured: !config.isExample, errors: config.validate() });
+  if (req.method === 'GET' && p === '/api/config') {
+    const hdfsTimeoutMs = Math.max(1000, Number(config.hdfsTimeoutMs) || 90000);
+    const hbaseTimeoutMs = Math.max(1000, Number(config.hbaseTimeoutMs) || 120000);
+    return sendJson(res, 200, {
+      ok: true,
+      config: ssh.maskConfig(ssh.DEFAULT_CONFIG),
+      configured: !config.isExample,
+      errors: config.validate(),
+      timeouts: { hdfsListMs: hdfsTimeoutMs * 2 + 10000, hbaseScanMs: hbaseTimeoutMs + 10000 },
+    });
+  }
   if (req.method === 'GET' && p === '/api/status') return sendJson(res, 200, { ok: true, connected: Boolean(ssh.conn), conn: ssh.connInfo ? ssh.maskConfig(ssh.connInfo) : null, home: ssh.home || null });
   if (req.method === 'POST' && p === '/api/connect') {
     const body = await readBody(req); assertObject(body, ['host', 'port', 'username', 'password']);

@@ -1,12 +1,27 @@
 import { $, $$, announce, ApiError, createRequestGate, DialogController, el, formatBytes, getJson, postJson, setText } from '/shared/ui.js';
 
 const HDFS_UPLOAD_TIMEOUT = 200000;
+const DEFAULT_RESOURCE_TIMEOUTS = { filesListMs: 30000, hdfsListMs: 190000, hbaseScanMs: 130000 };
+const RESOURCE_META = {
+  files: { listId: 'fileList', searchId: 'filesSearch', matchId: 'filesMatch', sortId: 'filesSort', retryId: 'filesRetry', favoriteButtonId: 'filesFavoriteButton', label: '服务器文件' },
+  hdfs: { listId: 'hdfsList', searchId: 'hdfsSearch', matchId: 'hdfsMatch', sortId: 'hdfsSort', retryId: 'hdfsRetry', favoriteButtonId: 'hdfsFavoriteButton', label: 'HDFS' },
+  hbase: { listId: 'hbaseList', searchId: 'hbaseSearch', matchId: 'hbaseMatch', sortId: 'hbaseSort', retryId: 'hbaseRetry', favoriteButtonId: 'hbaseFavoriteButton', label: 'HBase' },
+};
+const FAVORITES_KEY = 'wb_favorites_v1';
+const FAVORITE_KIND_LABEL = { files: '服务器文件', hdfs: 'HDFS', hbase: 'HBase' };
+const resourceCollator = new Intl.Collator('zh-CN', { numeric: true, sensitivity: 'base' });
+function makeResourceState() { return { items: [], query: '', sortKey: 'name', sortDirection: 'asc', loading: false, startedAt: 0, progressTimer: null, error: '' }; }
 
 const state = {
   connected: false, config: null, home: '~', cwd: '~', hdfsCwd: localStorage.getItem('wb_hdfs_cwd') || '/apps', hbaseCwd: localStorage.getItem('wb_hbase_cwd') || '/',
   history: [], historyIndex: 0, sessionPassword: '', pendingConfirm: null, pendingName: null, pendingParam: null,
   gates: { files: createRequestGate(), hdfs: createRequestGate(), hbase: createRequestGate(), scan: createRequestGate() }, refreshBlocks: new Map(), statusTimer: null, statusRunning: false, pendingUpload: null, loaded: { files: false, hdfs: false, hbase: false },
-  annotations: {}, pendingAnnotationPath: '',
+  annotations: {}, pendingAnnotationPath: '', pendingAnnotationKind: '',
+  timeouts: { ...DEFAULT_RESOURCE_TIMEOUTS },
+  resources: { files: makeResourceState(), hdfs: makeResourceState(), hbase: makeResourceState() },
+  favorites: [],
+  pendingFavorite: null,
+  hbaseScan: { tablePath: '', limit: 20, rawText: '', displayText: '', truncated: false, loading: false, startedAt: 0, progressTimer: null, error: '', matchIndex: 0 },
 };
 const ANNOTATIONS_KEY = 'wb_annotations';
 // 业务侧默认备注字典：本地未自定义时展示；用户手动保存即覆盖（清空可置空字符串表示不使用默认）
@@ -190,10 +205,13 @@ const dialogs = new Map(['settingsDialog', 'commandsDialog', 'paramDialog', 'bil
 function openDialog(id, focus) {
   // 单 modal 约束：开新弹窗前先收起其它已打开的弹窗。否则两层 modal 叠加时，
   // 下层弹窗的「关闭」按钮点击会被上层 backdrop 截获，表现为「点击完全无反应」。
-  for (const [otherId, controller] of dialogs) { if (otherId !== id && controller.isOpen) controller.close(); }
+  for (const [otherId, controller] of dialogs) { if (otherId !== id && controller.isOpen) closeDialog(otherId); }
   dialogs.get(id)?.open(focus);
 }
-function closeDialog(id) { dialogs.get(id)?.close(); }
+function closeDialog(id) {
+  if (id === 'hbaseScanDialog') cancelHbaseScan();
+  dialogs.get(id)?.close();
+}
 // 关闭按钮统一走 document 级事件委托：即使按钮被动态重建/替换、或监听器因任何原因丢失，点击始终可被捕获
 document.addEventListener('click', (event) => {
   const button = event.target.closest?.('[data-dialog-close]');
@@ -204,6 +222,8 @@ document.addEventListener('click', (event) => {
 // 暴露到 window：便于同源 iframe（话单工具）与调试台通过 parent.closeDialog('cdrDialog') 联动关闭宿主弹窗
 window.openDialog = openDialog;
 window.closeDialog = closeDialog;
+
+document.getElementById('hbaseScanDialog')?.addEventListener('close', () => cancelHbaseScan());
 
 function icon(name, label = '') {
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -257,12 +277,218 @@ function pathJoin(dir, name) { return `${dir.replace(/\/+$/, '') || '/'}/${name}
 function storedConfig() { try { const value = JSON.parse(localStorage.getItem('wb_conn_cfg') || '{}'); return { host: value.host || '', port: value.port || 22, username: value.username || '' }; } catch (_) { return {}; } }
 function saveStoredConfig(value) { localStorage.setItem('wb_conn_cfg', JSON.stringify({ host: value.host, port: Number(value.port) || 22, username: value.username })); }
 
+function currentResourcePath(kind) { return kind === 'files' ? state.cwd : kind === 'hdfs' ? state.hdfsCwd : state.hbaseCwd; }
+function setCurrentResourcePath(kind, value) {
+  if (kind === 'files') state.cwd = value;
+  else if (kind === 'hdfs') { state.hdfsCwd = value; localStorage.setItem('wb_hdfs_cwd', value); }
+  else { state.hbaseCwd = value; localStorage.setItem('wb_hbase_cwd', value); }
+}
+function resourceState(kind) { return state.resources[kind]; }
+function resourceNode(kind) { return $(`#${RESOURCE_META[kind].listId}`); }
+function resourceStatusNode(kind) { return $(`#${kind}State`); }
+function clearResourceTimer(view) { if (view?.progressTimer) { clearInterval(view.progressTimer); view.progressTimer = null; } }
+
+function favoriteServerKey() {
+  const saved = storedConfig();
+  const configured = state.config || {};
+  const host = String((state.connected ? configured.host : configured.host || saved.host) || '').trim().toLowerCase();
+  const port = Number((state.connected ? configured.port : configured.port || saved.port) || 22);
+  const username = String((state.connected ? configured.username : configured.username || saved.username) || '').trim();
+  return host || username ? `${host}|${port}|${username}` : 'unconfigured';
+}
+function readFavoriteStore() {
+  try {
+    const value = JSON.parse(localStorage.getItem(FAVORITES_KEY) || '{}');
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  } catch (_) { return {}; }
+}
+function loadFavoritesForCurrentServer() {
+  const entries = readFavoriteStore()[favoriteServerKey()];
+  if (!Array.isArray(entries)) return [];
+  return entries.filter((item) => FAVORITE_KIND_LABEL[item?.kind] && typeof item.path === 'string' && item.path).map((item) => ({
+    kind: item.kind, path: item.path, label: typeof item.label === 'string' ? item.label : '', updatedAt: Number(item.updatedAt) || 0,
+  }));
+}
+function saveFavorites() {
+  const store = readFavoriteStore();
+  store[favoriteServerKey()] = state.favorites.map(({ kind, path, label, updatedAt }) => ({ kind, path, label, updatedAt }));
+  localStorage.setItem(FAVORITES_KEY, JSON.stringify(store));
+}
+function favoriteId(kind, path) { return `${kind}:${path}`; }
+function findFavorite(kind, path) { return state.favorites.find((item) => item.kind === kind && item.path === path) || null; }
+function favoriteDefaultLabel(kind, path) {
+  const value = String(path || '').replace(/\/+$/, '') || '/';
+  if (kind === 'hbase' && value.includes(':')) {
+    const tableName = value.slice(value.indexOf(':') + 1);
+    const alias = aliasTextFor(value, tableName);
+    if (alias) return splitAliasText(alias).label || tableName;
+    return tableName;
+  }
+  const alias = getAlias(value);
+  if (alias) return kind === 'hbase' ? splitAliasText(alias).label : alias;
+  if (kind === 'files' && (value === '~' || value === '/')) return '主目录';
+  const parts = value.split('/').filter(Boolean);
+  return parts.pop() || (kind === 'files' ? '主目录' : '/');
+}
+function isFavorite(kind, path) { return Boolean(findFavorite(kind, path)); }
+function renderFavorites() {
+  const list = $('#favoritesList');
+  if (!list) return;
+  setText($('#favoritesCount'), state.favorites.length ? `${state.favorites.length} 项` : '');
+  list.replaceChildren();
+  if (!state.favorites.length) { list.append(el('span', { class: 'favorite-empty', text: '收藏当前目录或 HBase 表后会显示在这里' })); return; }
+  state.favorites.forEach((favorite) => {
+    const label = favorite.label || favoriteDefaultLabel(favorite.kind, favorite.path);
+    const open = el('button', { class: 'favorite-open', type: 'button', text: `${FAVORITE_KIND_LABEL[favorite.kind]} · ${label}`, title: favorite.path, 'aria-label': `打开${FAVORITE_KIND_LABEL[favorite.kind]}：${favorite.path}` });
+    open.addEventListener('click', () => openFavorite(favorite));
+    const remove = el('button', { class: 'favorite-remove', type: 'button', text: '×', title: '取消收藏', 'aria-label': `取消收藏：${label}` });
+    remove.addEventListener('click', (event) => { event.stopPropagation(); removeFavorite(favorite.kind, favorite.path); });
+    list.append(el('span', { class: 'favorite-item' }, open, remove));
+  });
+}
+function updateFavoriteButtons() {
+  Object.entries(RESOURCE_META).forEach(([kind, meta]) => {
+    const button = $(`#${meta.favoriteButtonId}`);
+    if (!button) return;
+    const path = currentResourcePath(kind);
+    const table = kind === 'hbase' && path.includes(':');
+    const label = table ? '当前表' : '当前目录';
+    setText(button, `${isFavorite(kind, path) ? '★ 已收藏' : '☆ 收藏'}${label}`);
+    button.title = path;
+  });
+}
+function openFavoriteDialog(kind, path = currentResourcePath(kind)) {
+  if (!state.connected) { toast('请先连接服务器', 'err'); return; }
+  const value = String(path || '').trim();
+  if (!value) { toast('当前位置为空，无法收藏', 'err'); return; }
+  const existing = findFavorite(kind, value);
+  state.pendingFavorite = { kind, path: value };
+  setText($('#favoriteKind'), `${FAVORITE_KIND_LABEL[kind]} · ${value}`);
+  $('#favoritePath').value = value;
+  $('#favoriteLabel').value = existing?.label || favoriteDefaultLabel(kind, value);
+  $('#favoriteLabel').removeAttribute('aria-invalid');
+  setText($('#favoriteError'), '');
+  $('#btnFavoriteRemove').classList.toggle('hidden', !existing);
+  openDialog('favoriteDialog', $('#favoriteLabel'));
+}
+function removeFavorite(kind, path) {
+  const before = state.favorites.length;
+  state.favorites = state.favorites.filter((item) => !(item.kind === kind && item.path === path));
+  if (state.favorites.length === before) return;
+  saveFavorites(); renderFavorites(); updateFavoriteButtons();
+  if (state.pendingFavorite?.kind === kind && state.pendingFavorite?.path === path) { state.pendingFavorite = null; closeDialog('favoriteDialog'); }
+  toast('已取消收藏', 'ok');
+}
+function openFavorite(favorite) {
+  if (!state.connected) { toast('请先连接服务器', 'err'); return; }
+  const { kind, path } = favorite;
+  if (kind !== 'hbase') { switchTab(kind, { load: false }); void navigateResource(kind, path); return; }
+  switchTab('hbase', { load: false });
+  if (path.includes(':')) {
+    const namespace = path.replace(/^\/+/, '').split(':')[0];
+    navigateResource('hbase', `/${namespace}`);
+    void scanHbase(path);
+  } else navigateResource('hbase', path);
+}
+function startResourceLoading(kind) {
+  const view = resourceState(kind);
+  const meta = RESOURCE_META[kind];
+  clearResourceTimer(view);
+  view.loading = true; view.error = ''; view.startedAt = Date.now();
+  resourceNode(kind)?.setAttribute('aria-busy', 'true');
+  const update = () => {
+    const seconds = Math.max(0, Math.floor((Date.now() - view.startedAt) / 1000));
+    const message = `正在刷新 · 已等待 ${seconds} 秒`;
+    announce(resourceStatusNode(kind), message, 'info');
+    status(`${meta.label} · ${currentResourcePath(kind)} · ${message}`);
+  };
+  update();
+  view.progressTimer = setInterval(update, 1000);
+  if (!view.items.length) renderResourceView(kind);
+}
+function finishResourceLoading(kind, error = null) {
+  const view = resourceState(kind);
+  clearResourceTimer(view); view.loading = false; view.startedAt = 0; view.error = error?.message || '';
+  resourceNode(kind)?.setAttribute('aria-busy', 'false');
+  const retry = $(`#${RESOURCE_META[kind].retryId}`);
+  retry?.classList.toggle('hidden', !error);
+  announce(resourceStatusNode(kind), error?.message || '', error ? 'error' : 'success');
+}
+function resourceSearchText(item, kind) {
+  const path = item.path || pathJoin(currentResourcePath(kind), item.name || '');
+  return `${item.name || ''}\n${path}\n${rowAlias(item, kind, path)}`.toLocaleLowerCase('zh-CN');
+}
+function resourceSortValue(item, key) {
+  if (key === 'size') return Number.isFinite(Number(item.size)) ? Number(item.size) : 0;
+  if (key === 'mtime') {
+    const parsed = Date.parse(item.mtime || '');
+    return Number.isNaN(parsed) ? 0 : parsed;
+  }
+  return String(item.name || '');
+}
+function sortResourceItems(items, kind) {
+  const view = resourceState(kind);
+  const sorted = [...items];
+  const direction = view.sortDirection === 'desc' ? -1 : 1;
+  sorted.sort((a, b) => {
+    const dirs = Number(Boolean(b.isDir)) - Number(Boolean(a.isDir));
+    if (dirs) return dirs;
+    let comparison;
+    if (view.sortKey === 'name') comparison = resourceCollator.compare(resourceSortValue(a, 'name'), resourceSortValue(b, 'name'));
+    else comparison = resourceSortValue(a, view.sortKey) - resourceSortValue(b, view.sortKey);
+    if (!comparison) comparison = resourceCollator.compare(String(a.path || a.name || ''), String(b.path || b.name || ''));
+    return comparison * direction;
+  });
+  return sorted;
+}
+function renderResourceView(kind) {
+  const view = resourceState(kind);
+  const list = resourceNode(kind);
+  if (!list) return;
+  const query = view.query.trim().toLocaleLowerCase('zh-CN');
+  const filtered = view.items.filter((item) => !query || resourceSearchText(item, kind).includes(query));
+  setText($(`#${RESOURCE_META[kind].matchId}`), query ? `匹配 ${filtered.length} / ${view.items.length} 项` : `共 ${view.items.length} 项`);
+  if (view.loading && !view.items.length) { list.replaceChildren(el('div', { class: 'empty-tip', text: '正在读取目录…' })); return; }
+  if (view.error && !view.items.length) { list.replaceChildren(el('div', { class: 'empty-tip', text: view.error })); return; }
+  if (!view.items.length) { list.replaceChildren(el('div', { class: 'empty-tip', text: '该目录为空' })); return; }
+  if (!filtered.length) { list.replaceChildren(el('div', { class: 'empty-tip', text: '当前列表没有匹配项' })); return; }
+  list.replaceChildren(...sortResourceItems(filtered, kind).map((item) => resourceRow(item, kind)));
+  updateFavoriteButtons();
+}
+function resetResourceState(kind, { clearItems = true, clearSearch = true } = {}) {
+  const view = resourceState(kind);
+  clearResourceTimer(view); view.loading = false; view.error = ''; view.startedAt = 0;
+  state.gates[kind].cancel();
+  if (clearItems) { view.items = []; state.loaded[kind] = false; }
+  if (clearSearch) { view.query = ''; const input = $(`#${RESOURCE_META[kind].searchId}`); if (input) input.value = ''; }
+  resourceNode(kind)?.setAttribute('aria-busy', 'false');
+  $(`#${RESOURCE_META[kind].retryId}`)?.classList.add('hidden');
+  announce(resourceStatusNode(kind), '', 'info');
+}
+function navigateResource(kind, path) {
+  const value = String(path || '').trim() || (kind === 'files' ? state.home || '~' : '/');
+  setCurrentResourcePath(kind, value);
+  resetResourceState(kind, { clearItems: true, clearSearch: true });
+  if (kind === 'files') $('#pathInput').value = value;
+  if (kind === 'hdfs') $('#hdfsPathInput').value = value;
+  if (kind === 'hbase') $('#hbasePathInput').value = value;
+  renderResourceView(kind); updateFavoriteButtons();
+  return refreshResource(kind);
+}
+
 function setConnected(connected, cfg = null) {
   state.connected = connected; if (cfg) state.config = cfg;
   const dot = $('#statusDot'); dot.className = `status-dot ${connected ? 'on' : ''}`;
   setText($('#statusText'), connected ? `已连接 · ${state.config?.host || ''} · ${state.config?.username || ''}` : '未连接');
   const button = $('#btnConnect'); setText(button, connected ? '断开' : '连接'); button.classList.toggle('primary', !connected);
-  if (!connected) { $('#fileList').replaceChildren(el('div', { class: 'empty-tip', text: '尚未连接服务器\n请先点击右上角“连接”' })); $('#hdfsList').replaceChildren(el('div', { class: 'empty-tip', text: '尚未连接服务器' })); $('#hbaseList').replaceChildren(el('div', { class: 'empty-tip', text: '尚未连接服务器' })); state.loaded.files = false; state.loaded.hdfs = false; state.loaded.hbase = false; state.gates.files.cancel(); state.gates.hdfs.cancel(); state.gates.hbase.cancel(); stopRefreshBlocks(); }
+  if (connected) { state.favorites = loadFavoritesForCurrentServer(); renderFavorites(); updateFavoriteButtons(); return; }
+  ['files', 'hdfs', 'hbase'].forEach((kind) => { resetResourceState(kind); });
+  if (dialogs.get('hbaseScanDialog')?.isOpen) closeDialog('hbaseScanDialog');
+  cancelHbaseScan(); state.hbaseScan.rawText = ''; state.hbaseScan.displayText = ''; state.hbaseScan.truncated = false; state.hbaseScan.error = ''; state.hbaseScan.tablePath = '';
+  $('#fileList').replaceChildren(el('div', { class: 'empty-tip', text: '尚未连接服务器\n请先点击右上角“连接”' }));
+  $('#hdfsList').replaceChildren(el('div', { class: 'empty-tip', text: '尚未连接服务器' }));
+  $('#hbaseList').replaceChildren(el('div', { class: 'empty-tip', text: '尚未连接服务器' }));
+  renderFavorites(); updateFavoriteButtons(); stopRefreshBlocks();
 }
 
 function createLogBlock(command, { refreshable = false, buildCommand = null, historic = false } = {}) {
@@ -322,47 +548,128 @@ function renderBreadcrumbs(container, current, rootLabel, navigate) {
   parts.forEach((part) => { const sep = el('span', { class: 'sep', text: '/' }); built = rootLabel === '~' && built === '~' ? `~/${part}` : `${built}/${part}`; const target = built; container.append(sep, el('button', { type: 'button', text: part, on: { click: () => navigate(target) } })); });
 }
 function resourceRow(item, kind) {
-  const fullPath = item.path || pathJoin(kind === 'files' ? state.cwd : kind === 'hbase' ? state.hbaseCwd : state.hdfsCwd, item.name); const nameButton = el('button', { type: 'button', class: item.isDir ? 'dir' : '', text: `${item.name}${item.isDir ? '/' : ''}`, title: fullPath });
+  const fullPath = item.path || pathJoin(currentResourcePath(kind), item.name); const nameButton = el('button', { type: 'button', class: item.isDir ? 'dir' : '', text: `${item.name}${item.isDir ? '/' : ''}`, title: fullPath });
   const nameCell = el('div', { class: 'resource-name' }, icon(item.isDir ? 'folder' : 'file'), nameButton);
   const alias = rowAlias(item, kind, fullPath); if (alias) { const split = kind === 'hbase' && !item.isDir ? splitAliasText(alias) : null; const inlineLabel = split ? (split.status ? `${split.label}（${split.status}）` : split.label) : alias; nameCell.append(el('span', { class: 'dir-alias', text: `[${inlineLabel}]`, title: alias })); }
   const row = el('div', { class: 'resource-row' }, nameCell, el('span', { class: 'resource-size', text: item.isDir ? '—' : (kind === 'hbase' ? '表' : formatBytes(item.size)) }), el('span', { class: 'resource-date', text: item.mtime || '—' }), el('div', { class: 'resource-actions' }));
   const actions = row.querySelector('.resource-actions');
   if (kind === 'hbase') {
-    if (item.isDir) { const enter = el('button', { class: 'fact', type: 'button', text: '进入' }); enter.addEventListener('click', () => { state.hbaseCwd = fullPath; localStorage.setItem('wb_hbase_cwd', fullPath); refreshHbase(); }); actions.append(enter); const note = el('button', { class: 'fact', type: 'button', text: '备注' }); note.addEventListener('click', () => openAnnotationDialog(fullPath, rowAlias(item, kind, fullPath))); actions.append(note); }
-    else { const scan = el('button', { class: 'fact', type: 'button', text: '查看' }); scan.addEventListener('click', () => scanHbase(fullPath)); actions.append(scan); const note = el('button', { class: 'fact', type: 'button', text: '备注' }); note.addEventListener('click', () => openAnnotationDialog(fullPath, rowAlias(item, kind, fullPath))); actions.append(note); }
-    nameButton.addEventListener('dblclick', () => item.isDir ? (state.hbaseCwd = fullPath, localStorage.setItem('wb_hbase_cwd', fullPath), refreshHbase()) : scanHbase(fullPath));
+    if (item.isDir) { const enter = el('button', { class: 'fact', type: 'button', text: '进入' }); enter.addEventListener('click', () => navigateResource('hbase', fullPath)); actions.append(enter); const note = el('button', { class: 'fact', type: 'button', text: '备注' }); note.addEventListener('click', () => openAnnotationDialog(fullPath, rowAlias(item, kind, fullPath), kind)); actions.append(note); }
+    else {
+      const scan = el('button', { class: 'fact', type: 'button', text: '查看' }); scan.addEventListener('click', () => scanHbase(fullPath));
+      const note = el('button', { class: 'fact', type: 'button', text: '备注' }); note.addEventListener('click', () => openAnnotationDialog(fullPath, rowAlias(item, kind, fullPath), kind));
+      const favorite = el('button', { class: 'fact', type: 'button', text: isFavorite('hbase', fullPath) ? '★' : '☆', title: isFavorite('hbase', fullPath) ? '编辑收藏' : '收藏表', 'aria-label': isFavorite('hbase', fullPath) ? '编辑收藏' : '收藏表' }); favorite.addEventListener('click', () => openFavoriteDialog('hbase', fullPath));
+      actions.append(scan, note, favorite);
+    }
+    nameButton.addEventListener('dblclick', () => item.isDir ? navigateResource('hbase', fullPath) : scanHbase(fullPath));
     return row;
   }
-  if (item.isDir) { const enter = el('button', { class: 'fact', type: 'button', text: '进入' }); enter.addEventListener('click', () => kind === 'files' ? (state.cwd = fullPath, refreshFiles()) : (state.hdfsCwd = fullPath, localStorage.setItem('wb_hdfs_cwd', fullPath), refreshHdfs())); actions.append(enter); const note = el('button', { class: 'fact', type: 'button', text: '备注' }); note.addEventListener('click', () => openAnnotationDialog(fullPath, getAlias(fullPath))); actions.append(note); if (kind === 'files') { const remove = el('button', { class: 'fact danger', type: 'button', text: '删除' }); remove.addEventListener('click', () => confirmDelete(fullPath, 'dir')); actions.append(remove); } }
+  if (item.isDir) { const enter = el('button', { class: 'fact', type: 'button', text: '进入' }); enter.addEventListener('click', () => navigateResource(kind, fullPath)); const note = el('button', { class: 'fact', type: 'button', text: '备注' }); note.addEventListener('click', () => openAnnotationDialog(fullPath, getAlias(fullPath), kind)); actions.append(enter); actions.append(note); if (kind === 'files') { const remove = el('button', { class: 'fact danger', type: 'button', text: '删除' }); remove.addEventListener('click', () => confirmDelete(fullPath, 'dir')); actions.append(remove); } }
   else { const view = el('button', { class: 'fact', type: 'button', text: '查看' }); view.addEventListener('click', () => previewRemote(fullPath, kind)); const download = el('button', { class: 'fact', type: 'button', text: '下载' }); download.addEventListener('click', () => downloadRemote(fullPath, kind)); actions.append(view, download); if (kind === 'files') { const remove = el('button', { class: 'fact danger', type: 'button', text: '删除' }); remove.addEventListener('click', () => confirmDelete(fullPath, 'file')); const upload = el('button', { class: 'fact', type: 'button', text: '上传到 HDFS' }); upload.addEventListener('click', () => openUploadDialog(fullPath)); actions.append(remove, upload); } }
-  nameButton.addEventListener('dblclick', () => item.isDir ? (kind === 'files' ? (state.cwd = fullPath, refreshFiles()) : (state.hdfsCwd = fullPath, refreshHdfs())) : previewRemote(fullPath, kind)); return row;
+  nameButton.addEventListener('dblclick', () => item.isDir ? navigateResource(kind, fullPath) : previewRemote(fullPath, kind)); return row;
 }
-function renderResourceList(container, items, kind) { container.replaceChildren(); if (!items?.length) { container.append(el('div', { class: 'empty-tip', text: '该目录为空' })); return; } items.forEach((item) => container.append(resourceRow(item, kind))); }
+async function refreshResource(kind) {
+  if (!state.connected) return null;
+  const request = state.gates[kind].next();
+  const path = currentResourcePath(kind);
+  const meta = RESOURCE_META[kind];
+  startResourceLoading(kind);
+  try {
+    const result = kind === 'files'
+      ? await postJson('/api/sftp/list', { path }, { signal: request.signal, timeout: state.timeouts.filesListMs })
+      : kind === 'hdfs'
+        ? await postJson('/api/hdfs/list', { path }, { signal: request.signal, timeout: state.timeouts.hdfsListMs })
+        : await postJson('/api/hbase/list', { path }, { signal: request.signal, timeout: state.timeouts.hbaseScanMs });
+    if (!request.isCurrent()) return result;
+    const current = result.path || path;
+    setCurrentResourcePath(kind, current);
+    resourceState(kind).items = Array.isArray(result.items) ? result.items : [];
+    state.loaded[kind] = true;
+    if (kind === 'files') { $('#pathInput').value = current; renderBreadcrumbs($('#crumbs'), current, state.home || '~', (value) => navigateResource('files', value)); }
+    if (kind === 'hdfs') { $('#hdfsPathInput').value = current; renderBreadcrumbs($('#hdfsCrumbs'), current, '/', (value) => navigateResource('hdfs', value)); }
+    if (kind === 'hbase') { $('#hbasePathInput').value = current; renderBreadcrumbs($('#hbaseCrumbs'), current, '/', (value) => navigateResource('hbase', value)); }
+    finishResourceLoading(kind); renderResourceView(kind); updateFavoriteButtons();
+    status(`${meta.label} · ${resourceState(kind).items.length} 项`, 'success');
+    return result;
+  } catch (error) {
+    if (!request.isCurrent() || error.code === 'REQUEST_ABORTED') return null;
+    finishResourceLoading(kind, error); renderResourceView(kind); status(error.message, 'error');
+    return null;
+  }
+}
+function refreshFiles() { return refreshResource('files'); }
+function refreshHdfs() { return refreshResource('hdfs'); }
+function refreshHbase() { return refreshResource('hbase'); }
 
-async function refreshFiles() {
-  if (!state.connected) return; const request = state.gates.files.next(); $('#fileList').replaceChildren(el('div', { class: 'empty-tip', text: '正在读取目录…' })); status('正在读取服务器文件目录…');
-  try { const result = await postJson('/api/sftp/list', { path: state.cwd }, { signal: request.signal }); if (!request.isCurrent()) return; state.cwd = result.path || state.cwd; state.loaded.files = true; $('#pathInput').value = state.cwd; renderBreadcrumbs($('#crumbs'), state.cwd, state.home || '~', (value) => { state.cwd = value; refreshFiles(); }); renderResourceList($('#fileList'), result.items, 'files'); status(`${result.items?.length || 0} 项`, 'success'); }
-  catch (error) { if (error.code === 'REQUEST_ABORTED') return; $('#fileList').replaceChildren(el('div', { class: 'empty-tip', text: error.message })); status(error.message, 'error'); }
+function findTextMatches(text, query) {
+  const value = String(text || ''); const needle = String(query || '').trim().toLocaleLowerCase('zh-CN');
+  if (!needle) return [];
+  const haystack = value.toLocaleLowerCase('zh-CN'); const matches = []; let from = 0; let index;
+  while ((index = haystack.indexOf(needle, from)) >= 0) { matches.push(index); from = index + needle.length; }
+  return matches;
 }
-async function refreshHdfs() {
-  if (!state.connected) return; const request = state.gates.hdfs.next(); $('#hdfsList').replaceChildren(el('div', { class: 'empty-tip', text: '正在读取 HDFS 目录…' }));
-  try { const result = await postJson('/api/hdfs/list', { path: state.hdfsCwd }, { signal: request.signal }); if (!request.isCurrent()) return; state.hdfsCwd = result.path || state.hdfsCwd; state.loaded.hdfs = true; $('#hdfsPathInput').value = state.hdfsCwd; renderBreadcrumbs($('#hdfsCrumbs'), state.hdfsCwd, '/', (value) => { state.hdfsCwd = value; localStorage.setItem('wb_hdfs_cwd', value); refreshHdfs(); }); renderResourceList($('#hdfsList'), result.items, 'hdfs'); status(`${result.items?.length || 0} 项`, 'success'); }
-  catch (error) { if (error.code === 'REQUEST_ABORTED') return; $('#hdfsList').replaceChildren(el('div', { class: 'empty-tip', text: error.message })); status(error.message, 'error'); }
+function renderHighlightedText(node, text, query, activeIndex = 0) {
+  node.replaceChildren();
+  const value = String(text || ''); const matches = findTextMatches(value, query);
+  if (!value) { node.append(document.createTextNode('（无数据）')); return matches; }
+  if (!matches.length) { node.append(document.createTextNode(value)); return matches; }
+  const length = String(query || '').trim().length; let cursor = 0;
+  matches.forEach((start, index) => { if (start > cursor) node.append(document.createTextNode(value.slice(cursor, start))); node.append(el('mark', { class: index === activeIndex ? 'active-match' : '', text: value.slice(start, start + length) })); cursor = start + length; });
+  if (cursor < value.length) node.append(document.createTextNode(value.slice(cursor)));
+  return matches;
 }
-async function refreshHbase() {
-  if (!state.connected) return; const request = state.gates.hbase.next(); $('#hbaseList').replaceChildren(el('div', { class: 'empty-tip', text: '正在读取 HBase 命名空间…' }));
-  try { const result = await postJson('/api/hbase/list', { path: state.hbaseCwd }, { signal: request.signal }); if (!request.isCurrent()) return; state.hbaseCwd = result.path || state.hbaseCwd; state.loaded.hbase = true; $('#hbasePathInput').value = state.hbaseCwd; renderBreadcrumbs($('#hbaseCrumbs'), state.hbaseCwd, '/', (value) => { state.hbaseCwd = value; localStorage.setItem('wb_hbase_cwd', value); refreshHbase(); }); renderResourceList($('#hbaseList'), result.items, 'hbase'); status(`${result.items?.length || 0} 项`, 'success'); }
-  catch (error) { if (error.code === 'REQUEST_ABORTED') return; $('#hbaseList').replaceChildren(el('div', { class: 'empty-tip', text: error.message })); status(error.message, 'error'); }
+function renderHbaseScan() {
+  const scan = state.hbaseScan; const query = $('#hbaseScanSearch').value.trim(); const text = scan.displayText || '';
+  const matches = findTextMatches(text, query); scan.matchIndex = matches.length ? Math.min(scan.matchIndex, matches.length - 1) : 0;
+  if (!query) setText($('#hbaseScanMatch'), '仅查找当前样本');
+  else if (matches.length) setText($('#hbaseScanMatch'), `匹配 ${matches.length} 处 · 仅查找当前样本`);
+  else setText($('#hbaseScanMatch'), '当前样本中未找到');
+  $('#hbaseScanPrev').disabled = !matches.length; $('#hbaseScanNext').disabled = !matches.length;
+  if (scan.loading && !text) setText($('#hbaseScanText'), '正在读取…');
+  else renderHighlightedText($('#hbaseScanText'), text, query, scan.matchIndex);
+  setText($('#hbaseScanNotice'), scan.truncated ? '输出已截断；当前内容仅代表已加载样本，复制仍会保留原始输出。' : '仅查找当前样本；匹配数量按文字出现次数计算，复制按钮会保留原始输出。');
+  const stateText = scan.loading ? `正在读取 · 已等待 ${Math.floor(Math.max(0, Date.now() - scan.startedAt) / 1000)} 秒` : scan.error || (scan.tablePath ? `已加载，最多 ${scan.limit} 行` : '');
+  setText($('#hbaseScanState'), stateText);
+  $('#hbaseScanReload').disabled = scan.loading || !scan.tablePath; $('#hbaseScanLimit').disabled = scan.loading;
+  $('#hbaseScanRetry').classList.toggle('hidden', !scan.error || scan.loading);
+  setText($('#hbaseScanMeta'), scan.tablePath ? `${scan.tablePath.replace(/^\/+/, '')} · 最多 ${scan.limit} 行` : '');
 }
-async function scanHbase(tablePath) {
-  const request = state.gates.scan.next(); // 竞态防护：快速连点不同表时只保留最后一次结果
-  // 行内只显示短名，完整业务说明（括号内解释）移到查看弹窗展示
-  const tableName = String(tablePath).split(':').pop() || '';
-  const desc = aliasTextFor(tablePath, tableName);
-  const descLine = desc ? splitAliasText(desc).desc : '';
-  setText($('#hbaseScanTitle'), 'HBase 表查看'); setText($('#hbaseScanMeta'), tablePath); setText($('#hbaseScanDesc'), descLine ? `说明：${descLine}` : ''); setText($('#hbaseScanText'), '正在读取…'); openDialog('hbaseScanDialog');
-  try { const result = await postJson('/api/hbase/scan', { path: tablePath, limit: 20 }, { signal: request.signal }); if (!request.isCurrent()) return; setText($('#hbaseScanMeta'), `${result.table} · 最多 ${result.limit} 行`); setText($('#hbaseScanText'), prettifyJson(result.text) || '（无数据）'); }
-  catch (error) { if (error.code !== 'REQUEST_ABORTED') setText($('#hbaseScanText'), error.message); }
+function clearHbaseScanTimer() { if (state.hbaseScan.progressTimer) { clearInterval(state.hbaseScan.progressTimer); state.hbaseScan.progressTimer = null; } }
+function cancelHbaseScan() { clearHbaseScanTimer(); state.hbaseScan.loading = false; state.hbaseScan.startedAt = 0; state.gates.scan.cancel(); }
+function startHbaseScanLoading(tablePath, limit) {
+  const scan = state.hbaseScan; const sameTable = scan.tablePath === tablePath;
+  clearHbaseScanTimer(); scan.tablePath = tablePath; scan.limit = limit; scan.loading = true; scan.startedAt = Date.now(); scan.error = ''; scan.matchIndex = 0;
+  if (!sameTable) { scan.rawText = ''; scan.displayText = ''; scan.truncated = false; $('#hbaseScanSearch').value = ''; }
+  $('#hbaseScanLimit').value = String(limit); renderHbaseScan();
+  const update = () => { renderHbaseScan(); status(`HBase · ${tablePath} · 正在读取 · 已等待 ${Math.floor(Math.max(0, Date.now() - scan.startedAt) / 1000)} 秒`); };
+  update(); scan.progressTimer = setInterval(update, 1000);
+}
+function finishHbaseScan(error = null) { const scan = state.hbaseScan; clearHbaseScanTimer(); scan.loading = false; scan.startedAt = 0; scan.error = error?.message || ''; renderHbaseScan(); }
+async function loadHbaseSample(tablePath, limit) {
+  const request = state.gates.scan.next(); startHbaseScanLoading(tablePath, limit);
+  try {
+    const result = await postJson('/api/hbase/scan', { path: tablePath, limit }, { signal: request.signal, timeout: state.timeouts.hbaseScanMs });
+    if (!request.isCurrent()) return null;
+    const scan = state.hbaseScan; scan.tablePath = tablePath; scan.limit = Number(result.limit) || limit; scan.rawText = String(result.text || ''); scan.truncated = Boolean(result.truncated); scan.displayText = scan.rawText ? (scan.truncated ? scan.rawText : (prettifyJson(scan.rawText) || scan.rawText)) : '';
+    finishHbaseScan(); status(`HBase · ${tablePath} · 样本已加载`, 'success'); return result;
+  } catch (error) {
+    if (!request.isCurrent() || error.code === 'REQUEST_ABORTED') return null;
+    finishHbaseScan(error); status(error.message, 'error'); return null;
+  }
+}
+function scanHbase(tablePath) {
+  const value = String(tablePath || '').trim(); if (!value) return;
+  const sameTable = state.hbaseScan.tablePath === value;
+  const tableName = value.split(':').pop() || ''; const desc = aliasTextFor(value, tableName); const descLine = desc ? splitAliasText(desc).desc : '';
+  setText($('#hbaseScanTitle'), 'HBase 表查看'); setText($('#hbaseScanDesc'), descLine ? `说明：${descLine}` : '');
+  if (!sameTable) { state.hbaseScan.rawText = ''; state.hbaseScan.displayText = ''; state.hbaseScan.truncated = false; state.hbaseScan.error = ''; $('#hbaseScanSearch').value = ''; }
+  openDialog('hbaseScanDialog'); renderHbaseScan(); void loadHbaseSample(value, sameTable ? state.hbaseScan.limit : 20);
+}
+function moveHbaseScanMatch(delta) {
+  const scan = state.hbaseScan; const matches = findTextMatches(scan.displayText, $('#hbaseScanSearch').value.trim());
+  if (!matches.length) return;
+  scan.matchIndex = (scan.matchIndex + delta + matches.length) % matches.length; renderHbaseScan();
+  requestAnimationFrame(() => $('#hbaseScanText mark.active-match')?.scrollIntoView({ block: 'center', behavior: 'smooth' }));
 }
 async function previewRemote(remotePath, kind) {
   openDialog('previewDialog'); setText($('#previewTitle'), kind === 'hdfs' ? 'HDFS 文件预览' : '文件预览'); setText($('#previewMeta'), remotePath); setText($('#previewText'), '正在读取…');
@@ -389,10 +696,22 @@ async function uploadLocalFile(file) {
   }
 }
 function openUploadDialog(localPath) { state.pendingUpload = localPath; $('#uploadLocal').value = localPath; $('#uploadDir').value = state.hdfsCwd; $('#uploadDir').removeAttribute('aria-invalid'); setText($('#uploadError'), ''); openDialog('uploadDialog', $('#uploadDir')); }
-function openAnnotationDialog(path, currentAlias) { state.pendingAnnotationPath = path; $('#annotationPath').value = path; $('#annotationAlias').value = currentAlias || ''; $('#annotationAlias').removeAttribute('aria-invalid'); setText($('#annotationError'), ''); $('#btnAnnotationRemove').style.display = currentAlias ? '' : 'none'; openDialog('annotationDialog', $('#annotationAlias')); }
-$('#btnAnnotationSave').addEventListener('click', () => { const text = $('#annotationAlias').value.trim(); if (text.length > 40) { $('#annotationAlias').setAttribute('aria-invalid', 'true'); setText($('#annotationError'), '备注最多 40 个字符'); return; } const path = state.pendingAnnotationPath; if (!path) { setText($('#annotationError'), '路径为空'); return; } setAlias(path, text); closeDialog('annotationDialog'); toast(text ? `已保存备注：${text}` : '已清空备注', 'ok'); const kind = path.startsWith('/') ? (state.hbaseCwd.startsWith(path) || path === state.hbaseCwd ? 'hbase' : 'hdfs') : 'files'; if (kind === 'files' && state.loaded.files) refreshFiles(); else if (kind === 'hdfs' && state.loaded.hdfs) refreshHdfs(); else if (kind === 'hbase' && state.loaded.hbase) refreshHbase(); });
-$('#btnAnnotationRemove').addEventListener('click', () => { const path = state.pendingAnnotationPath; if (!path) return; removeAlias(path); closeDialog('annotationDialog'); toast('已删除备注', 'ok'); if (state.cwd === path || state.cwd.startsWith(path + '/') || state.cwd.startsWith(path)) refreshFiles(); if (state.hdfsCwd === path || state.hdfsCwd.startsWith(path + '/')) refreshHdfs(); if (state.hbaseCwd === path || state.hbaseCwd.startsWith(path + '/')) refreshHbase(); });
+function openAnnotationDialog(path, currentAlias, kind = '') { state.pendingAnnotationPath = path; state.pendingAnnotationKind = kind; $('#annotationPath').value = path; $('#annotationAlias').value = currentAlias || ''; $('#annotationAlias').removeAttribute('aria-invalid'); setText($('#annotationError'), ''); $('#btnAnnotationRemove').style.display = currentAlias ? '' : 'none'; openDialog('annotationDialog', $('#annotationAlias')); }
+function refreshAnnotationView() { const kind = state.pendingAnnotationKind; if (kind && state.loaded[kind]) renderResourceView(kind); renderFavorites(); updateFavoriteButtons(); state.pendingAnnotationPath = ''; state.pendingAnnotationKind = ''; }
+$('#btnAnnotationSave').addEventListener('click', () => { const text = $('#annotationAlias').value.trim(); if (text.length > 40) { $('#annotationAlias').setAttribute('aria-invalid', 'true'); setText($('#annotationError'), '备注最多 40 个字符'); return; } const path = state.pendingAnnotationPath; if (!path) { setText($('#annotationError'), '路径为空'); return; } setAlias(path, text); closeDialog('annotationDialog'); toast(text ? `已保存备注：${text}` : '已清空备注', 'ok'); refreshAnnotationView(); });
+$('#btnAnnotationRemove').addEventListener('click', () => { const path = state.pendingAnnotationPath; if (!path) return; removeAlias(path); closeDialog('annotationDialog'); toast('已删除备注', 'ok'); refreshAnnotationView(); });
 $('#annotationAlias').addEventListener('keydown', (event) => { if (event.key === 'Enter') { event.preventDefault(); $('#btnAnnotationSave').click(); } });
+$('#btnFavoriteSave').addEventListener('click', () => {
+  const pending = state.pendingFavorite; const label = $('#favoriteLabel').value.trim();
+  if (!pending) { setText($('#favoriteError'), '收藏位置为空'); return; }
+  if (label.length > 60) { $('#favoriteLabel').setAttribute('aria-invalid', 'true'); setText($('#favoriteError'), '显示名称最多 60 个字符'); return; }
+  $('#favoriteLabel').removeAttribute('aria-invalid');
+  const next = { ...pending, label, updatedAt: Date.now() };
+  state.favorites = [next, ...state.favorites.filter((item) => favoriteId(item.kind, item.path) !== favoriteId(next.kind, next.path))];
+  saveFavorites(); renderFavorites(); updateFavoriteButtons(); state.pendingFavorite = null; closeDialog('favoriteDialog'); toast('已保存收藏', 'ok');
+});
+$('#btnFavoriteRemove').addEventListener('click', () => { const pending = state.pendingFavorite; if (pending) removeFavorite(pending.kind, pending.path); });
+$('#favoriteLabel').addEventListener('keydown', (event) => { if (event.key === 'Enter') { event.preventDefault(); $('#btnFavoriteSave').click(); } });
 $('#btnUploadSubmit').addEventListener('click', async () => {
   const localPath = state.pendingUpload;
   const hdfsDir = $('#uploadDir').value.trim();
@@ -432,14 +751,26 @@ $('#btnBilling').addEventListener('click', () => { renderBilling(); openDialog('
 $('#btnCdr').addEventListener('click', () => { if (!$('#cdrFrame').getAttribute('src')) $('#cdrFrame').src = '/cdr/'; openDialog('cdrDialog'); });
 $('#billSearch').addEventListener('input', renderBilling); ['billSuffix', 'billMonth', 'billNs'].forEach((id) => $( `#${id}`).addEventListener('input', renderBilling));
 
-function switchTab(tab) { $$('.tab').forEach((button) => { const active = button.dataset.tab === tab; button.classList.toggle('active', active); button.setAttribute('aria-selected', String(active)); }); $('#filesPane').classList.toggle('hidden', tab !== 'files'); $('#hdfsPane').classList.toggle('hidden', tab !== 'hdfs'); $('#hbasePane').classList.toggle('hidden', tab !== 'hbase'); if (tab === 'hdfs' && state.connected && !state.loaded.hdfs) refreshHdfs(); if (tab === 'hbase' && state.connected && !state.loaded.hbase) refreshHbase(); }
+Object.keys(RESOURCE_META).forEach((kind) => {
+  const meta = RESOURCE_META[kind]; const view = resourceState(kind); const search = $(`#${meta.searchId}`); const sort = $(`#${meta.sortId}`);
+  search?.addEventListener('input', () => { view.query = search.value; renderResourceView(kind); });
+  sort?.addEventListener('change', () => { const [sortKey, sortDirection] = sort.value.split('-'); view.sortKey = sortKey; view.sortDirection = sortDirection; renderResourceView(kind); });
+  $(`#${meta.retryId}`)?.addEventListener('click', () => { void refreshResource(kind); });
+  $(`#${meta.favoriteButtonId}`)?.addEventListener('click', () => openFavoriteDialog(kind));
+});
+function switchTab(tab, { load = true } = {}) { $$('.tab').forEach((button) => { const active = button.dataset.tab === tab; button.classList.toggle('active', active); button.setAttribute('aria-selected', String(active)); }); $('#filesPane').classList.toggle('hidden', tab !== 'files'); $('#hdfsPane').classList.toggle('hidden', tab !== 'hdfs'); $('#hbasePane').classList.toggle('hidden', tab !== 'hbase'); if (load && tab === 'hdfs' && state.connected && !state.loaded.hdfs) void refreshHdfs(); if (load && tab === 'hbase' && state.connected && !state.loaded.hbase) void refreshHbase(); }
 $$('.tab').forEach((button) => button.addEventListener('click', () => switchTab(button.dataset.tab)));
-$('#btnRefresh').addEventListener('click', refreshFiles); $('#btnHdfsRefresh').addEventListener('click', refreshHdfs); $('#btnMkdir').addEventListener('click', () => state.connected ? openNameDialog('mkdir') : toast('请先连接服务器', 'err')); $('#btnTouch').addEventListener('click', () => state.connected ? openNameDialog('touch') : toast('请先连接服务器', 'err'));
+$('#btnRefresh').addEventListener('click', () => { void refreshFiles(); }); $('#btnHdfsRefresh').addEventListener('click', () => { void refreshHdfs(); }); $('#btnMkdir').addEventListener('click', () => state.connected ? openNameDialog('mkdir') : toast('请先连接服务器', 'err')); $('#btnTouch').addEventListener('click', () => state.connected ? openNameDialog('touch') : toast('请先连接服务器', 'err'));
 $('#btnUploadLocal').addEventListener('click', () => { if (!state.connected) { toast('请先连接服务器', 'err'); return; } const input = $('#localFileInput'); input.value = ''; input.click(); });
 $('#localFileInput').addEventListener('change', () => { const file = $('#localFileInput').files && $('#localFileInput').files[0]; if (!file) return; void uploadLocalFile(file); });
-$('#btnUp').addEventListener('click', () => { if (state.cwd === '~' || state.cwd === state.home) return; state.cwd = state.cwd.replace(/\/[^/]+\/?$/, '') || '/'; refreshFiles(); }); $('#btnHdfsUp').addEventListener('click', () => { if (state.hdfsCwd !== '/') { state.hdfsCwd = state.hdfsCwd.replace(/\/[^/]+\/?$/, '') || '/'; localStorage.setItem('wb_hdfs_cwd', state.hdfsCwd); refreshHdfs(); } });
-$('#btnHbaseRefresh').addEventListener('click', refreshHbase); $('#btnHbaseUp').addEventListener('click', () => { if (state.hbaseCwd !== '/') { state.hbaseCwd = '/'; localStorage.setItem('wb_hbase_cwd', '/'); refreshHbase(); } }); $('#btnHbaseGoto').addEventListener('click', () => { const value = $('#hbasePathInput').value.trim(); if (!value) return; if (value !== '/' && !/^\/[^/]+$/.test(value)) return toast('HBase 路径只能为 / 或 /namespace', 'err'); state.hbaseCwd = value; localStorage.setItem('wb_hbase_cwd', value); refreshHbase(); }); $('#hbasePathInput').addEventListener('keydown', (event) => { if (event.key === 'Enter') $('#btnHbaseGoto').click(); });
-$('#btnGoto').addEventListener('click', () => { const value = $('#pathInput').value.trim(); if (value) { state.cwd = value; refreshFiles(); } }); $('#pathInput').addEventListener('keydown', (event) => { if (event.key === 'Enter') $('#btnGoto').click(); }); $('#btnHdfsGoto').addEventListener('click', () => { const value = $('#hdfsPathInput').value.trim(); if (!value.startsWith('/')) return toast('HDFS 路径必须以 / 开头', 'err'); state.hdfsCwd = value; localStorage.setItem('wb_hdfs_cwd', value); refreshHdfs(); }); $('#hdfsPathInput').addEventListener('keydown', (event) => { if (event.key === 'Enter') $('#btnHdfsGoto').click(); }); $$('[data-hdfs-path]').forEach((button) => button.addEventListener('click', () => { state.hdfsCwd = button.dataset.hdfsPath; localStorage.setItem('wb_hdfs_cwd', state.hdfsCwd); switchTab('hdfs'); refreshHdfs(); }));
+$('#btnUp').addEventListener('click', () => { if (state.cwd === '~' || state.cwd === state.home) return; void navigateResource('files', state.cwd.replace(/\/[^/]+\/?$/, '') || '/'); }); $('#btnHdfsUp').addEventListener('click', () => { if (state.hdfsCwd !== '/') void navigateResource('hdfs', state.hdfsCwd.replace(/\/[^/]+\/?$/, '') || '/'); });
+$('#btnHbaseRefresh').addEventListener('click', () => { void refreshHbase(); }); $('#btnHbaseUp').addEventListener('click', () => { if (state.hbaseCwd !== '/') void navigateResource('hbase', '/'); }); $('#btnHbaseGoto').addEventListener('click', () => { const value = $('#hbasePathInput').value.trim(); if (!value) return; if (value !== '/' && !/^\/[^/]+$/.test(value)) return toast('HBase 路径只能为 / 或 /namespace', 'err'); void navigateResource('hbase', value); }); $('#hbasePathInput').addEventListener('keydown', (event) => { if (event.key === 'Enter') $('#btnHbaseGoto').click(); });
+$('#btnGoto').addEventListener('click', () => { const value = $('#pathInput').value.trim(); if (value) void navigateResource('files', value); }); $('#pathInput').addEventListener('keydown', (event) => { if (event.key === 'Enter') $('#btnGoto').click(); }); $('#btnHdfsGoto').addEventListener('click', () => { const value = $('#hdfsPathInput').value.trim(); if (!value.startsWith('/')) return toast('HDFS 路径必须以 / 开头', 'err'); void navigateResource('hdfs', value); }); $('#hdfsPathInput').addEventListener('keydown', (event) => { if (event.key === 'Enter') $('#btnHdfsGoto').click(); }); $$('[data-hdfs-path]').forEach((button) => button.addEventListener('click', () => { switchTab('hdfs', { load: false }); void navigateResource('hdfs', button.dataset.hdfsPath); }));
+$('#hbaseScanSearch').addEventListener('input', () => { state.hbaseScan.matchIndex = 0; renderHbaseScan(); });
+$('#hbaseScanPrev').addEventListener('click', () => moveHbaseScanMatch(-1)); $('#hbaseScanNext').addEventListener('click', () => moveHbaseScanMatch(1));
+$('#hbaseScanReload').addEventListener('click', () => { if (state.hbaseScan.tablePath) void loadHbaseSample(state.hbaseScan.tablePath, Number($('#hbaseScanLimit').value) || 20); });
+$('#hbaseScanRetry').addEventListener('click', () => { if (state.hbaseScan.tablePath) void loadHbaseSample(state.hbaseScan.tablePath, Number($('#hbaseScanLimit').value) || state.hbaseScan.limit); });
+$('#hbaseScanCopy').addEventListener('click', async () => { try { await navigator.clipboard.writeText(state.hbaseScan.rawText || ''); toast('已复制原始结果', 'ok'); } catch (_) { toast('复制失败，请手动选择文本', 'err'); } });
 
 async function submitCommand() { const input = $('#cmdInput'); const command = input.value.trim(); if (!command) return; state.history.push(command); state.historyIndex = state.history.length; input.value = ''; if (!state.connected) return toast('请先连接服务器', 'err'); if (/\b(?:rm|rmdir|del|erase|format)\b/i.test(command)) { setText($('#confirmTitle'), '确认执行删除命令'); setText($('#confirmMessage'), '删除类自由命令需要二次确认。'); setText($('#confirmTarget'), command); state.pendingConfirm = { action: () => runCommand(command, { confirmed: true }) }; openDialog('confirmDialog', $('#btnConfirmAction')); return; } runCommand(command); }
 $('#btnRun').addEventListener('click', submitCommand); $('#cmdInput').addEventListener('keydown', (event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); submitCommand(); } else if (event.key === 'ArrowUp') { event.preventDefault(); state.historyIndex = Math.max(0, state.historyIndex - 1); $('#cmdInput').value = state.history[state.historyIndex] || ''; } else if (event.key === 'ArrowDown') { event.preventDefault(); state.historyIndex = Math.min(state.history.length, state.historyIndex + 1); $('#cmdInput').value = state.history[state.historyIndex] || ''; } }); $$('#chips .chip').forEach((chip) => chip.addEventListener('click', () => { $('#cmdInput').value = chip.dataset.command; $('#cmdInput').focus(); }));
@@ -448,10 +779,16 @@ $('#btnClear').addEventListener('click', () => { stopRefreshBlock(); $('#logFlow
 async function checkStatus() { if (document.hidden || state.statusRunning) return; state.statusRunning = true; try { const result = await getJson('/api/status'); if (state.connected && !result.connected) { setConnected(false); toast('远程连接已断开', 'err'); } } catch (error) { if (state.connected) { setConnected(false); toast('本地桥接服务不可用', 'err'); } } finally { state.statusRunning = false; if ($('#autoStatus').checked && !document.hidden) state.statusTimer = setTimeout(checkStatus, 5000); } }
 $('#autoStatus').checked = true; $('#autoStatus').addEventListener('change', () => { clearTimeout(state.statusTimer); if ($('#autoStatus').checked) checkStatus(); }); document.addEventListener('visibilitychange', () => { if (document.hidden) { clearTimeout(state.statusTimer); state.refreshBlocks.forEach((block) => { clearTimeout(block.timer); block.timer = null; }); } else { if ($('#autoStatus').checked) checkStatus(); [...state.refreshBlocks.values()].forEach((block) => startRefreshBlock(block)); } });
 
-renderCommands(); renderBreadcrumbs($('#crumbs'), state.cwd, state.home, (value) => { state.cwd = value; refreshFiles(); }); renderBreadcrumbs($('#hdfsCrumbs'), state.hdfsCwd, '/', (value) => { state.hdfsCwd = value; refreshHdfs(); });
+renderCommands(); renderBreadcrumbs($('#crumbs'), state.cwd, state.home, (value) => navigateResource('files', value)); renderBreadcrumbs($('#hdfsCrumbs'), state.hdfsCwd, '/', (value) => navigateResource('hdfs', value)); renderBreadcrumbs($('#hbaseCrumbs'), state.hbaseCwd, '/', (value) => navigateResource('hbase', value)); renderFavorites(); updateFavoriteButtons();
 (async function init() {
   state.annotations = loadAnnotations();
-  try { const cfg = await getJson('/api/config'); state.config = cfg.config || storedConfig(); $('#cfgHost').value = state.config.host || ''; $('#cfgPort').value = state.config.port || 22; $('#cfgUser').value = state.config.username || ''; } catch (_) {}
+  try {
+    const cfg = await getJson('/api/config'); state.config = cfg.config || storedConfig();
+    const configuredTimeouts = cfg.timeouts || {};
+    state.timeouts = { filesListMs: DEFAULT_RESOURCE_TIMEOUTS.filesListMs, hdfsListMs: Number(configuredTimeouts.hdfsListMs) || DEFAULT_RESOURCE_TIMEOUTS.hdfsListMs, hbaseScanMs: Number(configuredTimeouts.hbaseScanMs) || DEFAULT_RESOURCE_TIMEOUTS.hbaseScanMs };
+    $('#cfgHost').value = state.config.host || ''; $('#cfgPort').value = state.config.port || 22; $('#cfgUser').value = state.config.username || '';
+    state.favorites = loadFavoritesForCurrentServer(); renderFavorites(); updateFavoriteButtons();
+  } catch (_) {}
   await restoreLogs();
   await restoreSession();
   checkStatus();
@@ -462,16 +799,16 @@ renderCommands(); renderBreadcrumbs($('#crumbs'), state.cwd, state.home, (value)
 async function restoreSession() {
   try {
     const saved = storedConfig();
-    const status = await getJson('/api/status');
-    if (status?.connected) {
+    const connectionStatus = await getJson('/api/status');
+    if (connectionStatus?.connected) {
       // 后端 SSH 会话仍在：直接恢复前端状态，不重新认证
-      const conn = status.conn || { host: saved.host, port: saved.port, username: saved.username };
+      const conn = connectionStatus.conn || { host: saved.host, port: saved.port, username: saved.username };
       setConnected(true, conn);
-      state.home = status.home || '~';
+      state.home = connectionStatus.home || '~';
       state.cwd = state.home;
       status(`已恢复连接 · ${conn.host || ''}`, 'success');
       toast(`已恢复 ${conn.host || ''} 的连接会话`, 'ok');
-      if ($('#filesPane') && !$('#filesPane').classList.contains('hidden')) refreshFiles();
+      if ($('#filesPane') && !$('#filesPane').classList.contains('hidden')) void refreshFiles();
       return;
     }
     // 后端无会话：尝试用已保存的主机/端口/用户名自动重连（密码由后端配置文件提供，不落浏览器）
@@ -480,7 +817,7 @@ async function restoreSession() {
         const result = await postJson('/api/connect', { host: saved.host, port: saved.port, username: saved.username });
         setConnected(true, result.config); state.home = result.home || '~'; state.cwd = state.home;
         toast(`已自动重连 ${result.config.host}`, 'ok');
-        if ($('#filesPane') && !$('#filesPane').classList.contains('hidden')) refreshFiles();
+        if ($('#filesPane') && !$('#filesPane').classList.contains('hidden')) void refreshFiles();
       } catch (_) { /* 自动重连失败（如密码未配置）：保持未连接，等待用户手动连接 */ }
     }
   } catch (_) { /* 桥接服务不可用：保持默认未连接状态 */ }
