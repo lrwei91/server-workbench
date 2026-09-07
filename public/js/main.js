@@ -185,7 +185,7 @@ const COMMANDS = [
   { group: '删除', label: '高级删除命令', command: 'rm ', desc: '仅用于已确认的自由命令；结构化文件删除请使用目录行操作。', danger: true },
 ];
 const BILLING = [
-  { title: '常用 HDFS 目录', rows: [['计费根目录', '/apps'], ['采预 prep', '/apps/bill_cnos_jf_test/prep'], ['批价 cal', '/apps/bill_cnos_jf/cal']] },
+  { title: '常用 HDFS 目录', rows: [['计费根目录', '/apps'], ['采预 prep（测试）', '/apps/bill_cnos_jf_test/prep'], ['批价 cal（测试）', '/apps/bill_cnos_jf_test/cal'], ['批价 cal（生产）', '/apps/bill_cnos_jf/cal']] },
   { title: '话单表映射', rows: [['语音话单', 'TICKET_CDMA_VOICE'], ['数据业务', 'TICKET_DATA'], ['异常单', 'TICKET_ABNORMAL'], ['不计费话单', 'TICKET_OTHER']] },
   { title: 'HBase 速查', rows: [['分发表', '{ns}:TICKET_DISPATCH_FILE'], ['量本主表', '{ns}:ACCUMULATION_{month}'], ['排重表', '{ns}:source_file_index_{month}']] },
   { title: '排障提示', rows: [['分发', 'STRA / MR'], ['处理批次', 'pro_ 前缀表示在途'], ['命名空间', '按当前环境填写并复制']] },
@@ -276,6 +276,25 @@ function prettifyJson(text) {
 function pathJoin(dir, name) { return `${dir.replace(/\/+$/, '') || '/'}/${name}`.replace(/^\/\//, '/'); }
 function storedConfig() { try { const value = JSON.parse(localStorage.getItem('wb_conn_cfg') || '{}'); return { host: value.host || '', port: value.port || 22, username: value.username || '' }; } catch (_) { return {}; } }
 function saveStoredConfig(value) { localStorage.setItem('wb_conn_cfg', JSON.stringify({ host: value.host, port: Number(value.port) || 22, username: value.username })); }
+
+function openSettingsDialog() {
+  const cfg = state.config || storedConfig();
+  $('#cfgHost').value = cfg.host || '';
+  $('#cfgPort').value = cfg.port || 22;
+  $('#cfgUser').value = cfg.username || '';
+  $('#cfgPass').value = '';
+  setText($('#settingsError'), '');
+  openDialog('settingsDialog', $('#cfgHost'));
+}
+function renderConsoleEmptyState() {
+  const empty = $('#emptyState');
+  if ($('#logFlow .log-block')) { empty.classList.add('hidden'); return; }
+  setText(empty.querySelector('strong'), state.connected ? '暂无执行日志' : '连接后从这里开始');
+  setText(empty.querySelector('span'), state.connected ? '可以浏览目录、使用快捷指令，或直接执行一条命令。' : '连接服务器后，可以浏览目录、使用快捷指令，或直接执行一条命令。');
+  $('#emptyConnect').classList.toggle('hidden', state.connected);
+  empty.classList.remove('hidden');
+}
+
 
 function currentResourcePath(kind) { return kind === 'files' ? state.cwd : kind === 'hdfs' ? state.hdfsCwd : state.hbaseCwd; }
 function setCurrentResourcePath(kind, value) {
@@ -489,6 +508,7 @@ function setConnected(connected, cfg = null) {
   $('#hdfsList').replaceChildren(el('div', { class: 'empty-tip', text: '尚未连接服务器' }));
   $('#hbaseList').replaceChildren(el('div', { class: 'empty-tip', text: '尚未连接服务器' }));
   renderFavorites(); updateFavoriteButtons(); stopRefreshBlocks();
+  renderConsoleEmptyState();
 }
 
 function createLogBlock(command, { refreshable = false, buildCommand = null, historic = false } = {}) {
@@ -536,7 +556,7 @@ async function runCommand(command, options = {}) {
 async function restoreLogs() {
   try {
     const date = $('#logDate').value; const query = date ? `?date=${encodeURIComponent(date)}&limit=200` : '?limit=200'; const result = await getJson(`/api/log/list${query}`);
-    if (!result.entries?.length) { $('#emptyState').classList.remove('hidden'); return; }
+    if (!result.entries?.length) { renderConsoleEmptyState(); return; }
     result.entries.forEach((entry) => { const block = createLogBlock(entry.cmd || '', { historic: true }); setText(block.node.querySelector('.log-time'), entry.t || ''); block.badge.className = /失败|退出码/.test(entry.badge || '') ? 'badge err' : 'badge ok'; setText(block.badge, entry.badge || '历史记录'); setText(block.output, prettifyJson(entry.out) || ''); });
     toast(`已恢复最近 ${result.entries.length} 条日志`, 'ok');
   } catch (_) {}
@@ -742,10 +762,10 @@ $('#btnParamSubmit').addEventListener('click', () => { const item = state.pendin
 function renderBilling() { const root = $('#billingContent'); root.replaceChildren(); const search = $('#billSearch').value.trim().toLowerCase(); const suffix = $('#billSuffix').value.trim() || '597_2606'; const month = $('#billMonth').value.trim() || '202410'; const ns = $('#billNs').value.trim() || 'ns_aibcp_dev'; BILLING.forEach((card) => { const rows = card.rows.map(([label, value]) => [label, value.replace('{ns}', ns).replace('{month}', month)]).filter(([label, value]) => !search || `${label}${value}`.toLowerCase().includes(search)); if (!rows.length) return; const section = el('section', { class: 'billing-card' }, el('h3', { text: card.title })); rows.forEach(([label, value]) => { const code = el('code', { text: value, title: value }); const copy = el('button', { class: 'fact', type: 'button', text: '复制' }); copy.addEventListener('click', async () => { try { await navigator.clipboard.writeText(value); toast('已复制', 'ok'); } catch (_) { toast('复制失败', 'err'); } }); section.append(el('div', { class: 'billing-row' }, el('span', { text: label }), code, copy)); }); root.append(section); }); }
 
 async function doConnect(overrides = {}) { const saved = storedConfig(); const body = { ...saved, ...overrides }; if (state.sessionPassword) body.password = state.sessionPassword; $('#btnConnect').disabled = true; setText($('#statusText'), '正在连接…'); try { const result = await postJson('/api/connect', body); setConnected(true, result.config); state.home = result.home || '~'; state.cwd = state.home; saveStoredConfig({ ...body, ...result.config }); toast(`已连接 ${result.config.host}`, 'ok'); await refreshFiles(); } catch (error) { setConnected(false); toast(error.message || '连接失败', 'err'); } finally { $('#btnConnect').disabled = false; } }
-$('#btnConnect').addEventListener('click', async () => { if (state.connected) { try { await postJson('/api/disconnect', {}); } finally { setConnected(false); toast('已断开连接'); } } else { const cfg = state.config || storedConfig(); $('#cfgHost').value = cfg.host || ''; $('#cfgPort').value = cfg.port || 22; $('#cfgUser').value = cfg.username || ''; $('#cfgPass').value = ''; setText($('#settingsError'), ''); openDialog('settingsDialog', $('#cfgHost')); } });
+$('#btnConnect').addEventListener('click', async () => { if (state.connected) { try { await postJson('/api/disconnect', {}); } finally { setConnected(false); toast('已断开连接'); } } else { openSettingsDialog(); } });
 $('#btnSaveCfg').addEventListener('click', () => { const host = $('#cfgHost').value.trim(); const portValue = $('#cfgPort').value.trim(); const port = Number(portValue); const username = $('#cfgUser').value.trim(); const invalid = !host || !username || !portValue || !Number.isInteger(port) || port < 1 || port > 65535; ['cfgHost', 'cfgPort', 'cfgUser'].forEach((id) => document.getElementById(id)?.toggleAttribute('aria-invalid', invalid)); if (invalid) { setText($('#settingsError'), '服务器地址、端口和用户名必须填写正确'); return; } ['cfgHost', 'cfgPort', 'cfgUser'].forEach((id) => document.getElementById(id)?.removeAttribute('aria-invalid')); state.sessionPassword = $('#cfgPass').value; saveStoredConfig({ host, port, username }); closeDialog('settingsDialog'); void doConnect({ host, port, username }); });
-$('#emptyConnect').addEventListener('click', () => $('#btnConnect').click());
-$('#btnSettings').addEventListener('click', () => { const cfg = state.config || storedConfig(); $('#cfgHost').value = cfg.host || ''; $('#cfgPort').value = cfg.port || 22; $('#cfgUser').value = cfg.username || ''; $('#cfgPass').value = ''; setText($('#settingsError'), ''); openDialog('settingsDialog', $('#cfgHost')); });
+$('#emptyConnect').addEventListener('click', openSettingsDialog);
+$('#btnSettings').addEventListener('click', openSettingsDialog);
 $('#btnCmds').addEventListener('click', () => { renderCommands(); openDialog('commandsDialog'); });
 $('#btnBilling').addEventListener('click', () => { renderBilling(); openDialog('billingDialog', $('#billSearch')); });
 $('#btnCdr').addEventListener('click', () => { if (!$('#cdrFrame').getAttribute('src')) $('#cdrFrame').src = '/cdr/'; openDialog('cdrDialog'); });
@@ -774,7 +794,7 @@ $('#hbaseScanCopy').addEventListener('click', async () => { try { await navigato
 
 async function submitCommand() { const input = $('#cmdInput'); const command = input.value.trim(); if (!command) return; state.history.push(command); state.historyIndex = state.history.length; input.value = ''; if (!state.connected) return toast('请先连接服务器', 'err'); if (/\b(?:rm|rmdir|del|erase|format)\b/i.test(command)) { setText($('#confirmTitle'), '确认执行删除命令'); setText($('#confirmMessage'), '删除类自由命令需要二次确认。'); setText($('#confirmTarget'), command); state.pendingConfirm = { action: () => runCommand(command, { confirmed: true }) }; openDialog('confirmDialog', $('#btnConfirmAction')); return; } runCommand(command); }
 $('#btnRun').addEventListener('click', submitCommand); $('#cmdInput').addEventListener('keydown', (event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); submitCommand(); } else if (event.key === 'ArrowUp') { event.preventDefault(); state.historyIndex = Math.max(0, state.historyIndex - 1); $('#cmdInput').value = state.history[state.historyIndex] || ''; } else if (event.key === 'ArrowDown') { event.preventDefault(); state.historyIndex = Math.min(state.history.length, state.historyIndex + 1); $('#cmdInput').value = state.history[state.historyIndex] || ''; } }); $$('#chips .chip').forEach((chip) => chip.addEventListener('click', () => { $('#cmdInput').value = chip.dataset.command; $('#cmdInput').focus(); }));
-$('#btnClear').addEventListener('click', () => { stopRefreshBlock(); $('#logFlow').replaceChildren(); $('#emptyState').classList.remove('hidden'); }); $('#btnExport').addEventListener('click', () => { const blocks = $$('#logFlow .log-block'); if (!blocks.length) return toast('暂无日志可导出'); const lines = ['# Server Workbench · 会话日志', `# 导出时间：${new Date().toLocaleString('zh-CN')}`, '']; blocks.forEach((block) => lines.push(`──── [${block.querySelector('.log-time')?.textContent}] ${block.querySelector('.log-cmd')?.textContent}（${block.querySelector('.badge')?.textContent}）`, block.querySelector('.log-body')?.textContent || '', '')); const blob = new Blob([lines.join('\n')], { type: 'text/plain;charset=utf-8' }); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'server-workbench-log.txt'; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000); }); $('#btnLogReload').addEventListener('click', () => { $('#logFlow').replaceChildren(); restoreLogs(); }); $('#logDate').valueAsDate = new Date();
+$('#btnClear').addEventListener('click', () => { stopRefreshBlock(); $('#logFlow').replaceChildren(); renderConsoleEmptyState(); }); $('#btnExport').addEventListener('click', () => { const blocks = $$('#logFlow .log-block'); if (!blocks.length) return toast('暂无日志可导出'); const lines = ['# Server Workbench · 会话日志', `# 导出时间：${new Date().toLocaleString('zh-CN')}`, '']; blocks.forEach((block) => lines.push(`──── [${block.querySelector('.log-time')?.textContent}] ${block.querySelector('.log-cmd')?.textContent}（${block.querySelector('.badge')?.textContent}）`, block.querySelector('.log-body')?.textContent || '', '')); const blob = new Blob([lines.join('\n')], { type: 'text/plain;charset=utf-8' }); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'server-workbench-log.txt'; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000); }); $('#btnLogReload').addEventListener('click', () => { $('#logFlow').replaceChildren(); restoreLogs(); }); $('#logDate').valueAsDate = new Date();
 
 async function checkStatus() { if (document.hidden || state.statusRunning) return; state.statusRunning = true; try { const result = await getJson('/api/status'); if (state.connected && !result.connected) { setConnected(false); toast('远程连接已断开', 'err'); } } catch (error) { if (state.connected) { setConnected(false); toast('本地桥接服务不可用', 'err'); } } finally { state.statusRunning = false; if ($('#autoStatus').checked && !document.hidden) state.statusTimer = setTimeout(checkStatus, 5000); } }
 $('#autoStatus').checked = true; $('#autoStatus').addEventListener('change', () => { clearTimeout(state.statusTimer); if ($('#autoStatus').checked) checkStatus(); }); document.addEventListener('visibilitychange', () => { if (document.hidden) { clearTimeout(state.statusTimer); state.refreshBlocks.forEach((block) => { clearTimeout(block.timer); block.timer = null; }); } else { if ($('#autoStatus').checked) checkStatus(); [...state.refreshBlocks.values()].forEach((block) => startRefreshBlock(block)); } });

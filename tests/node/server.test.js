@@ -1,5 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 const http = require('node:http');
 const { EventEmitter } = require('node:events');
 const ssh = require('../../server/ssh');
@@ -128,4 +130,18 @@ test('log queue writes asynchronously and paginates newest entries', async () =>
   const date = log.today(); await log.append({ t: '00:00:01', cmd: 'test-node', badge: '成功', out: 'safe output' }, date);
   const result = await log.list(date, { limit: 1 });
   assert.equal(result.entries.length, 1); assert.equal(result.entries[0].cmd, 'test-node'); assert.equal(result.total >= 1, true); assert.equal(typeof result.hasMore, 'boolean');
+});
+
+test('connected console empty state does not reuse the disconnect action', () => {
+  const source = fs.readFileSync(path.join(__dirname, '../../public/js/main.js'), 'utf8');
+  assert.match(source, /function renderConsoleEmptyState\(\)[\s\S]*?state\.connected \? '暂无执行日志'/);
+  assert.match(source, /function setConnected\([\s\S]*?renderConsoleEmptyState\(\);\s*\n}/);
+  assert.match(source, /\$\('#emptyConnect'\)\.addEventListener\('click', openSettingsDialog\)/);
+  assert.doesNotMatch(source, /\$\('#emptyConnect'\)[^\n]*btnConnect[^\n]*click/);
+});
+
+test('HDFS quick paths distinguish test and production rating directories', () => {
+  const html = fs.readFileSync(path.join(__dirname, '../../public/index.html'), 'utf8');
+  assert.match(html, /data-hdfs-path="\/apps\/bill_cnos_jf_test\/cal">批价 cal（测试）/);
+  assert.match(html, /data-hdfs-path="\/apps\/bill_cnos_jf\/cal">批价 cal（生产）/);
 });
