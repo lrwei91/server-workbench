@@ -39,6 +39,8 @@ async function hdfsList(hdfsPath) {
   // 热启动仅 2~3s。因此：超时放宽到 90s，并在超时/失败时自动重试一次（此时进程已热）。
   const safePath = String(hdfsPath || '/').trim();
   if (!safePath.startsWith('/')) throw new Error('HDFS 路径必须以 / 开头');
+  // 连接建立后可能仍在预热 Hadoop 客户端；先复用这次冷启动，避免与真实列表并发争抢 SSH/HDFS 资源。
+  if (warmupPromise) await warmupPromise;
   let r = await ssh.execCommand('hadoop fs -ls ' + shellQuote(safePath), config.hdfsTimeoutMs || 90000);
   if (r.timedOut || (r.code !== 0 && !(r.stdout || '').trim())) {
     // 冷启动超时或偶发失败：重试一次，进程已热，通常秒回
@@ -46,7 +48,7 @@ async function hdfsList(hdfsPath) {
   }
   const out = (r.stdout || '');
   const err = (r.stderr || '');
-  if (r.code !== 0 && !out.trim()) {
+  if (r.code !== 0) {
     if (/No such file or directory/i.test(err) || /No such file or directory/i.test(out)) {
       throw new Error('HDFS 上不存在该路径：' + safePath + '（注意与本地磁盘路径是两回事）');
     }

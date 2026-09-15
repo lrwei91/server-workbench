@@ -45,6 +45,7 @@ function asRequestError(error) {
   if (/^HDFS 目标已存在同名文件：/i.test(raw)) return new RequestError(409, 'HDFS_TARGET_EXISTS', raw, false);
   if (/^HDFS 上不存在该路径：|^本地文件不存在或 HDFS 目标目录不存在：/i.test(raw)) return new RequestError(404, 'HDFS_PATH_NOT_FOUND', raw, false);
   if (/^HDFS (?:上传|列目录)失败：/i.test(raw)) return new RequestError(502, 'HDFS_OPERATION_FAILED', raw, true);
+  if (/^(?:HBase .+包含不支持的字符|HBase 路径格式|扫描表路径格式)/i.test(raw)) return new RequestError(400, 'HBASE_INVALID_PATH', raw, false);
   if (/SFTP|SSH|hadoop|ECONN|EHOST|ENET|channel/i.test(raw)) return new RequestError(502, 'REMOTE_ERROR', '远端服务请求失败，请检查连接后重试', true);
   return new RequestError(500, 'INTERNAL_ERROR', '服务器内部错误，请稍后重试', true);
 }
@@ -115,12 +116,23 @@ function contentType(file) {
   if (file.endsWith('.js')) return 'application/javascript; charset=utf-8';
   return 'application/octet-stream';
 }
-function staticFile(res, base, relative) {
+async function staticFile(res, base, relative) {
   const resolved = path.resolve(base, relative);
   if (resolved !== base && !resolved.startsWith(base + path.sep)) return sendJson(res, 403, errorBody(new RequestError(403, 'FORBIDDEN', '资源路径不合法')));
-  if (!fs.existsSync(resolved) || !fs.statSync(resolved).isFile()) return sendJson(res, 404, errorBody(new RequestError(404, 'NOT_FOUND', '资源不存在')));
+  let file;
+  try {
+    file = await fs.promises.open(resolved, 'r');
+    if (!(await file.stat()).isFile()) {
+      await file.close();
+      return sendJson(res, 404, errorBody(new RequestError(404, 'NOT_FOUND', '资源不存在')));
+    }
+  } catch (error) {
+    if (file) await file.close();
+    if (error.code === 'ENOENT' || error.code === 'ENOTDIR' || error.code === 'EISDIR') return sendJson(res, 404, errorBody(new RequestError(404, 'NOT_FOUND', '资源不存在')));
+    throw error;
+  }
   res.writeHead(200, { 'Content-Type': contentType(resolved), 'Cache-Control': 'no-cache' });
-  pipeline(fs.createReadStream(resolved), res, () => {});
+  pipeline(file.createReadStream(), res, () => {});
 }
 
 async function handle(req, res) {
@@ -244,11 +256,12 @@ async function handle(req, res) {
   }
   if (req.method === 'POST' && p === '/api/hbase/list') {
     const body = await readBody(req); assertObject(body, ['path']); requireConnected(); const target = String(body.path || '/').trim() || '/';
-    if (target !== '/' && !/^\/[^\\/]+$/.test(target)) throw new RequestError(400, 'INVALID_INPUT', 'HBase 路径只能为 / 或 /namespace');
+    if (target !== '/' && !/^\/[A-Za-z0-9_][A-Za-z0-9_.-]*$/.test(target)) throw new RequestError(400, 'INVALID_INPUT', 'HBase 路径只能为 / 或 /namespace');
     const result = await hbase.hbaseList(target); return sendJson(res, 200, { ok: true, path: result.path, items: result.items });
   }
   if (req.method === 'POST' && p === '/api/hbase/scan') {
     const body = await readBody(req); assertObject(body, ['path', 'limit']); requireConnected(); const target = requireString(body.path, 'path');
+    if (!/^\/[A-Za-z0-9_][A-Za-z0-9_.-]*:[A-Za-z0-9_][A-Za-z0-9_.-]*$/.test(target)) throw new RequestError(400, 'INVALID_INPUT', 'HBase 表路径必须为 /namespace:table');
     const limit = Math.min(Math.max(Number(body.limit) || 20, 1), 200); const result = await hbase.hbaseScan(target, limit); return sendJson(res, 200, { ok: true, ...result });
   }
   return sendError(res, new RequestError(404, 'NOT_FOUND', `接口不存在: ${p}`));

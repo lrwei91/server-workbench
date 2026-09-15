@@ -128,10 +128,6 @@ def validate_time(field, value):
     return True
 
 
-def _norm(v):
-    return v
-
-
 def _cmp(a, b):
     try:
         if isinstance(a, str) and isinstance(b, str):
@@ -172,7 +168,7 @@ def _match(rec, flt):
         if op == "between":
             return _cmp(rv, val[0]) >= 0 and _cmp(rv, val[1]) <= 0
         if op == "in":
-            return _norm(rv) in [_norm(x) for x in val]
+            return any(rv == x for x in val)
     except (TypeError, ValueError, IndexError):
         return False
     return False
@@ -444,7 +440,9 @@ def get_records(page=1, page_size=100, biz_type=None, filters=None):
             return False
         return all(_match(r, flt) for flt in filters)
 
-    idxs = [i for i, r in enumerate(_session.records) if keep(r)]
+    # Unfiltered browsing needs only a page slice, not a full scan/index allocation.
+    idxs = (range(len(_session.records)) if biz_type is None and not filters
+            else [i for i, r in enumerate(_session.records) if keep(r)])
     total = len(idxs)
     pages = max(1, (total + page_size - 1) // page_size)
     page = max(1, min(int(page), pages))

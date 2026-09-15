@@ -45,6 +45,8 @@ server-workbench/
 
 按改动范围选择验证项，具体规则见 [AGENTS.md](./AGENTS.md)。常用命令如下：
 
+首次运行 Python 测试前，执行 `python -m pip install -r cdr/requirements-dev.txt` 安装测试依赖；测试与语法检查统一使用 PATH 中的 `python`。
+
 ```powershell
 npm run check
 npm run test:node

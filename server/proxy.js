@@ -2,6 +2,7 @@
 'use strict';
 
 const http = require('http');
+const https = require('https');
 const config = require('./config-loader');
 
 const upstreamUrl = new URL(config.cdr.upstream || 'http://127.0.0.1:8000');
@@ -17,7 +18,8 @@ function proxyToCdr(req, res, targetPath) {
   const destPath = targetPath + (parsed.search || '');
   const headers = { host: `${CDR_UPSTREAM.host}:${CDR_UPSTREAM.port}`, accept: req.headers.accept || '*/*' };
   for (const key of ['content-type', 'content-length', 'if-none-match', 'if-modified-since']) if (req.headers[key]) headers[key] = req.headers[key];
-  const request = http.request({ host: CDR_UPSTREAM.host, port: CDR_UPSTREAM.port, path: destPath, method: req.method, headers, timeout: 30000 }, (upstreamRes) => {
+  const transport = CDR_UPSTREAM.protocol === 'https:' ? https : http;
+  const request = transport.request({ host: CDR_UPSTREAM.host, port: CDR_UPSTREAM.port, path: destPath, method: req.method, headers, timeout: 30000 }, (upstreamRes) => {
     const responseHeaders = { 'Cache-Control': 'no-store' };
     for (const key of ['content-type', 'content-length', 'content-disposition', 'etag']) if (upstreamRes.headers[key]) responseHeaders[key] = upstreamRes.headers[key];
     res.writeHead(upstreamRes.statusCode || 502, responseHeaders);

@@ -98,7 +98,8 @@ function execCommand(command, timeoutMs) {
     if (!active) return reject(new Error('尚未连接服务器：请先点击右上角【连接】按钮'));
     if (FORBIDDEN_RE.test(cmd)) return reject(new Error('已拦截：不允许执行针对根目录的递归强制删除（rm -rf /）'));
     if (INTERACTIVE_RE.test(cmd)) return reject(new Error('该命令需要交互式终端（vim / less / top / tail -f 等），工作台暂不支持。'));
-    const limit = Math.min(Number(timeoutMs) || config.ssh.execTimeoutMs, config.ssh.execMaxTimeoutMs);
+    const requestedTimeout = Number(timeoutMs) || config.ssh.execTimeoutMs;
+    const limit = Math.max(1000, Math.min(requestedTimeout, config.ssh.execMaxTimeoutMs));
     const maxBytes = Math.max(1024, Number(config.ssh.execMaxOutputBytes) || 2 * 1024 * 1024);
     active.exec(cmd, (err, stream) => {
       if (err) return reject(err);

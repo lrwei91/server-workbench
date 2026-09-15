@@ -419,7 +419,6 @@ function startResourceLoading(kind) {
   const update = () => {
     const seconds = Math.max(0, Math.floor((Date.now() - view.startedAt) / 1000));
     const message = `正在刷新 · 已等待 ${seconds} 秒`;
-    announce(resourceStatusNode(kind), message, 'info');
     status(`${meta.label} · ${currentResourcePath(kind)} · ${message}`);
   };
   update();
@@ -501,7 +500,7 @@ function setConnected(connected, cfg = null) {
   const dot = $('#statusDot'); dot.className = `status-dot ${connected ? 'on' : ''}`;
   setText($('#statusText'), connected ? `已连接 · ${state.config?.host || ''} · ${state.config?.username || ''}` : '未连接');
   const button = $('#btnConnect'); setText(button, connected ? '断开' : '连接'); button.classList.toggle('primary', !connected);
-  if (connected) { state.favorites = loadFavoritesForCurrentServer(); renderFavorites(); updateFavoriteButtons(); return; }
+  if (connected) { state.favorites = loadFavoritesForCurrentServer(); renderFavorites(); updateFavoriteButtons(); renderConsoleEmptyState(); return; }
   ['files', 'hdfs', 'hbase'].forEach((kind) => { resetResourceState(kind); });
   if (dialogs.get('hbaseScanDialog')?.isOpen) closeDialog('hbaseScanDialog');
   cancelHbaseScan(); state.hbaseScan.rawText = ''; state.hbaseScan.displayText = ''; state.hbaseScan.structured = false; state.hbaseScan.parsedCount = 0; state.hbaseScan.skippedCount = 0; state.hbaseScan.truncated = false; state.hbaseScan.error = ''; state.hbaseScan.tablePath = '';
@@ -590,7 +589,7 @@ function resourceRow(item, kind) {
   nameButton.addEventListener('dblclick', () => item.isDir ? navigateResource(kind, fullPath) : previewRemote(fullPath, kind)); return row;
 }
 async function refreshResource(kind) {
-  if (!state.connected) return null;
+  if (!state.connected || resourceState(kind).loading) return null;
   const request = state.gates[kind].next();
   const path = currentResourcePath(kind);
   const meta = RESOURCE_META[kind];
@@ -804,7 +803,9 @@ $('#btnClear').addEventListener('click', () => { stopRefreshBlock(); $('#logFlow
 async function checkStatus() { if (document.hidden || state.statusRunning) return; state.statusRunning = true; try { const result = await getJson('/api/status'); if (state.connected && !result.connected) { setConnected(false); toast('远程连接已断开', 'err'); } } catch (error) { if (state.connected) { setConnected(false); toast('本地桥接服务不可用', 'err'); } } finally { state.statusRunning = false; if ($('#autoStatus').checked && !document.hidden) state.statusTimer = setTimeout(checkStatus, 5000); } }
 $('#autoStatus').checked = true; $('#autoStatus').addEventListener('change', () => { clearTimeout(state.statusTimer); if ($('#autoStatus').checked) checkStatus(); }); document.addEventListener('visibilitychange', () => { if (document.hidden) { clearTimeout(state.statusTimer); state.refreshBlocks.forEach((block) => { clearTimeout(block.timer); block.timer = null; }); } else { if ($('#autoStatus').checked) checkStatus(); [...state.refreshBlocks.values()].forEach((block) => startRefreshBlock(block)); } });
 
-renderCommands(); renderBreadcrumbs($('#crumbs'), state.cwd, state.home, (value) => navigateResource('files', value)); renderBreadcrumbs($('#hdfsCrumbs'), state.hdfsCwd, '/', (value) => navigateResource('hdfs', value)); renderBreadcrumbs($('#hbaseCrumbs'), state.hbaseCwd, '/', (value) => navigateResource('hbase', value)); renderFavorites(); updateFavoriteButtons();
+renderCommands();
+$('#pathInput').value = state.cwd; $('#hdfsPathInput').value = state.hdfsCwd; $('#hbasePathInput').value = state.hbaseCwd;
+renderBreadcrumbs($('#crumbs'), state.cwd, state.home, (value) => navigateResource('files', value)); renderBreadcrumbs($('#hdfsCrumbs'), state.hdfsCwd, '/', (value) => navigateResource('hdfs', value)); renderBreadcrumbs($('#hbaseCrumbs'), state.hbaseCwd, '/', (value) => navigateResource('hbase', value)); renderFavorites(); updateFavoriteButtons();
 (async function init() {
   state.annotations = loadAnnotations();
   try {

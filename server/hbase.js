@@ -15,10 +15,17 @@
 
 const ssh = require('./ssh');
 const config = require('./config-loader');
+const HBASE_NAME_RE = /^[A-Za-z0-9_][A-Za-z0-9_.-]*$/;
 
 // 单引号 shell 转义（从 hdfs.js 复用思路）
 function shellQuote(s) {
   return "'" + String(s == null ? '' : s).replace(/'/g, "'\\''") + "'";
+}
+
+function requireHbaseName(value, label) {
+  const name = String(value || '');
+  if (!HBASE_NAME_RE.test(name)) throw new Error(`${label}包含不支持的字符`);
+  return name;
 }
 
 async function hbaseExec(command) {
@@ -58,8 +65,9 @@ async function hbaseList(hbasePath) {
     };
   }
   // /namespace 路径：列出该 namespace 下的表
-  const ns = p.replace(/^\/+/, '').replace(/\/+$/, '').split('/')[0];
-  if (!ns) throw new Error('HBase 路径格式应为 / 或 /namespace');
+  const match = p.match(/^\/([^/]+)$/);
+  if (!match) throw new Error('HBase 路径格式应为 / 或 /namespace');
+  const ns = requireHbaseName(match[1], 'HBase namespace');
   const { text: out } = await hbaseExec('list_namespace_tables ' + shellQuote(ns));
   const tables = parseList(out, 'TABLE');
   return {
@@ -72,7 +80,8 @@ async function hbaseScan(tablePath, limit = 20) {
   const clean = String(tablePath || '').replace(/^\/+/, '').replace(/\/+$/, '');
   const parts = clean.split(':');
   if (parts.length !== 2 || !parts[0] || !parts[1]) throw new Error('扫描表路径格式应为 /namespace:table');
-  const [ns, table] = parts;
+  const ns = requireHbaseName(parts[0], 'HBase namespace');
+  const table = requireHbaseName(parts[1], 'HBase 表名');
   const capped = Math.min(Math.max(Number(limit) || 20, 1), 200);
   const result = await hbaseExec('scan \'' + ns + ':' + table + '\', {LIMIT => ' + capped + '}');
   return { table: ns + ':' + table, limit: capped, text: stripBanner(result.text), truncated: result.truncated };

@@ -66,6 +66,31 @@ test('HBase scan keeps the requested limit and SSH truncation metadata', async (
   } finally { ssh.execCommand = originalExec; }
 });
 
+test('HDFS listing never treats partial stdout with a failed exit code as success', async () => {
+  const originalExec = ssh.execCommand;
+  ssh.execCommand = async () => ({
+    code: 1,
+    stdout: '-rw-r--r--   1 user group 1 2026-08-31 15:02 /apps/partial.txt\n',
+    stderr: 'RemoteException: listing interrupted',
+    timedOut: false,
+  });
+  try {
+    await assert.rejects(hdfs.hdfsList('/apps'), /HDFS 列目录失败：RemoteException/);
+  } finally { ssh.execCommand = originalExec; }
+});
+
+test('HBase paths reject shell control characters before SSH execution', async () => {
+  const originalExec = ssh.execCommand;
+  let called = false;
+  ssh.execCommand = async () => { called = true; return { code: 0, stdout: '', stderr: '' }; };
+  try {
+    await assert.rejects(hbase.hbaseScan("/ns:t'; list_namespace"), /HBase 表名包含不支持的字符/);
+    await assert.rejects(hbase.hbaseList('/ns/extra'), /HBase 路径格式/);
+    await assert.rejects(hbase.hbaseList("/ns'; list_namespace"), /HBase namespace包含不支持的字符/);
+    assert.equal(called, false);
+  } finally { ssh.execCommand = originalExec; }
+});
+
 test('HTTP errors have real status and normalized shape', async () => {
   const server = createServer(); await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   try {
@@ -127,17 +152,31 @@ test('connection generation gate and structured SFTP operations use one channel'
 });
 
 test('log queue writes asynchronously and paginates newest entries', async () => {
-  const date = log.today(); await log.append({ t: '00:00:01', cmd: 'test-node', badge: '成功', out: 'safe output' }, date);
-  const result = await log.list(date, { limit: 1 });
-  assert.equal(result.entries.length, 1); assert.equal(result.entries[0].cmd, 'test-node'); assert.equal(result.total >= 1, true); assert.equal(typeof result.hasMore, 'boolean');
+  const date = '2099-12-31';
+  const fixturePath = path.join(log.LOG_DIR, `${date}.log`);
+  try {
+    await fs.promises.unlink(fixturePath).catch(() => {});
+    await log.append({ t: '00:00:01', cmd: 'test-node', badge: '成功', out: 'safe output' }, date);
+    const result = await log.list(date, { limit: 1 });
+    assert.equal(result.entries.length, 1); assert.equal(result.entries[0].cmd, 'test-node'); assert.equal(result.total, 1); assert.equal(result.hasMore, false);
+  } finally { await fs.promises.unlink(fixturePath).catch(() => {}); }
 });
 
 test('connected console empty state does not reuse the disconnect action', () => {
   const source = fs.readFileSync(path.join(__dirname, '../../public/js/main.js'), 'utf8');
   assert.match(source, /function renderConsoleEmptyState\(\)[\s\S]*?state\.connected \? '暂无执行日志'/);
-  assert.match(source, /function setConnected\([\s\S]*?renderConsoleEmptyState\(\);\s*\n}/);
+  assert.match(source, /if \(connected\) \{[^}]*renderConsoleEmptyState\(\); return; \}/);
   assert.match(source, /\$\('#emptyConnect'\)\.addEventListener\('click', openSettingsDialog\)/);
   assert.doesNotMatch(source, /\$\('#emptyConnect'\)[^\n]*btnConnect[^\n]*click/);
+});
+
+test('resource refresh keeps one visible countdown and ignores duplicate in-flight refreshes', () => {
+  const source = fs.readFileSync(path.join(__dirname, '../../public/js/main.js'), 'utf8');
+  const loadingFunction = source.match(/function startResourceLoading\(kind\) \{[\s\S]*?\n\}/)?.[0] || '';
+  assert.match(loadingFunction, /status\(`\$\{meta\.label\} · \$\{currentResourcePath\(kind\)\} · \$\{message\}`\)/);
+  assert.doesNotMatch(loadingFunction, /announce\(resourceStatusNode\(kind\), message/);
+  assert.match(source, /if \(!state\.connected \|\| resourceState\(kind\)\.loading\) return null;/);
+  assert.match(source, /\$\('#hdfsPathInput'\)\.value = state\.hdfsCwd/);
 });
 
 test('HDFS quick paths distinguish test and production rating directories', () => {
