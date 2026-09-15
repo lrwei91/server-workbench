@@ -1,4 +1,5 @@
 import { $, $$, announce, ApiError, createRequestGate, DialogController, el, formatBytes, getJson, postJson, setText } from '/shared/ui.js';
+import { formatHbaseScanText, isBatchInfoTable, isMonthlyAccumulatorDetailTable, isTicketDispatchTable } from '/js/hbase-scan-format.js';
 
 const HDFS_UPLOAD_TIMEOUT = 200000;
 const DEFAULT_RESOURCE_TIMEOUTS = { filesListMs: 30000, hdfsListMs: 190000, hbaseScanMs: 130000 };
@@ -21,7 +22,7 @@ const state = {
   resources: { files: makeResourceState(), hdfs: makeResourceState(), hbase: makeResourceState() },
   favorites: [],
   pendingFavorite: null,
-  hbaseScan: { tablePath: '', limit: 20, rawText: '', displayText: '', truncated: false, loading: false, startedAt: 0, progressTimer: null, error: '', matchIndex: 0 },
+  hbaseScan: { tablePath: '', limit: 20, rawText: '', displayText: '', structured: false, parsedCount: 0, skippedCount: 0, truncated: false, loading: false, startedAt: 0, progressTimer: null, error: '', matchIndex: 0 },
 };
 const ANNOTATIONS_KEY = 'wb_annotations';
 // 业务侧默认备注字典：本地未自定义时展示；用户手动保存即覆盖（清空可置空字符串表示不使用默认）
@@ -69,7 +70,7 @@ const DEFAULT_ANNOTATIONS = {
 
   // 量本表
   '/ns_cnos/ACCUMULATOR_0': '永久累积量表（长期有效）',
-  '/ns_cnos/ACCUMULATOR_202606': '量本主表（用户量本；24A独享→产品实例 / 非24A共享→销售品实例；ACCUM 100=结转 200=使用量）',
+  '/ns_cnos/ACCUMULATOR_202606': '量本主表（Qualifier 六段字段；24A=独享，其他编码=共享；ACCUM 100=结转，200=初始化）',
   '/ns_cnos/ACCUMULATOR_DETAIL_202606': '量本从表（量本明细）',
 
   // 批次表（pro_ 前缀=在途，无前缀=已完成；major/minor = 主/子）
@@ -140,9 +141,9 @@ function tableDefaultAlias(name) {
   const tryLabel = raw.startsWith('TRY_') ? '试算 ' : '';
   const core = (raw.startsWith('TRY_') ? raw.slice(4) : raw).replace(/_plcatest$/, '');
   const viaCore = DEFAULT_TABLE_ALIASES[core]; if (viaCore) return tryLabel + viaCore;
-  if (/^(ACCUMULATOR|ACCUMULATION)_DETAIL(_0|_\d{6})$/.test(core)) return tryLabel + '量本从表（量本明细）';
+  if (/^(ACCUMULATOR|ACCUMULATION)_DETAIL(_0|_\d{6})$/.test(core)) return tryLabel + '量本从表（量本明细字段拼在 RowKey，Qualifier 为空）';
   if (/^(ACCUMULATOR|ACCUMULATION)_0$/.test(core)) return tryLabel + '永久累积量表（长期有效）';
-  if (/^(ACCUMULATOR|ACCUMULATION)_\d{6}$/.test(core)) return tryLabel + '量本主表（用户量本；24A独享→产品实例 / 非24A共享→销售品实例；ACCUM 100=结转 200=使用量）';
+  if (/^(ACCUMULATOR|ACCUMULATION)_\d{6}$/.test(core)) return tryLabel + '量本主表（Qualifier 六段字段；24A=独享，其他编码=共享；ACCUM 100=结转，200=初始化）';
   if (/^source_file_index_\d{6}$/.test(core)) return tryLabel + '采预排重表（同文件重跑会被排重；改文件名或清表可处理）';
   return '';
 }
@@ -503,7 +504,7 @@ function setConnected(connected, cfg = null) {
   if (connected) { state.favorites = loadFavoritesForCurrentServer(); renderFavorites(); updateFavoriteButtons(); return; }
   ['files', 'hdfs', 'hbase'].forEach((kind) => { resetResourceState(kind); });
   if (dialogs.get('hbaseScanDialog')?.isOpen) closeDialog('hbaseScanDialog');
-  cancelHbaseScan(); state.hbaseScan.rawText = ''; state.hbaseScan.displayText = ''; state.hbaseScan.truncated = false; state.hbaseScan.error = ''; state.hbaseScan.tablePath = '';
+  cancelHbaseScan(); state.hbaseScan.rawText = ''; state.hbaseScan.displayText = ''; state.hbaseScan.structured = false; state.hbaseScan.parsedCount = 0; state.hbaseScan.skippedCount = 0; state.hbaseScan.truncated = false; state.hbaseScan.error = ''; state.hbaseScan.tablePath = '';
   $('#fileList').replaceChildren(el('div', { class: 'empty-tip', text: '尚未连接服务器\n请先点击右上角“连接”' }));
   $('#hdfsList').replaceChildren(el('div', { class: 'empty-tip', text: '尚未连接服务器' }));
   $('#hbaseList').replaceChildren(el('div', { class: 'empty-tip', text: '尚未连接服务器' }));
@@ -647,7 +648,9 @@ function renderHbaseScan() {
   $('#hbaseScanPrev').disabled = !matches.length; $('#hbaseScanNext').disabled = !matches.length;
   if (scan.loading && !text) setText($('#hbaseScanText'), '正在读取…');
   else renderHighlightedText($('#hbaseScanText'), text, query, scan.matchIndex);
-  setText($('#hbaseScanNotice'), scan.truncated ? '输出已截断；当前内容仅代表已加载样本，复制仍会保留原始输出。' : '仅查找当前样本；匹配数量按文字出现次数计算，复制按钮会保留原始输出。');
+  const formatSource = isBatchInfoTable(scan.tablePath) ? 'RowKey 与列族 batch_info' : isMonthlyAccumulatorDetailTable(scan.tablePath) || isTicketDispatchTable(scan.tablePath) ? 'RowKey' : '列族 f 的 Qualifier';
+  const formatNote = scan.structured ? `已从 ${formatSource} 解析 ${scan.parsedCount} 条${scan.skippedCount ? `，${scan.skippedCount} 条格式不匹配` : ''}。` : '';
+  setText($('#hbaseScanNotice'), `${formatNote}${scan.truncated ? '输出已截断；当前内容仅代表已加载样本，复制仍会保留原始输出。' : '仅查找当前样本；匹配数量按文字出现次数计算，复制按钮会保留原始输出。'}`);
   const stateText = scan.loading ? `正在读取 · 已等待 ${Math.floor(Math.max(0, Date.now() - scan.startedAt) / 1000)} 秒` : scan.error || (scan.tablePath ? `已加载，最多 ${scan.limit} 行` : '');
   setText($('#hbaseScanState'), stateText);
   $('#hbaseScanReload').disabled = scan.loading || !scan.tablePath; $('#hbaseScanLimit').disabled = scan.loading;
@@ -659,7 +662,7 @@ function cancelHbaseScan() { clearHbaseScanTimer(); state.hbaseScan.loading = fa
 function startHbaseScanLoading(tablePath, limit) {
   const scan = state.hbaseScan; const sameTable = scan.tablePath === tablePath;
   clearHbaseScanTimer(); scan.tablePath = tablePath; scan.limit = limit; scan.loading = true; scan.startedAt = Date.now(); scan.error = ''; scan.matchIndex = 0;
-  if (!sameTable) { scan.rawText = ''; scan.displayText = ''; scan.truncated = false; $('#hbaseScanSearch').value = ''; }
+  if (!sameTable) { scan.rawText = ''; scan.displayText = ''; scan.structured = false; scan.parsedCount = 0; scan.skippedCount = 0; scan.truncated = false; $('#hbaseScanSearch').value = ''; }
   $('#hbaseScanLimit').value = String(limit); renderHbaseScan();
   const update = () => { renderHbaseScan(); status(`HBase · ${tablePath} · 正在读取 · 已等待 ${Math.floor(Math.max(0, Date.now() - scan.startedAt) / 1000)} 秒`); };
   update(); scan.progressTimer = setInterval(update, 1000);
@@ -670,7 +673,9 @@ async function loadHbaseSample(tablePath, limit) {
   try {
     const result = await postJson('/api/hbase/scan', { path: tablePath, limit }, { signal: request.signal, timeout: state.timeouts.hbaseScanMs });
     if (!request.isCurrent()) return null;
-    const scan = state.hbaseScan; scan.tablePath = tablePath; scan.limit = Number(result.limit) || limit; scan.rawText = String(result.text || ''); scan.truncated = Boolean(result.truncated); scan.displayText = scan.rawText ? (scan.truncated ? scan.rawText : (prettifyJson(scan.rawText) || scan.rawText)) : '';
+    const scan = state.hbaseScan; scan.tablePath = tablePath; scan.limit = Number(result.limit) || limit; scan.rawText = String(result.text || ''); scan.truncated = Boolean(result.truncated);
+    const formatted = formatHbaseScanText(tablePath, scan.rawText); scan.structured = formatted.structured; scan.parsedCount = formatted.parsedCount; scan.skippedCount = formatted.skippedCount;
+    scan.displayText = formatted.structured ? formatted.text : (scan.rawText ? (scan.truncated ? scan.rawText : (prettifyJson(scan.rawText) || scan.rawText)) : '');
     finishHbaseScan(); status(`HBase · ${tablePath} · 样本已加载`, 'success'); return result;
   } catch (error) {
     if (!request.isCurrent() || error.code === 'REQUEST_ABORTED') return null;
@@ -682,7 +687,7 @@ function scanHbase(tablePath) {
   const sameTable = state.hbaseScan.tablePath === value;
   const tableName = value.split(':').pop() || ''; const desc = aliasTextFor(value, tableName); const descLine = desc ? splitAliasText(desc).desc : '';
   setText($('#hbaseScanTitle'), 'HBase 表查看'); setText($('#hbaseScanDesc'), descLine ? `说明：${descLine}` : '');
-  if (!sameTable) { state.hbaseScan.rawText = ''; state.hbaseScan.displayText = ''; state.hbaseScan.truncated = false; state.hbaseScan.error = ''; $('#hbaseScanSearch').value = ''; }
+  if (!sameTable) { state.hbaseScan.rawText = ''; state.hbaseScan.displayText = ''; state.hbaseScan.structured = false; state.hbaseScan.parsedCount = 0; state.hbaseScan.skippedCount = 0; state.hbaseScan.truncated = false; state.hbaseScan.error = ''; $('#hbaseScanSearch').value = ''; }
   openDialog('hbaseScanDialog'); renderHbaseScan(); void loadHbaseSample(value, sameTable ? state.hbaseScan.limit : 20);
 }
 function moveHbaseScanMatch(delta) {
