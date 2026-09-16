@@ -470,7 +470,7 @@ function setConnected(connected, cfg = null) {
   ['files', 'hdfs', 'hbase'].forEach((kind) => { resetResourceState(kind); });
   if (dialogs.get('hbaseScanDialog')?.isOpen) closeDialog('hbaseScanDialog');
   cancelHbaseScan(); state.hbaseScan.rawText = ''; state.hbaseScan.displayText = ''; state.hbaseScan.structured = false; state.hbaseScan.parsedCount = 0; state.hbaseScan.skippedCount = 0; state.hbaseScan.truncated = false; state.hbaseScan.error = ''; state.hbaseScan.tablePath = '';
-  $('#fileList').replaceChildren(el('div', { class: 'empty-tip', text: '尚未连接服务器\n请先点击右上角“连接”' }));
+  $('#fileList').replaceChildren(el('div', { class: 'empty-tip', text: '尚未连接服务器\n请先打开连接设置' }));
   $('#hdfsList').replaceChildren(el('div', { class: 'empty-tip', text: '尚未连接服务器' }));
   $('#hbaseList').replaceChildren(el('div', { class: 'empty-tip', text: '尚未连接服务器' }));
   renderFavorites(); updateFavoriteButtons();
@@ -673,7 +673,7 @@ $('#btnNameSubmit').addEventListener('click', async () => { const name = $('#nam
 
 function renderBilling() { const root = $('#billingContent'); root.replaceChildren(); const search = $('#billSearch').value.trim().toLowerCase(); const suffix = $('#billSuffix').value.trim() || '597_2606'; const month = $('#billMonth').value.trim() || '202410'; const ns = $('#billNs').value.trim() || 'ns_aibcp_dev'; BILLING.forEach((card) => { const rows = card.rows.map(([label, value]) => [label, value.replace('{ns}', ns).replace('{month}', month)]).filter(([label, value]) => !search || `${label}${value}`.toLowerCase().includes(search)); if (!rows.length) return; const section = el('section', { class: 'billing-card' }, el('h3', { text: card.title })); rows.forEach(([label, value]) => { const code = el('code', { text: value, title: value }); const copy = el('button', { class: 'fact', type: 'button', text: '复制' }); copy.addEventListener('click', async () => { try { await navigator.clipboard.writeText(value); toast('已复制', 'ok'); } catch (_) { toast('复制失败', 'err'); } }); section.append(el('div', { class: 'billing-row' }, el('span', { text: label }), code, copy)); }); root.append(section); }); }
 
-$('#btnConnect').addEventListener('click', () => { renderConnectionList(); openDialog('connectionDialog', $('#btnConnectAll')); });
+$('#btnConnect').addEventListener('click', () => { renderConnectionList(); openDialog('connectionDialog', $('#connectionEnvironmentTestSummary')); });
 $('#btnBilling').addEventListener('click', () => { renderBilling(); openDialog('billingDialog', $('#billSearch')); });
 $('#btnCdr').addEventListener('click', () => { if (!$('#cdrFrame').getAttribute('src')) $('#cdrFrame').src = '/cdr/'; openDialog('cdrDialog'); });
 $('#billSearch').addEventListener('input', renderBilling); ['billSuffix', 'billMonth', 'billNs'].forEach((id) => $( `#${id}`).addEventListener('input', renderBilling));
@@ -700,7 +700,6 @@ $('#hbaseScanRetry').addEventListener('click', () => { if (state.hbaseScan.table
 $('#hbaseScanCopy').addEventListener('click', async () => { try { await navigator.clipboard.writeText(state.hbaseScan.rawText || ''); toast('已复制原始结果', 'ok'); } catch (_) { toast('复制失败，请手动选择文本', 'err'); } });
 
 const DB_SOURCE_LABEL = { udal: 'MySQL / UDAL', doris: 'Doris' };
-const CONNECTION_LABEL = { ssh: 'SSH / SFTP / HDFS', ...DB_SOURCE_LABEL };
 function connectionConfig(source) { return source === 'ssh' ? (state.config || state.connectionProfiles.ssh || {}) : (state.databases[source].config || state.connectionProfiles[source] || {}); }
 function renderConnectionList() {
   for (const source of ['ssh', 'udal', 'doris']) {
@@ -710,24 +709,29 @@ function renderConnectionList() {
     document.querySelector(`[data-connection-dot="${source}"]`)?.classList.toggle('on', connected);
     setText(document.querySelector(`[data-connection-status="${source}"]`), connected ? '已连接' : '未连接');
     setText(document.querySelector(`[data-connection-error="${source}"]`), state.connectionErrors[source] || '');
+    setText(document.querySelector(`[data-connection-connect="${source}"]`), connected ? '重新连接' : '连接');
   }
 }
-async function connectAll() {
-  const button = $('#btnConnectAll'); button.disabled = true; setText(button, '连接中…'); setText($('#connectionError'), '正在连接 SSH、MySQL / UDAL 和 Doris…');
-  state.connectionErrors = { ssh: '', udal: '', doris: '' };
+async function connectSource(source) {
+  if (!['ssh', 'udal', 'doris'].includes(source)) return;
+  const button = document.querySelector(`[data-connection-connect="${source}"]`);
+  button.disabled = true; setText(button, '连接中…'); state.connectionErrors[source] = '';
+  setText(document.querySelector(`[data-connection-error="${source}"]`), '正在连接…');
   try {
-    const response = await postJson('/api/connections/connect', {}, { timeout: 60000 });
-    const sshResult = response.sources?.ssh || {}; const sshConnected = Boolean(sshResult.connected);
-    setConnected(sshConnected, sshResult.config || state.connectionProfiles.ssh); state.home = sshResult.home || state.home || '~'; if (sshConnected) state.cwd = state.home;
-    for (const source of ['udal', 'doris']) { const item = response.sources?.[source] || {}; state.databases[source] = { connected: Boolean(item.connected), config: item.config || state.connectionProfiles[source], password: '' }; }
-    for (const source of ['ssh', 'udal', 'doris']) state.connectionErrors[source] = response.sources?.[source]?.error || '';
-    renderConnectionList(); renderDbStatus(); clearQueryResult();
-    const connectedCount = ['ssh', 'udal', 'doris'].filter((source) => source === 'ssh' ? state.connected : state.databases[source].connected).length;
-    setText($('#connectionError'), connectedCount === 3 ? '全部连接成功' : `已连接 ${connectedCount} / 3，请查看分项提示`);
-    toast(connectedCount === 3 ? '全部数据源已连接' : `连接完成 · ${connectedCount} / 3`, connectedCount ? 'ok' : 'err');
-    if (sshConnected) await refreshFiles();
-  } catch (error) { setText($('#connectionError'), error.message); toast(error.message, 'err'); }
-  finally { button.disabled = false; setText(button, '连接'); }
+    if (source === 'ssh') {
+      const response = await postJson('/api/connect', {}, { timeout: 30000 });
+      setConnected(true, response.config || state.connectionProfiles.ssh); state.home = response.home || '~'; state.cwd = state.home;
+      renderConnectionList(); toast('SSH / SFTP / HDFS 已连接', 'ok'); await refreshFiles();
+    } else {
+      clearQueryResult(); const response = await postJson('/api/db/connect', { source }, { timeout: 30000 });
+      state.databases[source] = { connected: true, config: response.config || state.connectionProfiles[source], password: '' };
+      renderConnectionList(); renderDbStatus(); toast(`${DB_SOURCE_LABEL[source]} 已连接`, 'ok');
+    }
+  } catch (error) {
+    state.connectionErrors[source] = error.message;
+    if (source === 'ssh') setConnected(false); else state.databases[source] = { connected: false, config: state.databases[source].config || state.connectionProfiles[source], password: '' };
+    renderConnectionList(); renderDbStatus(); toast(error.message, 'err');
+  } finally { button.disabled = false; setText(button, (source === 'ssh' ? state.connected : state.databases[source].connected) ? '重新连接' : '连接'); }
 }
 function clearQueryResult() {
   state.gates.phone.cancel(); state.gates.threshold.cancel(); state.phoneQuery = { running: false, result: null }; state.thresholdQuery = { running: false, result: null };
@@ -816,12 +820,12 @@ async function submitThresholdQuery(event) {
 }
 function switchQueryTab(query) { state.activeQuery = query === 'threshold' ? 'threshold' : 'phone'; $$('[data-query-tab]').forEach((button) => { const active = button.dataset.queryTab === state.activeQuery; button.classList.toggle('active', active); button.setAttribute('aria-selected', String(active)); }); $$('[data-query-pane]').forEach((pane) => pane.classList.toggle('hidden', pane.dataset.queryPane !== state.activeQuery)); clearQueryResult(); }
 $('#emptyDbConnect').addEventListener('click', () => { renderConnectionList(); openDialog('connectionDialog'); });
-$('#btnConnectAll').addEventListener('click', () => void connectAll());
+$$('[data-connection-connect]').forEach((button) => button.addEventListener('click', () => void connectSource(button.dataset.connectionConnect)));
 $$('[data-query-tab]').forEach((button) => button.addEventListener('click', () => switchQueryTab(button.dataset.queryTab)));
 $('#phoneQueryForm').addEventListener('submit', submitPhoneQuery); $('#btnPhoneCancel').addEventListener('click', () => { state.gates.phone.cancel(); state.phoneQuery.running = false; $('#btnPhoneQuery').disabled = false; $('#btnPhoneCancel').classList.add('hidden'); setQueryState('查询已取消'); });
 $('#thresholdQueryForm').addEventListener('submit', submitThresholdQuery); $('#btnThresholdCancel').addEventListener('click', () => { state.gates.threshold.cancel(); state.thresholdQuery.running = false; $('#btnThresholdQuery').disabled = false; $('#btnThresholdCancel').classList.add('hidden'); setQueryState('查询已取消'); }); $('#btnQueryReset').addEventListener('click', clearQueryResult);
 
-async function checkStatus() { if (document.hidden || state.statusRunning) return; state.statusRunning = true; try { const [sshStatus, dbStatus] = await Promise.all([getJson('/api/status'), getJson('/api/db/status')]); if (state.connected && !sshStatus.connected) { setConnected(false); toast('远程连接已断开', 'err'); } for (const source of ['udal', 'doris']) { const item = dbStatus.sources?.[source]; if (item) { state.databases[source].connected = Boolean(item.connected); state.databases[source].config = item.config || state.databases[source].config; } } renderDbStatus(); } catch (error) { if (state.connected) { setConnected(false); toast('本地桥接服务不可用', 'err'); } } finally { state.statusRunning = false; if (!document.hidden) state.statusTimer = setTimeout(checkStatus, 5000); } }
+async function checkStatus() { if (document.hidden || state.statusRunning) return; state.statusRunning = true; try { const [sshStatus, dbStatus] = await Promise.all([getJson('/api/status'), getJson('/api/db/status')]); if (state.connected && !sshStatus.connected) { setConnected(false); toast('远程连接已断开', 'err'); } for (const source of ['udal', 'doris']) { const item = dbStatus.sources?.[source]; if (item) { state.databases[source].connected = Boolean(item.connected); state.databases[source].config = item.config || state.databases[source].config; } } renderDbStatus(); renderConnectionList(); } catch (error) { if (state.connected) { setConnected(false); toast('本地桥接服务不可用', 'err'); } } finally { state.statusRunning = false; if (!document.hidden) state.statusTimer = setTimeout(checkStatus, 5000); } }
 document.addEventListener('visibilitychange', () => { clearTimeout(state.statusTimer); if (!document.hidden) checkStatus(); });
 
 $('#pathInput').value = state.cwd; $('#hdfsPathInput').value = state.hdfsCwd; $('#hbasePathInput').value = state.hbaseCwd;

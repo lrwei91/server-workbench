@@ -192,27 +192,6 @@ async function handle(req, res) {
   }
   if (req.method === 'GET' && p === '/api/status') return sendJson(res, 200, { ok: true, connected: Boolean(ssh.conn), conn: ssh.connInfo ? ssh.maskConfig(ssh.connInfo) : null, home: ssh.home || null });
   if (req.method === 'GET' && p === '/api/db/status') return sendJson(res, 200, { ok: true, sources: database.status(), defaults: database.defaults() });
-  if (req.method === 'POST' && p === '/api/connections/connect') {
-    const body = await readBody(req); assertObject(body, []);
-    const attempts = await Promise.allSettled([
-      ssh.connect(),
-      database.connect('udal'),
-      database.connect('doris'),
-    ]);
-    let home = '~';
-    if (attempts[0].status === 'fulfilled') {
-      try { const result = await ssh.execCommand('echo $HOME'); home = result.stdout?.trim().split('\n').pop() || '~'; } catch (_) {}
-      void hdfs.warmupHdfs();
-    }
-    const safeFailure = (attempt) => attempt.status === 'rejected' ? asRequestError(attempt.reason).message : '';
-    const sources = {
-      ssh: { connected: attempts[0].status === 'fulfilled', config: attempts[0].status === 'fulfilled' ? attempts[0].value : ssh.maskConfig(ssh.DEFAULT_CONFIG), home, error: safeFailure(attempts[0]) },
-      udal: { connected: attempts[1].status === 'fulfilled', config: attempts[1].status === 'fulfilled' ? attempts[1].value : database.defaults().udal, error: safeFailure(attempts[1]) },
-      doris: { connected: attempts[2].status === 'fulfilled', config: attempts[2].status === 'fulfilled' ? attempts[2].value : database.defaults().doris, error: safeFailure(attempts[2]) },
-    };
-    const connectedCount = Object.values(sources).filter((item) => item.connected).length;
-    return sendJson(res, 200, { ok: true, status: connectedCount === 3 ? 'complete' : connectedCount ? 'partial' : 'failed', sources });
-  }
   if (req.method === 'POST' && p === '/api/db/connect') {
     const body = await readBody(req); assertObject(body, ['source', 'host', 'port', 'username', 'password', 'database']);
     const source = requireString(body.source, 'source');

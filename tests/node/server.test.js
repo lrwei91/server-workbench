@@ -203,14 +203,25 @@ test('workbench keeps a 1 to 1.5 desktop ratio and the phone query action on one
   assert.match(css, /dialog#connectionDialog\[open\][^{]*\{[^}]*width:\s*min\(1200px,\s*calc\(100vw - 32px\)\);[^}]*max-width:\s*none;/);
 });
 
-test('connection settings use one read-only list and keep credentials out of browser storage', () => {
+test('connection settings use independent read-only source controls and keep credentials out of browser storage', () => {
   const html = fs.readFileSync(path.join(__dirname, '../../public/index.html'), 'utf8');
   const source = fs.readFileSync(path.join(__dirname, '../../public/js/main.js'), 'utf8');
   const dialog = html.match(/<dialog id="connectionDialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+  assert.match(dialog, /<details class="connection-environment" data-connection-environment="test"><summary[^>]*><span>测试环境<\/span>/);
+  assert.match(dialog, /<details class="connection-environment" data-connection-environment="project"><summary><span>工程环境<\/span>/);
+  assert.doesNotMatch(dialog, /<details[^>]*\bopen\b/); assert.match(dialog, /class="connection-environment-empty"/); assert.match(dialog, /暂无连接配置/);
   assert.match(dialog, /data-connection-source="ssh"/); assert.match(dialog, /data-connection-source="udal"/); assert.match(dialog, /data-connection-source="doris"/);
-  assert.equal((dialog.match(/id="btnConnectAll"/g) || []).length, 1); assert.doesNotMatch(dialog, /<input\b|type="password"|data-db-connect|data-db-disconnect/);
+  assert.equal((dialog.match(/data-connection-connect="(?:ssh|udal|doris)"/g) || []).length, 3); assert.doesNotMatch(dialog, /<input\b|type="password"|id="btnConnectAll"|data-db-disconnect/);
   assert.doesNotMatch(html, /id="settingsDialog"|id="dbSettingsDialog"|id="btnSettings"|id="btnDbSettings"/);
-  assert.match(source, /postJson\('\/api\/connections\/connect', \{\}/); assert.doesNotMatch(source, /wb_conn_cfg|wb_db_cfg|sessionPassword|DB_FIELDS/);
+  assert.match(source, /postJson\('\/api\/connect', \{\}/); assert.match(source, /postJson\('\/api\/db\/connect', \{ source \}/); assert.doesNotMatch(source, /\/api\/connections\/connect|wb_conn_cfg|wb_db_cfg|sessionPassword|DB_FIELDS/);
+});
+
+test('SSH connection status is rendered inside the resource explorer instead of the top bar', () => {
+  const html = fs.readFileSync(path.join(__dirname, '../../public/index.html'), 'utf8');
+  const topbar = html.match(/<header class="topbar">[\s\S]*?<\/header>/)?.[0] || '';
+  const explorer = html.match(/<section class="explorer-panel"[\s\S]*?<div class="tabs"/)?.[0] || '';
+  assert.doesNotMatch(topbar, /id="statusDot"|id="statusText"|class="connection"/);
+  assert.match(explorer, /class="resource-connection"/); assert.match(explorer, /id="statusDot"/); assert.match(explorer, /id="statusText"/);
 });
 
 test('local env parser supports quoted credentials without exposing them through config masks', () => {
