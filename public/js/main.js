@@ -1,4 +1,4 @@
-import { $, $$, announce, ApiError, createRequestGate, DialogController, el, formatBytes, getJson, postJson, setText } from '/shared/ui.js';
+import { $, $$, announce, createRequestGate, DialogController, el, formatBytes, formatDate, getJson, postJson, setText } from '/shared/ui.js';
 import { formatHbaseScanText, isBatchInfoTable, isMonthlyAccumulatorDetailTable, isTicketDispatchTable } from '/js/hbase-scan-format.js';
 
 const HDFS_UPLOAD_TIMEOUT = 200000;
@@ -15,14 +15,17 @@ function makeResourceState() { return { items: [], query: '', sortKey: 'name', s
 
 const state = {
   connected: false, config: null, home: '~', cwd: '~', hdfsCwd: localStorage.getItem('wb_hdfs_cwd') || '/apps', hbaseCwd: localStorage.getItem('wb_hbase_cwd') || '/',
-  history: [], historyIndex: 0, sessionPassword: '', pendingConfirm: null, pendingName: null, pendingParam: null,
-  gates: { files: createRequestGate(), hdfs: createRequestGate(), hbase: createRequestGate(), scan: createRequestGate() }, refreshBlocks: new Map(), statusTimer: null, statusRunning: false, pendingUpload: null, loaded: { files: false, hdfs: false, hbase: false },
+  pendingConfirm: null, pendingName: null,
+  gates: { files: createRequestGate(), hdfs: createRequestGate(), hbase: createRequestGate(), scan: createRequestGate(), phone: createRequestGate(), threshold: createRequestGate() }, statusTimer: null, statusRunning: false, pendingUpload: null, loaded: { files: false, hdfs: false, hbase: false },
   annotations: {}, pendingAnnotationPath: '', pendingAnnotationKind: '',
   timeouts: { ...DEFAULT_RESOURCE_TIMEOUTS },
   resources: { files: makeResourceState(), hdfs: makeResourceState(), hbase: makeResourceState() },
   favorites: [],
   pendingFavorite: null,
   hbaseScan: { tablePath: '', limit: 20, rawText: '', displayText: '', structured: false, parsedCount: 0, skippedCount: 0, truncated: false, loading: false, startedAt: 0, progressTimer: null, error: '', matchIndex: 0 },
+  databases: { udal: { connected: false, config: null, password: '' }, doris: { connected: false, config: null, password: '' } },
+  connectionProfiles: { ssh: null, udal: null, doris: null }, connectionErrors: { ssh: '', udal: '', doris: '' },
+  activeQuery: 'phone', phoneQuery: { running: false, result: null }, thresholdQuery: { running: false, result: null },
 };
 const ANNOTATIONS_KEY = 'wb_annotations';
 // 业务侧默认备注字典：本地未自定义时展示；用户手动保存即覆盖（清空可置空字符串表示不使用默认）
@@ -173,18 +176,6 @@ function rowAlias(item, kind, fullPath) {
   return aliasTextFor(fullPath, kind === 'hbase' && !item.isDir ? String(item.name || '') : '');
 }
 
-const COMMANDS = [
-  { group: '查看', label: '当前位置', command: 'pwd', desc: '显示远程主目录和当前工作位置。' },
-  { group: '查看', label: '当前目录', command: 'ls -lh', desc: '列出当前目录的文件和目录。', autoCwd: true },
-  { group: '查看', label: '磁盘空间', command: 'df -h', desc: '查看磁盘容量和使用率。' },
-  { group: '查看', label: '内存使用', command: 'free -h', desc: '查看内存和交换分区。' },
-  { group: '查看', label: '运行中的进程', command: 'ps -ef | head -60', desc: '查看前 60 个进程。' },
-  { group: '查看', label: '查看文件', param: 'file', desc: '安全预览文本文件的前 256 KiB。' },
-  { group: '查看', label: '查看最后 N 行', param: 'tail', desc: '适合查看最新日志。' },
-  { group: '系统', label: '运行时长与负载', command: 'uptime', desc: '查看系统运行时长和负载。' },
-  { group: '系统', label: '当前登录用户', command: 'who && whoami', desc: '查看登录用户和当前用户。' },
-  { group: '删除', label: '高级删除命令', command: 'rm ', desc: '仅用于已确认的自由命令；结构化文件删除请使用目录行操作。', danger: true },
-];
 const BILLING = [
   { title: '常用 HDFS 目录', rows: [['计费根目录', '/apps'], ['采预 prep（测试）', '/apps/bill_cnos_jf_test/prep'], ['批价 cal（测试）', '/apps/bill_cnos_jf_test/cal'], ['批价 cal（生产）', '/apps/bill_cnos_jf/cal']] },
   { title: '话单表映射', rows: [['语音话单', 'TICKET_CDMA_VOICE'], ['数据业务', 'TICKET_DATA'], ['异常单', 'TICKET_ABNORMAL'], ['不计费话单', 'TICKET_OTHER']] },
@@ -202,7 +193,7 @@ const BILLING = [
   ] },
 ];
 
-const dialogs = new Map(['settingsDialog', 'commandsDialog', 'paramDialog', 'billingDialog', 'confirmDialog', 'nameDialog', 'uploadDialog', 'annotationDialog', 'previewDialog', 'hbaseScanDialog', 'favoriteDialog', 'cdrDialog'].map((id) => [id, new DialogController(document.getElementById(id))]));
+const dialogs = new Map(['connectionDialog', 'billingDialog', 'confirmDialog', 'nameDialog', 'uploadDialog', 'annotationDialog', 'previewDialog', 'hbaseScanDialog', 'favoriteDialog', 'cdrDialog'].map((id) => [id, new DialogController(document.getElementById(id))]));
 function openDialog(id, focus) {
   // 单 modal 约束：开新弹窗前先收起其它已打开的弹窗。否则两层 modal 叠加时，
   // 下层弹窗的「关闭」按钮点击会被上层 backdrop 截获，表现为「点击完全无反应」。
@@ -234,8 +225,6 @@ function icon(name, label = '') {
 }
 function toast(message, tone = '') { const node = el('div', { class: `toast ${tone}`, text: message }); $('#toast').append(node); setTimeout(() => node.remove(), 3600); }
 function status(message, tone = 'info') { announce($('#explorerState'), message, tone); announce($('#live'), message, tone); }
-function shellQuote(value) { return `'${String(value ?? '').replace(/'/g, `'\\''`)}'`; }
-function nowTime() { return new Date().toLocaleTimeString('zh-CN', { hour12: false }); }
 // 若整段输出是 JSON，则按 2 空格缩进美化（一行一个结构）；否则原样返回，不影响普通日志
 // 支持四种情况：(1) 完整 JSON / (2) 多行 NDJSON（每行一个 JSON）/ (3) 末尾被截断的 JSON（启发式补全）/ (4) 普通文本原样返回
 function prettifyJson(text) {
@@ -275,28 +264,6 @@ function prettifyJson(text) {
   return text;
 }
 function pathJoin(dir, name) { return `${dir.replace(/\/+$/, '') || '/'}/${name}`.replace(/^\/\//, '/'); }
-function storedConfig() { try { const value = JSON.parse(localStorage.getItem('wb_conn_cfg') || '{}'); return { host: value.host || '', port: value.port || 22, username: value.username || '' }; } catch (_) { return {}; } }
-function saveStoredConfig(value) { localStorage.setItem('wb_conn_cfg', JSON.stringify({ host: value.host, port: Number(value.port) || 22, username: value.username })); }
-
-function openSettingsDialog() {
-  const cfg = state.config || storedConfig();
-  $('#cfgHost').value = cfg.host || '';
-  $('#cfgPort').value = cfg.port || 22;
-  $('#cfgUser').value = cfg.username || '';
-  $('#cfgPass').value = '';
-  setText($('#settingsError'), '');
-  openDialog('settingsDialog', $('#cfgHost'));
-}
-function renderConsoleEmptyState() {
-  const empty = $('#emptyState');
-  if ($('#logFlow .log-block')) { empty.classList.add('hidden'); return; }
-  setText(empty.querySelector('strong'), state.connected ? '暂无执行日志' : '连接后从这里开始');
-  setText(empty.querySelector('span'), state.connected ? '可以浏览目录、使用快捷指令，或直接执行一条命令。' : '连接服务器后，可以浏览目录、使用快捷指令，或直接执行一条命令。');
-  $('#emptyConnect').classList.toggle('hidden', state.connected);
-  empty.classList.remove('hidden');
-}
-
-
 function currentResourcePath(kind) { return kind === 'files' ? state.cwd : kind === 'hdfs' ? state.hdfsCwd : state.hbaseCwd; }
 function setCurrentResourcePath(kind, value) {
   if (kind === 'files') state.cwd = value;
@@ -309,11 +276,10 @@ function resourceStatusNode(kind) { return $(`#${kind}State`); }
 function clearResourceTimer(view) { if (view?.progressTimer) { clearInterval(view.progressTimer); view.progressTimer = null; } }
 
 function favoriteServerKey() {
-  const saved = storedConfig();
   const configured = state.config || {};
-  const host = String((state.connected ? configured.host : configured.host || saved.host) || '').trim().toLowerCase();
-  const port = Number((state.connected ? configured.port : configured.port || saved.port) || 22);
-  const username = String((state.connected ? configured.username : configured.username || saved.username) || '').trim();
+  const host = String(configured.host || '').trim().toLowerCase();
+  const port = Number(configured.port || 22);
+  const username = String(configured.username || '').trim();
   return host || username ? `${host}|${port}|${username}` : 'unconfigured';
 }
 function readFavoriteStore() {
@@ -499,67 +465,15 @@ function setConnected(connected, cfg = null) {
   state.connected = connected; if (cfg) state.config = cfg;
   const dot = $('#statusDot'); dot.className = `status-dot ${connected ? 'on' : ''}`;
   setText($('#statusText'), connected ? `已连接 · ${state.config?.host || ''} · ${state.config?.username || ''}` : '未连接');
-  const button = $('#btnConnect'); setText(button, connected ? '断开' : '连接'); button.classList.toggle('primary', !connected);
-  if (connected) { state.favorites = loadFavoritesForCurrentServer(); renderFavorites(); updateFavoriteButtons(); renderConsoleEmptyState(); return; }
+  const button = $('#btnConnect'); setText(button, '连接'); button.classList.add('primary');
+  if (connected) { state.favorites = loadFavoritesForCurrentServer(); renderFavorites(); updateFavoriteButtons(); return; }
   ['files', 'hdfs', 'hbase'].forEach((kind) => { resetResourceState(kind); });
   if (dialogs.get('hbaseScanDialog')?.isOpen) closeDialog('hbaseScanDialog');
   cancelHbaseScan(); state.hbaseScan.rawText = ''; state.hbaseScan.displayText = ''; state.hbaseScan.structured = false; state.hbaseScan.parsedCount = 0; state.hbaseScan.skippedCount = 0; state.hbaseScan.truncated = false; state.hbaseScan.error = ''; state.hbaseScan.tablePath = '';
   $('#fileList').replaceChildren(el('div', { class: 'empty-tip', text: '尚未连接服务器\n请先点击右上角“连接”' }));
   $('#hdfsList').replaceChildren(el('div', { class: 'empty-tip', text: '尚未连接服务器' }));
   $('#hbaseList').replaceChildren(el('div', { class: 'empty-tip', text: '尚未连接服务器' }));
-  renderFavorites(); updateFavoriteButtons(); stopRefreshBlocks();
-  renderConsoleEmptyState();
-}
-
-function createLogBlock(command, { refreshable = false, buildCommand = null, historic = false } = {}) {
-  $('#emptyState').classList.add('hidden');
-  const badge = el('span', { class: 'badge run', text: historic ? '历史记录' : '执行中…' });
-  const output = el('pre', { class: 'log-body' }); setText(output, historic ? '' : '正在执行…');
-  const head = el('div', { class: 'log-head' }, el('span', { class: 'log-time', text: nowTime() }), el('span', { class: 'log-cmd', text: command }), badge, el('span', { class: 'log-spacer' }));
-  if (refreshable && buildCommand) {
-    const checkbox = el('input', { type: 'checkbox', 'aria-label': '自动刷新' }); const label = el('label', { class: 'switch' }, checkbox, '自动刷新'); head.append(label);
-    checkbox.addEventListener('change', () => checkbox.checked ? startRefreshBlock(block) : stopRefreshBlock(block));
-  }
-  const copy = el('button', { class: 'fact', type: 'button', text: '复制' }); copy.addEventListener('click', async () => { try { await navigator.clipboard.writeText(output.textContent || ''); toast('输出已复制', 'ok'); } catch (_) { toast('复制失败，请手动选择文本', 'err'); } }); head.append(copy);
-  const node = el('article', { class: 'log-block' }, head, output); $('#logFlow').append(node);
-  const blocks = $$('#logFlow .log-block'); if (blocks.length > 200) blocks.slice(0, blocks.length - 200).forEach((old) => old.remove());
-  const block = {
-    node, command, badge, output, refreshable, buildCommand, running: false, timer: null,
-    setResult(text, code, duration, truncated = false) { badge.className = `badge ${code === 0 ? 'ok' : 'err'}`; setText(badge, code === 0 ? `成功 · ${(duration / 1000).toFixed(1)}s` : `退出码 ${code}`); setText(output, `${prettifyJson(text) || '（无输出）'}${truncated ? '\n\n[输出已达到 2 MiB 上限，后续内容已截断]' : ''}`); },
-    setError(message) { badge.className = 'badge err'; setText(badge, '失败'); setText(output, `✕ ${message}`); },
-    serialize() { return { t: node.querySelector('.log-time')?.textContent || '', cmd: command, badge: badge.textContent || '', out: output.textContent || '' }; },
-  };
-  return block;
-}
-async function persistLog(block) { try { await postJson('/api/log/append', block.serialize()); } catch (_) {} }
-function stopRefreshBlock(block) { if (block) { clearTimeout(block.timer); block.timer = null; state.refreshBlocks.delete(block.node); return; } state.refreshBlocks.forEach((item) => { clearTimeout(item.timer); }); state.refreshBlocks.clear(); }
-function startRefreshBlock(block) {
-  if (!block?.buildCommand) return;
-  stopRefreshBlock(block); state.refreshBlocks.set(block.node, block);
-  const tick = async () => {
-    if (!state.refreshBlocks.has(block.node)) return;
-    if (document.hidden || block.running) { block.timer = setTimeout(tick, 10000); return; }
-    block.running = true;
-    try { const result = await postJson('/api/exec', { cmd: block.buildCommand(), confirmed: false }); if (result.ok) block.setResult(result.stdout || result.stderr, result.code, result.duration, result.truncated); else block.setError(result.error?.message || '执行失败'); } catch (error) { block.setError(error.message); } finally { block.running = false; block.timer = document.hidden ? null : setTimeout(tick, 10000); }
-  };
-  void tick();
-}
-async function runCommand(command, options = {}) {
-  const block = createLogBlock(command, options);
-  try {
-    const result = await postJson('/api/exec', { cmd: command, confirmed: options.confirmed === true, timeout: options.timeout });
-    if (result.ok) { block.setResult(result.stdout || result.stderr, result.code, result.duration, result.truncated); if (result.truncated) toast('命令输出超过 2 MiB，已截断', 'warn'); if (options.onDone && result.code === 0) options.onDone(); }
-    else block.setError(result.error?.message || '执行失败');
-    await persistLog(block); return result;
-  } catch (error) { block.setError(error.message || '执行失败'); await persistLog(block); toast(error.message || '命令执行失败', 'err'); return null; }
-}
-async function restoreLogs() {
-  try {
-    const date = $('#logDate').value; const query = date ? `?date=${encodeURIComponent(date)}&limit=200` : '?limit=200'; const result = await getJson(`/api/log/list${query}`);
-    if (!result.entries?.length) { renderConsoleEmptyState(); return; }
-    result.entries.forEach((entry) => { const block = createLogBlock(entry.cmd || '', { historic: true }); setText(block.node.querySelector('.log-time'), entry.t || ''); block.badge.className = /失败|退出码/.test(entry.badge || '') ? 'badge err' : 'badge ok'; setText(block.badge, entry.badge || '历史记录'); setText(block.output, prettifyJson(entry.out) || ''); });
-    toast(`已恢复最近 ${result.entries.length} 条日志`, 'ok');
-  } catch (_) {}
+  renderFavorites(); updateFavoriteButtons();
 }
 
 function renderBreadcrumbs(container, current, rootLabel, navigate) {
@@ -571,7 +485,7 @@ function resourceRow(item, kind) {
   const fullPath = item.path || pathJoin(currentResourcePath(kind), item.name); const nameButton = el('button', { type: 'button', class: item.isDir ? 'dir' : '', text: `${item.name}${item.isDir ? '/' : ''}`, title: fullPath });
   const nameCell = el('div', { class: 'resource-name' }, icon(item.isDir ? 'folder' : 'file'), nameButton);
   const alias = rowAlias(item, kind, fullPath); if (alias) { const split = kind === 'hbase' && !item.isDir ? splitAliasText(alias) : null; const inlineLabel = split ? (split.status ? `${split.label}（${split.status}）` : split.label) : alias; nameCell.append(el('span', { class: 'dir-alias', text: `[${inlineLabel}]`, title: alias })); }
-  const row = el('div', { class: 'resource-row' }, nameCell, el('span', { class: 'resource-size', text: item.isDir ? '—' : (kind === 'hbase' ? '表' : formatBytes(item.size)) }), el('span', { class: 'resource-date', text: item.mtime || '—' }), el('div', { class: 'resource-actions' }));
+  const row = el('div', { class: 'resource-row' }, nameCell, el('span', { class: 'resource-size', text: item.isDir ? '—' : (kind === 'hbase' ? '表' : formatBytes(item.size)) }), el('span', { class: 'resource-date', text: item.mtime ? formatDate(item.mtime) : '—', title: item.mtime ? `${formatDate(item.mtime)} +08:00` : '—' }), el('div', { class: 'resource-actions' }));
   const actions = row.querySelector('.resource-actions');
   if (kind === 'hbase') {
     if (item.isDir) { const enter = el('button', { class: 'fact', type: 'button', text: '进入' }); enter.addEventListener('click', () => navigateResource('hbase', fullPath)); actions.append(enter); const note = el('button', { class: 'fact', type: 'button', text: '备注' }); note.addEventListener('click', () => openAnnotationDialog(fullPath, rowAlias(item, kind, fullPath), kind)); actions.append(note); }
@@ -697,25 +611,23 @@ function moveHbaseScanMatch(delta) {
 }
 async function previewRemote(remotePath, kind) {
   openDialog('previewDialog'); setText($('#previewTitle'), kind === 'hdfs' ? 'HDFS 文件预览' : '文件预览'); setText($('#previewMeta'), remotePath); setText($('#previewText'), '正在读取…');
-  try { if (kind === 'files') { const result = await postJson('/api/sftp/preview', { path: remotePath, maxBytes: 262144 }); setText($('#previewText'), prettifyJson(result.text) || '（空文件）'); if (result.truncated) setText($('#previewMeta'), `${remotePath} · 已显示前 256 KiB，内容已截断`); } else { const result = await runCommand(`hadoop fs -cat ${shellQuote(remotePath)} | head -c 262144`, { timeout: 60000 }); closeDialog('previewDialog'); if (result?.ok) toast('HDFS 内容已写入执行日志', 'ok'); } } catch (error) { setText($('#previewText'), error.message); }
+  try { const endpoint = kind === 'files' ? '/api/sftp/preview' : '/api/hdfs/preview'; const timeout = kind === 'files' ? 30000 : state.timeouts.hdfsListMs; const result = await postJson(endpoint, { path: remotePath, maxBytes: 262144 }, { timeout }); setText($('#previewText'), prettifyJson(result.text) || '（空文件）'); if (result.truncated) setText($('#previewMeta'), `${remotePath} · 已显示前 256 KiB，内容已截断`); status(`${kind === 'hdfs' ? 'HDFS' : '服务器文件'} · 已预览 ${remotePath}`, 'success'); } catch (error) { setText($('#previewText'), error.message); status(error.message, 'error'); }
 }
 function downloadRemote(remotePath, kind) { const a = document.createElement('a'); a.href = `${kind === 'hdfs' ? '/api/hdfs/download' : '/api/sftp/download'}?path=${encodeURIComponent(remotePath)}`; a.download = ''; document.body.append(a); a.click(); a.remove(); toast(`开始下载：${remotePath.split('/').pop()}`, 'ok'); }
 async function uploadLocalFile(file) {
   if (!state.connected) { toast('请先连接服务器', 'err'); return; }
   const targetDir = state.cwd;
-  const block = createLogBlock(`上传本地文件 → ${targetDir}/${file.name}`);
+  status(`正在上传 ${file.name}…`);
   try {
     const buf = await file.arrayBuffer();
     const res = await fetch('/api/sftp/upload', { method: 'POST', headers: { 'X-Target-Dir': targetDir, 'X-File-Name': encodeURIComponent(file.name), 'Content-Type': 'application/octet-stream' }, body: buf });
     const json = await res.json().catch(() => ({}));
     if (!res.ok || !json.ok) throw new Error(json.error?.message || `上传失败（HTTP ${res.status}）`);
-    block.setResult(`已上传：${json.remotePath}\n大小：${formatBytes(json.size)}`, 0, 0);
     toast(`已上传到 ${json.remotePath}`, 'ok');
-    await persistLog(block);
+    status(`已上传 ${file.name} · ${formatBytes(json.size)}`, 'success');
     refreshFiles();
   } catch (error) {
-    block.setError(error.message);
-    await persistLog(block);
+    status(`上传失败 · ${error.message}`, 'error');
     toast(error.message, 'err');
   }
 }
@@ -759,18 +671,9 @@ $('#btnConfirmAction').addEventListener('click', async () => { const pending = s
 function openNameDialog(kind) { state.pendingName = kind; setText($('#nameTitle'), kind === 'mkdir' ? '新建目录' : '新建文件'); setText($('#nameLabel'), `${kind === 'mkdir' ? '目录' : '文件'}名称（当前目录：${state.cwd}）`); $('#nameInput').value = ''; setText($('#nameError'), ''); openDialog('nameDialog', $('#nameInput')); }
 $('#btnNameSubmit').addEventListener('click', async () => { const name = $('#nameInput').value.trim(); const invalid = !name || /[\\/]/.test(name) || name === '.' || name === '..'; $('#nameInput').toggleAttribute('aria-invalid', invalid); if (invalid) { setText($('#nameError'), '请输入不含路径分隔符的名称'); return; } const kind = state.pendingName; try { await postJson(`/api/sftp/${kind}`, { path: pathJoin(state.cwd, name) }); closeDialog('nameDialog'); toast(kind === 'mkdir' ? '目录已创建' : '文件已创建', 'ok'); refreshFiles(); } catch (error) { setText($('#nameError'), error.message); } });
 
-function renderCommands() { const root = $('#commandGroups'); root.replaceChildren(); const groups = [...new Set(COMMANDS.map((item) => item.group))]; groups.forEach((group) => { const items = COMMANDS.filter((item) => item.group === group); const list = el('section', { class: 'command-group' }, el('h3', { text: group })); items.forEach((item) => { const run = el('button', { class: 'fact', type: 'button', text: item.param ? '填写' : '执行' }); run.addEventListener('click', () => { if (item.param) openParamCommand(item); else if (item.danger) { setText($('#confirmTitle'), '确认执行高级删除命令'); setText($('#confirmMessage'), '自由命令可能影响多个文件，请确认后执行。'); setText($('#confirmTarget'), item.command); state.pendingConfirm = { action: () => runCommand(item.command, { confirmed: true }) }; openDialog('confirmDialog', $('#btnConfirmAction')); } else { closeDialog('commandsDialog'); runCommand(item.autoCwd ? `cd ${shellQuote(state.home === '~' ? state.cwd : state.home)} && ${item.command}` : item.command); } }); list.append(el('div', { class: 'command-item' }, el('span', { class: 'command-label' }, el('strong', { text: item.label }), el('small', { text: item.desc })), run)); }); root.append(list); }); }
-function openParamCommand(item) { state.pendingParam = item; setText($('#paramTitle'), item.param === 'file' ? '查看文件' : '查看最后 N 行'); setText($('#paramLabel'), item.param === 'file' ? '文件路径' : '行数和文件路径（例如：100 /var/log/app.log）'); $('#paramInput').value = item.param === 'file' ? state.cwd : '100 '; $('#paramInput').removeAttribute('aria-invalid'); setText($('#paramError'), ''); openDialog('paramDialog', $('#paramInput')); }
-$('#btnParamSubmit').addEventListener('click', () => { const item = state.pendingParam; const value = $('#paramInput').value.trim(); if (!item || !value) { $('#paramInput').setAttribute('aria-invalid', 'true'); setText($('#paramError'), '请输入参数'); return; } $('#paramInput').removeAttribute('aria-invalid'); if (item.param === 'file') { runCommand(`cat ${shellQuote(value)} | head -c 262144`, { refreshable: true, buildCommand: () => `cat ${shellQuote(value)} | head -c 262144` }); closeDialog('paramDialog'); return; } const match = value.match(/^(\d+)\s+(.+)$/); if (!match) { $('#paramInput').setAttribute('aria-invalid', 'true'); setText($('#paramError'), '格式应为：行数 文件路径'); return; } const command = `tail -n ${Number(match[1]) || 100} ${shellQuote(match[2])}`; closeDialog('paramDialog'); runCommand(command, { refreshable: true, buildCommand: () => command }); });
-
 function renderBilling() { const root = $('#billingContent'); root.replaceChildren(); const search = $('#billSearch').value.trim().toLowerCase(); const suffix = $('#billSuffix').value.trim() || '597_2606'; const month = $('#billMonth').value.trim() || '202410'; const ns = $('#billNs').value.trim() || 'ns_aibcp_dev'; BILLING.forEach((card) => { const rows = card.rows.map(([label, value]) => [label, value.replace('{ns}', ns).replace('{month}', month)]).filter(([label, value]) => !search || `${label}${value}`.toLowerCase().includes(search)); if (!rows.length) return; const section = el('section', { class: 'billing-card' }, el('h3', { text: card.title })); rows.forEach(([label, value]) => { const code = el('code', { text: value, title: value }); const copy = el('button', { class: 'fact', type: 'button', text: '复制' }); copy.addEventListener('click', async () => { try { await navigator.clipboard.writeText(value); toast('已复制', 'ok'); } catch (_) { toast('复制失败', 'err'); } }); section.append(el('div', { class: 'billing-row' }, el('span', { text: label }), code, copy)); }); root.append(section); }); }
 
-async function doConnect(overrides = {}) { const saved = storedConfig(); const body = { ...saved, ...overrides }; if (state.sessionPassword) body.password = state.sessionPassword; $('#btnConnect').disabled = true; setText($('#statusText'), '正在连接…'); try { const result = await postJson('/api/connect', body); setConnected(true, result.config); state.home = result.home || '~'; state.cwd = state.home; saveStoredConfig({ ...body, ...result.config }); toast(`已连接 ${result.config.host}`, 'ok'); await refreshFiles(); } catch (error) { setConnected(false); toast(error.message || '连接失败', 'err'); } finally { $('#btnConnect').disabled = false; } }
-$('#btnConnect').addEventListener('click', async () => { if (state.connected) { try { await postJson('/api/disconnect', {}); } finally { setConnected(false); toast('已断开连接'); } } else { openSettingsDialog(); } });
-$('#btnSaveCfg').addEventListener('click', () => { const host = $('#cfgHost').value.trim(); const portValue = $('#cfgPort').value.trim(); const port = Number(portValue); const username = $('#cfgUser').value.trim(); const invalid = !host || !username || !portValue || !Number.isInteger(port) || port < 1 || port > 65535; ['cfgHost', 'cfgPort', 'cfgUser'].forEach((id) => document.getElementById(id)?.toggleAttribute('aria-invalid', invalid)); if (invalid) { setText($('#settingsError'), '服务器地址、端口和用户名必须填写正确'); return; } ['cfgHost', 'cfgPort', 'cfgUser'].forEach((id) => document.getElementById(id)?.removeAttribute('aria-invalid')); state.sessionPassword = $('#cfgPass').value; saveStoredConfig({ host, port, username }); closeDialog('settingsDialog'); void doConnect({ host, port, username }); });
-$('#emptyConnect').addEventListener('click', openSettingsDialog);
-$('#btnSettings').addEventListener('click', openSettingsDialog);
-$('#btnCmds').addEventListener('click', () => { renderCommands(); openDialog('commandsDialog'); });
+$('#btnConnect').addEventListener('click', () => { renderConnectionList(); openDialog('connectionDialog', $('#btnConnectAll')); });
 $('#btnBilling').addEventListener('click', () => { renderBilling(); openDialog('billingDialog', $('#billSearch')); });
 $('#btnCdr').addEventListener('click', () => { if (!$('#cdrFrame').getAttribute('src')) $('#cdrFrame').src = '/cdr/'; openDialog('cdrDialog'); });
 $('#billSearch').addEventListener('input', renderBilling); ['billSuffix', 'billMonth', 'billNs'].forEach((id) => $( `#${id}`).addEventListener('input', renderBilling));
@@ -782,8 +685,8 @@ Object.keys(RESOURCE_META).forEach((kind) => {
   $(`#${meta.retryId}`)?.addEventListener('click', () => { void refreshResource(kind); });
   $(`#${meta.favoriteButtonId}`)?.addEventListener('click', () => openFavoriteDialog(kind));
 });
-function switchTab(tab, { load = true } = {}) { $$('.tab').forEach((button) => { const active = button.dataset.tab === tab; button.classList.toggle('active', active); button.setAttribute('aria-selected', String(active)); }); $('#filesPane').classList.toggle('hidden', tab !== 'files'); $('#hdfsPane').classList.toggle('hidden', tab !== 'hdfs'); $('#hbasePane').classList.toggle('hidden', tab !== 'hbase'); if (load && tab === 'hdfs' && state.connected && !state.loaded.hdfs) void refreshHdfs(); if (load && tab === 'hbase' && state.connected && !state.loaded.hbase) void refreshHbase(); }
-$$('.tab').forEach((button) => button.addEventListener('click', () => switchTab(button.dataset.tab)));
+function switchTab(tab, { load = true } = {}) { $$('.tabs .tab').forEach((button) => { const active = button.dataset.tab === tab; button.classList.toggle('active', active); button.setAttribute('aria-selected', String(active)); }); $('#filesPane').classList.toggle('hidden', tab !== 'files'); $('#hdfsPane').classList.toggle('hidden', tab !== 'hdfs'); $('#hbasePane').classList.toggle('hidden', tab !== 'hbase'); if (load && tab === 'hdfs' && state.connected && !state.loaded.hdfs) void refreshHdfs(); if (load && tab === 'hbase' && state.connected && !state.loaded.hbase) void refreshHbase(); }
+$$('.tabs .tab').forEach((button) => button.addEventListener('click', () => switchTab(button.dataset.tab)));
 $('#btnRefresh').addEventListener('click', () => { void refreshFiles(); }); $('#btnHdfsRefresh').addEventListener('click', () => { void refreshHdfs(); }); $('#btnMkdir').addEventListener('click', () => state.connected ? openNameDialog('mkdir') : toast('请先连接服务器', 'err')); $('#btnTouch').addEventListener('click', () => state.connected ? openNameDialog('touch') : toast('请先连接服务器', 'err'));
 $('#btnUploadLocal').addEventListener('click', () => { if (!state.connected) { toast('请先连接服务器', 'err'); return; } const input = $('#localFileInput'); input.value = ''; input.click(); });
 $('#localFileInput').addEventListener('change', () => { const file = $('#localFileInput').files && $('#localFileInput').files[0]; if (!file) return; void uploadLocalFile(file); });
@@ -796,55 +699,159 @@ $('#hbaseScanReload').addEventListener('click', () => { if (state.hbaseScan.tabl
 $('#hbaseScanRetry').addEventListener('click', () => { if (state.hbaseScan.tablePath) void loadHbaseSample(state.hbaseScan.tablePath, Number($('#hbaseScanLimit').value) || state.hbaseScan.limit); });
 $('#hbaseScanCopy').addEventListener('click', async () => { try { await navigator.clipboard.writeText(state.hbaseScan.rawText || ''); toast('已复制原始结果', 'ok'); } catch (_) { toast('复制失败，请手动选择文本', 'err'); } });
 
-async function submitCommand() { const input = $('#cmdInput'); const command = input.value.trim(); if (!command) return; state.history.push(command); state.historyIndex = state.history.length; input.value = ''; if (!state.connected) return toast('请先连接服务器', 'err'); if (/\b(?:rm|rmdir|del|erase|format)\b/i.test(command)) { setText($('#confirmTitle'), '确认执行删除命令'); setText($('#confirmMessage'), '删除类自由命令需要二次确认。'); setText($('#confirmTarget'), command); state.pendingConfirm = { action: () => runCommand(command, { confirmed: true }) }; openDialog('confirmDialog', $('#btnConfirmAction')); return; } runCommand(command); }
-$('#btnRun').addEventListener('click', submitCommand); $('#cmdInput').addEventListener('keydown', (event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); submitCommand(); } else if (event.key === 'ArrowUp') { event.preventDefault(); state.historyIndex = Math.max(0, state.historyIndex - 1); $('#cmdInput').value = state.history[state.historyIndex] || ''; } else if (event.key === 'ArrowDown') { event.preventDefault(); state.historyIndex = Math.min(state.history.length, state.historyIndex + 1); $('#cmdInput').value = state.history[state.historyIndex] || ''; } }); $$('#chips .chip').forEach((chip) => chip.addEventListener('click', () => { $('#cmdInput').value = chip.dataset.command; $('#cmdInput').focus(); }));
-$('#btnClear').addEventListener('click', () => { stopRefreshBlock(); $('#logFlow').replaceChildren(); renderConsoleEmptyState(); }); $('#btnExport').addEventListener('click', () => { const blocks = $$('#logFlow .log-block'); if (!blocks.length) return toast('暂无日志可导出'); const lines = ['# Server Workbench · 会话日志', `# 导出时间：${new Date().toLocaleString('zh-CN')}`, '']; blocks.forEach((block) => lines.push(`──── [${block.querySelector('.log-time')?.textContent}] ${block.querySelector('.log-cmd')?.textContent}（${block.querySelector('.badge')?.textContent}）`, block.querySelector('.log-body')?.textContent || '', '')); const blob = new Blob([lines.join('\n')], { type: 'text/plain;charset=utf-8' }); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'server-workbench-log.txt'; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000); }); $('#btnLogReload').addEventListener('click', () => { $('#logFlow').replaceChildren(); restoreLogs(); }); $('#logDate').valueAsDate = new Date();
+const DB_SOURCE_LABEL = { udal: 'MySQL / UDAL', doris: 'Doris' };
+const CONNECTION_LABEL = { ssh: 'SSH / SFTP / HDFS', ...DB_SOURCE_LABEL };
+function connectionConfig(source) { return source === 'ssh' ? (state.config || state.connectionProfiles.ssh || {}) : (state.databases[source].config || state.connectionProfiles[source] || {}); }
+function renderConnectionList() {
+  for (const source of ['ssh', 'udal', 'doris']) {
+    const config = connectionConfig(source); const connected = source === 'ssh' ? state.connected : state.databases[source].connected;
+    const values = { host: config.host || '—', port: config.port || '—', username: config.username || '—', database: source === 'udal' ? 'CRM3DB、CONFIGDB_CNOS_JF_TEST' : config.database || '—', password: config.hasPassword ? '已配置' : '未配置' };
+    for (const [field, value] of Object.entries(values)) setText(document.querySelector(`[data-connection-field="${source}.${field}"]`), value);
+    document.querySelector(`[data-connection-dot="${source}"]`)?.classList.toggle('on', connected);
+    setText(document.querySelector(`[data-connection-status="${source}"]`), connected ? '已连接' : '未连接');
+    setText(document.querySelector(`[data-connection-error="${source}"]`), state.connectionErrors[source] || '');
+  }
+}
+async function connectAll() {
+  const button = $('#btnConnectAll'); button.disabled = true; setText(button, '连接中…'); setText($('#connectionError'), '正在连接 SSH、MySQL / UDAL 和 Doris…');
+  state.connectionErrors = { ssh: '', udal: '', doris: '' };
+  try {
+    const response = await postJson('/api/connections/connect', {}, { timeout: 60000 });
+    const sshResult = response.sources?.ssh || {}; const sshConnected = Boolean(sshResult.connected);
+    setConnected(sshConnected, sshResult.config || state.connectionProfiles.ssh); state.home = sshResult.home || state.home || '~'; if (sshConnected) state.cwd = state.home;
+    for (const source of ['udal', 'doris']) { const item = response.sources?.[source] || {}; state.databases[source] = { connected: Boolean(item.connected), config: item.config || state.connectionProfiles[source], password: '' }; }
+    for (const source of ['ssh', 'udal', 'doris']) state.connectionErrors[source] = response.sources?.[source]?.error || '';
+    renderConnectionList(); renderDbStatus(); clearQueryResult();
+    const connectedCount = ['ssh', 'udal', 'doris'].filter((source) => source === 'ssh' ? state.connected : state.databases[source].connected).length;
+    setText($('#connectionError'), connectedCount === 3 ? '全部连接成功' : `已连接 ${connectedCount} / 3，请查看分项提示`);
+    toast(connectedCount === 3 ? '全部数据源已连接' : `连接完成 · ${connectedCount} / 3`, connectedCount ? 'ok' : 'err');
+    if (sshConnected) await refreshFiles();
+  } catch (error) { setText($('#connectionError'), error.message); toast(error.message, 'err'); }
+  finally { button.disabled = false; setText(button, '连接'); }
+}
+function clearQueryResult() {
+  state.gates.phone.cancel(); state.gates.threshold.cancel(); state.phoneQuery = { running: false, result: null }; state.thresholdQuery = { running: false, result: null };
+  $('#btnPhoneQuery').disabled = false; $('#btnPhoneCancel').classList.add('hidden'); $('#btnThresholdQuery').disabled = false; $('#btnThresholdCancel').classList.add('hidden');
+  setText($('#queryState'), ''); $('#queryState').dataset.tone = '';
+  const hint = state.activeQuery === 'threshold' ? '请先连接 MySQL / UDAL，再输入 A 端产品实例 ID。' : '请先连接 MySQL / UDAL，再输入号码。';
+  $('#queryResults').replaceChildren(el('div', { class: 'query-empty' }, el('strong', { text: '等待查询' }), el('span', { text: hint }), el('button', { id: 'emptyDbConnect', class: 'wb-button primary', type: 'button', text: '打开连接设置', on: { click: () => { renderConnectionList(); openDialog('connectionDialog'); } } })));
+}
+function renderDbStatus() {
+  const root = $('#dbStatusCards'); root.replaceChildren();
+  for (const source of ['udal', 'doris']) {
+    const item = state.databases[source]; const config = item.config || state.connectionProfiles[source] || {}; const detail = item.connected ? `${config.host || ''}:${config.port || ''} · ${config.username || ''}` : '未连接';
+    root.append(el('button', { class: 'db-status-card', type: 'button', on: { click: () => { renderConnectionList(); openDialog('connectionDialog'); } } }, el('span', { class: `status-dot ${item.connected ? 'on' : ''}`, 'aria-hidden': 'true' }), el('span', { class: 'db-status-copy' }, el('strong', { text: DB_SOURCE_LABEL[source] }), el('small', { text: detail }))));
+  }
+}
+function setQueryState(message, tone = '') { setText($('#queryState'), message); $('#queryState').dataset.tone = tone; }
+function displayValue(value, column = '') {
+  if (value === null || value === undefined || value === '') return '—'; if (typeof value === 'object') return JSON.stringify(value);
+  const text = String(value); if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(text)) return formatDate(text, { withZone: true, milliseconds: true });
+  if (/(?:date|time|时间|_at)$/i.test(String(column)) && /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?$/.test(text)) return `${text.replace('T', ' ')} +08:00`;
+  return text;
+}
+function renderTable(rows) {
+  if (!rows?.length) return el('div', { class: 'query-section-empty', text: '无数据或关联缺失' });
+  const columns = [...new Set(rows.flatMap((row) => Object.keys(row)))];
+  const head = el('tr'); columns.forEach((column) => head.append(el('th', { text: column })));
+  const body = el('tbody'); rows.forEach((row) => { const tr = el('tr'); columns.forEach((column) => { const text = displayValue(row[column], column); tr.append(el('td', { text, title: text })); }); body.append(tr); });
+  return el('div', { class: 'query-table-wrap' }, el('table', { class: 'query-table' }, el('thead', {}, head), body));
+}
+function resultSection(title, rows, { open = false, actions = [] } = {}) {
+  const details = el('details', { class: 'query-section', ...(open ? { open: '' } : {}) }, el('summary', { text: `${title} · ${rows?.length || 0} 条` }), renderTable(rows));
+  if (actions.length) details.append(el('div', { class: 'query-row-actions' }, ...actions));
+  return details;
+}
+function renderQueryResult(result) {
+  state.phoneQuery.result = result; const root = $('#queryResults'); root.replaceChildren(); const data = result.data || {};
+  const statusText = { complete: '查询完成', partial: '部分完成', empty: '无匹配', failed: '查询失败' }[result.status] || result.status;
+  root.append(el('div', { class: 'query-summary' }, el('span', { class: `summary-chip ${result.status === 'partial' ? 'warn' : result.status === 'failed' ? 'err' : ''}`, text: statusText }), el('span', { class: 'summary-chip', text: `号码 ${result.phone}` }), el('span', { class: 'summary-chip', text: `共 ${result.totalRows || 0} 行` }), el('span', { class: 'summary-chip', text: formatDate(result.queriedAt, { withZone: true, milliseconds: true }) }), ...(result.truncated ? [el('span', { class: 'summary-chip warn', text: '结果已达上限' })] : [])));
+  const failed = (result.steps || []).filter((step) => step.status === 'error');
+  if (failed.length) {
+    const list = el('ul', { class: 'query-step-list' });
+    failed.forEach((step) => list.append(el('li', { class: 'query-step error' }, el('strong', { text: step.name }), el('span', { text: `${step.database} · ${step.message}` }))));
+    root.append(list);
+  }
+  root.append(resultSection('查询步骤与数据来源', (result.steps || []).map((step) => ({ 步骤: step.name, 状态: step.status, 行数: step.count, 数据源: step.source, 逻辑库: step.database, 读取时间: step.readAt, 错误: step.message || '' }))));
+  const customerId = data.productInstances?.[0]?.OWNER_CUST_ID; const productInstanceId = data.productInstances?.[0]?.prod_inst_id;
+  const customerButton = el('button', { class: 'wb-button', type: 'button', text: '查看同客户其他产品', disabled: !customerId, on: { click: () => loadCustomerProducts(customerId) } });
+  const candidateButton = el('button', { class: 'wb-button', type: 'button', text: '辅助定位账户', disabled: !customerId && !productInstanceId, on: { click: () => loadAccountCandidates(productInstanceId, customerId) } });
+  root.append(
+    resultSection('产品实例', data.productInstances, { open: true, actions: [customerButton] }), resultSection('产品定义', data.productDefinitions),
+    resultSection('账户付费关系', data.accountRelations, { open: true, actions: data.productInstances?.length && !data.accountRelations?.length ? [candidateButton] : [] }), resultSection('账户与合同', data.accounts, { open: true }),
+    resultSection('产品与销售品关系', data.offerRelations), resultSection('销售品实例', data.offerInstances), resultSection('套餐 / 销售品定义', data.offers, { open: true }), resultSection('定价计划', data.pricingPlans),
+  );
+}
+function renderThresholdResult(result) {
+  state.thresholdQuery.result = result; const root = $('#queryResults'); root.replaceChildren(); const data = result.data || {};
+  const statusText = { complete: '查询完成', partial: '部分完成', empty: '无匹配', failed: '查询失败' }[result.status] || result.status;
+  root.append(el('div', { class: 'query-summary' }, el('span', { class: `summary-chip ${result.status === 'partial' ? 'warn' : result.status === 'failed' ? 'err' : ''}`, text: statusText }), el('span', { class: 'summary-chip', text: `A 端实例 ${result.aProductInstanceId}` }), el('span', { class: 'summary-chip', text: `终端产品规格 ${result.productId}` }), el('span', { class: 'summary-chip', text: `共 ${result.totalRows || 0} 行` }), el('span', { class: 'summary-chip', text: formatDate(result.queriedAt, { withZone: true, milliseconds: true }) }), ...(result.truncated ? [el('span', { class: 'summary-chip warn', text: '结果已达上限' })] : [])));
+  const failed = (result.steps || []).filter((step) => step.status === 'error');
+  if (failed.length) { const list = el('ul', { class: 'query-step-list' }); failed.forEach((step) => list.append(el('li', { class: 'query-step error' }, el('strong', { text: step.name }), el('span', { text: `${step.database} · ${step.message}` })))); root.append(list); }
+  root.append(
+    resultSection('查询步骤与数据来源', (result.steps || []).map((step) => ({ 步骤: step.name, 状态: step.status, 行数: step.count, 数据源: step.source, 逻辑库: step.database, 读取时间: step.readAt, 错误: step.message || '' })), { open: false }),
+    resultSection('A/Z 产品实例关系', data.relationships, { open: true }),
+    resultSection('符合规格的终端产品实例', data.terminalProducts, { open: true }),
+    resultSection('档位提醒配置', data.thresholdAttributes, { open: true }),
+  );
+}
+async function loadCustomerProducts(customerId) {
+  try { setQueryState('正在查询同客户其他产品…'); const response = await postJson('/api/query/customer-products', { customerId }, { timeout: 60000 }); const phones = [...new Set(response.result.rows.map((row) => row.acc_num).filter(Boolean))]; const actions = phones.map((phone) => el('button', { class: 'wb-button', type: 'button', text: `查询 ${phone}`, on: { click: () => { $('#phoneInput').value = phone; $('#phoneQueryForm').requestSubmit(); } } })); const section = resultSection('同客户其他产品（按需展开）', response.result.rows, { open: true, actions }); $('#queryResults').append(section); setQueryState(`同客户产品已加载 · ${response.result.rows.length} 条`, 'success'); } catch (error) { setQueryState(error.message, 'error'); }
+}
+async function loadAccountCandidates(productInstanceId, customerId) { try { setQueryState('正在辅助定位账户…'); const response = await postJson('/api/query/account-candidates', { productInstanceId: String(productInstanceId || ''), customerId: String(customerId || '') }, { timeout: 60000 }); $('#queryResults').append(resultSection('账户候选（非付费关系结论）', response.result.rows, { open: true })); setQueryState(`账户候选已加载 · ${response.result.rows.length} 条`, 'success'); } catch (error) { setQueryState(error.message, 'error'); } }
+async function restoreDatabaseStatus() { try { const response = await getJson('/api/db/status'); for (const source of ['udal', 'doris']) { const item = response.sources?.[source] || {}; state.connectionProfiles[source] = response.defaults?.[source] || state.connectionProfiles[source]; state.databases[source] = { connected: Boolean(item.connected), config: item.config, password: '' }; } renderDbStatus(); renderConnectionList(); } catch (_) { renderDbStatus(); } }
+async function submitPhoneQuery(event) {
+  event?.preventDefault(); const phone = $('#phoneInput').value.trim(); if (!phone) { setQueryState('请输入手机号或接入号码', 'error'); return; } if (!state.databases.udal.connected) { setQueryState('请先连接 MySQL / UDAL', 'error'); renderConnectionList(); openDialog('connectionDialog'); return; }
+  const request = state.gates.phone.next(); state.phoneQuery.running = true; $('#btnPhoneQuery').disabled = true; $('#btnPhoneCancel').classList.remove('hidden'); setQueryState('正在按关联链分步查询…'); $('#queryResults').replaceChildren(el('div', { class: 'query-empty' }, el('strong', { text: '查询中' }), el('span', { text: '正在读取 CRM3DB 与 CONFIGDB_CNOS_JF_TEST' })));
+  try { const response = await postJson('/api/query/phone', { phone }, { signal: request.signal, timeout: 60000 }); if (!request.isCurrent()) return; renderQueryResult(response.result); setQueryState(response.result.status === 'partial' ? '查询部分完成，请查看缺失或失败步骤' : response.result.status === 'empty' ? '没有找到匹配号码' : '查询完成', response.result.status === 'complete' ? 'success' : ''); }
+  catch (error) { if (!request.isCurrent() || error.code === 'REQUEST_ABORTED') return; setQueryState(error.message, 'error'); $('#queryResults').replaceChildren(el('div', { class: 'query-empty' }, el('strong', { text: '查询失败' }), el('span', { text: error.message }))); }
+  finally { if (request.isCurrent()) { state.phoneQuery.running = false; $('#btnPhoneQuery').disabled = false; $('#btnPhoneCancel').classList.add('hidden'); } }
+}
+async function submitThresholdQuery(event) {
+  event?.preventDefault(); const aProductInstanceId = $('#thresholdProductInput').value.trim(); if (!aProductInstanceId) { setQueryState('请输入 A 端产品实例 ID', 'error'); return; } if (!state.databases.udal.connected) { setQueryState('请先连接 MySQL / UDAL', 'error'); renderConnectionList(); openDialog('connectionDialog'); return; }
+  const request = state.gates.threshold.next(); state.thresholdQuery.running = true; $('#btnThresholdQuery').disabled = true; $('#btnThresholdCancel').classList.remove('hidden'); setQueryState('正在查询 A/Z 关系与档位提醒配置…'); $('#queryResults').replaceChildren(el('div', { class: 'query-empty' }, el('strong', { text: '查询中' }), el('span', { text: '正在读取 CRM3DB 的产品关系、终端产品与属性配置' })));
+  try { const response = await postJson('/api/query/threshold', { aProductInstanceId }, { signal: request.signal, timeout: 60000 }); if (!request.isCurrent()) return; renderThresholdResult(response.result); setQueryState(response.result.status === 'partial' ? '查询部分完成，请查看缺失或失败步骤' : response.result.status === 'empty' ? '没有找到符合条件的终端产品或档位配置' : '查询完成', response.result.status === 'complete' ? 'success' : ''); }
+  catch (error) { if (!request.isCurrent() || error.code === 'REQUEST_ABORTED') return; setQueryState(error.message, 'error'); $('#queryResults').replaceChildren(el('div', { class: 'query-empty' }, el('strong', { text: '查询失败' }), el('span', { text: error.message })));
+  } finally { if (request.isCurrent()) { state.thresholdQuery.running = false; $('#btnThresholdQuery').disabled = false; $('#btnThresholdCancel').classList.add('hidden'); } }
+}
+function switchQueryTab(query) { state.activeQuery = query === 'threshold' ? 'threshold' : 'phone'; $$('[data-query-tab]').forEach((button) => { const active = button.dataset.queryTab === state.activeQuery; button.classList.toggle('active', active); button.setAttribute('aria-selected', String(active)); }); $$('[data-query-pane]').forEach((pane) => pane.classList.toggle('hidden', pane.dataset.queryPane !== state.activeQuery)); clearQueryResult(); }
+$('#emptyDbConnect').addEventListener('click', () => { renderConnectionList(); openDialog('connectionDialog'); });
+$('#btnConnectAll').addEventListener('click', () => void connectAll());
+$$('[data-query-tab]').forEach((button) => button.addEventListener('click', () => switchQueryTab(button.dataset.queryTab)));
+$('#phoneQueryForm').addEventListener('submit', submitPhoneQuery); $('#btnPhoneCancel').addEventListener('click', () => { state.gates.phone.cancel(); state.phoneQuery.running = false; $('#btnPhoneQuery').disabled = false; $('#btnPhoneCancel').classList.add('hidden'); setQueryState('查询已取消'); });
+$('#thresholdQueryForm').addEventListener('submit', submitThresholdQuery); $('#btnThresholdCancel').addEventListener('click', () => { state.gates.threshold.cancel(); state.thresholdQuery.running = false; $('#btnThresholdQuery').disabled = false; $('#btnThresholdCancel').classList.add('hidden'); setQueryState('查询已取消'); }); $('#btnQueryReset').addEventListener('click', clearQueryResult);
 
-async function checkStatus() { if (document.hidden || state.statusRunning) return; state.statusRunning = true; try { const result = await getJson('/api/status'); if (state.connected && !result.connected) { setConnected(false); toast('远程连接已断开', 'err'); } } catch (error) { if (state.connected) { setConnected(false); toast('本地桥接服务不可用', 'err'); } } finally { state.statusRunning = false; if ($('#autoStatus').checked && !document.hidden) state.statusTimer = setTimeout(checkStatus, 5000); } }
-$('#autoStatus').checked = true; $('#autoStatus').addEventListener('change', () => { clearTimeout(state.statusTimer); if ($('#autoStatus').checked) checkStatus(); }); document.addEventListener('visibilitychange', () => { if (document.hidden) { clearTimeout(state.statusTimer); state.refreshBlocks.forEach((block) => { clearTimeout(block.timer); block.timer = null; }); } else { if ($('#autoStatus').checked) checkStatus(); [...state.refreshBlocks.values()].forEach((block) => startRefreshBlock(block)); } });
+async function checkStatus() { if (document.hidden || state.statusRunning) return; state.statusRunning = true; try { const [sshStatus, dbStatus] = await Promise.all([getJson('/api/status'), getJson('/api/db/status')]); if (state.connected && !sshStatus.connected) { setConnected(false); toast('远程连接已断开', 'err'); } for (const source of ['udal', 'doris']) { const item = dbStatus.sources?.[source]; if (item) { state.databases[source].connected = Boolean(item.connected); state.databases[source].config = item.config || state.databases[source].config; } } renderDbStatus(); } catch (error) { if (state.connected) { setConnected(false); toast('本地桥接服务不可用', 'err'); } } finally { state.statusRunning = false; if (!document.hidden) state.statusTimer = setTimeout(checkStatus, 5000); } }
+document.addEventListener('visibilitychange', () => { clearTimeout(state.statusTimer); if (!document.hidden) checkStatus(); });
 
-renderCommands();
 $('#pathInput').value = state.cwd; $('#hdfsPathInput').value = state.hdfsCwd; $('#hbasePathInput').value = state.hbaseCwd;
 renderBreadcrumbs($('#crumbs'), state.cwd, state.home, (value) => navigateResource('files', value)); renderBreadcrumbs($('#hdfsCrumbs'), state.hdfsCwd, '/', (value) => navigateResource('hdfs', value)); renderBreadcrumbs($('#hbaseCrumbs'), state.hbaseCwd, '/', (value) => navigateResource('hbase', value)); renderFavorites(); updateFavoriteButtons();
 (async function init() {
   state.annotations = loadAnnotations();
   try {
-    const cfg = await getJson('/api/config'); state.config = cfg.config || storedConfig();
+    const cfg = await getJson('/api/config'); state.config = cfg.config || null; state.connectionProfiles = { ...state.connectionProfiles, ...(cfg.connections || {}), ssh: cfg.connections?.ssh || cfg.config || null };
     const configuredTimeouts = cfg.timeouts || {};
     state.timeouts = { filesListMs: DEFAULT_RESOURCE_TIMEOUTS.filesListMs, hdfsListMs: Number(configuredTimeouts.hdfsListMs) || DEFAULT_RESOURCE_TIMEOUTS.hdfsListMs, hbaseScanMs: Number(configuredTimeouts.hbaseScanMs) || DEFAULT_RESOURCE_TIMEOUTS.hbaseScanMs };
-    $('#cfgHost').value = state.config.host || ''; $('#cfgPort').value = state.config.port || 22; $('#cfgUser').value = state.config.username || '';
-    state.favorites = loadFavoritesForCurrentServer(); renderFavorites(); updateFavoriteButtons();
+    state.favorites = loadFavoritesForCurrentServer(); renderFavorites(); updateFavoriteButtons(); renderConnectionList();
   } catch (_) {}
-  await restoreLogs();
+  await restoreDatabaseStatus();
   await restoreSession();
   checkStatus();
 })();
 
-// 页面刷新/重开后的会话恢复：SSH 长连接存活在后端 Node 进程里，刷新页面并不会真的断开，
-// 这里探测后端状态直接恢复前端 UI（无需重新输密码）；若后端也已断开则用保存的配置自动重连。
+// 页面刷新/重开后恢复仍存活在 Node 进程里的 SSH 会话；新连接统一由连接弹窗发起。
 async function restoreSession() {
   try {
-    const saved = storedConfig();
     const connectionStatus = await getJson('/api/status');
     if (connectionStatus?.connected) {
       // 后端 SSH 会话仍在：直接恢复前端状态，不重新认证
-      const conn = connectionStatus.conn || { host: saved.host, port: saved.port, username: saved.username };
+      const conn = connectionStatus.conn || state.connectionProfiles.ssh || {};
       setConnected(true, conn);
       state.home = connectionStatus.home || '~';
       state.cwd = state.home;
       status(`已恢复连接 · ${conn.host || ''}`, 'success');
       toast(`已恢复 ${conn.host || ''} 的连接会话`, 'ok');
       if ($('#filesPane') && !$('#filesPane').classList.contains('hidden')) void refreshFiles();
-      return;
-    }
-    // 后端无会话：尝试用已保存的主机/端口/用户名自动重连（密码由后端配置文件提供，不落浏览器）
-    if (saved.host && saved.username) {
-      try {
-        const result = await postJson('/api/connect', { host: saved.host, port: saved.port, username: saved.username });
-        setConnected(true, result.config); state.home = result.home || '~'; state.cwd = state.home;
-        toast(`已自动重连 ${result.config.host}`, 'ok');
-        if ($('#filesPane') && !$('#filesPane').classList.contains('hidden')) void refreshFiles();
-      } catch (_) { /* 自动重连失败（如密码未配置）：保持未连接，等待用户手动连接 */ }
     }
   } catch (_) { /* 桥接服务不可用：保持默认未连接状态 */ }
 }

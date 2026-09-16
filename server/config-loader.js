@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 
 const root = path.join(__dirname, '..');
+const envPath = path.join(root, '.env');
 const localPath = path.join(root, 'config.js');
 const examplePath = path.join(root, 'config.example.js');
 let loadedFrom = localPath;
@@ -13,6 +14,28 @@ let config;
 if (fs.existsSync(localPath)) config = require(localPath);
 else { loadedFrom = examplePath; config = require(examplePath); }
 
+function parseEnv(text) {
+  const result = {};
+  for (const rawLine of String(text || '').replace(/^\uFEFF/, '').split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('#')) continue;
+    const match = line.match(/^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/);
+    if (!match) continue;
+    let value = match[2].trim();
+    if (value.startsWith('"') && value.endsWith('"')) {
+      try { value = JSON.parse(value); } catch (_) { value = value.slice(1, -1); }
+    } else if (value.startsWith("'") && value.endsWith("'")) value = value.slice(1, -1);
+    else value = value.replace(/\s+#.*$/, '').trim();
+    result[match[1]] = value;
+  }
+  return result;
+}
+
+const fileEnv = fs.existsSync(envPath) ? parseEnv(fs.readFileSync(envPath, 'utf8')) : {};
+const env = { ...fileEnv, ...process.env };
+function envText(name, fallback = '') { return env[name] === undefined ? fallback : String(env[name]); }
+function envNumber(name, fallback) { const value = Number(env[name]); return Number.isFinite(value) && value > 0 ? value : fallback; }
+
 function normalize(raw) {
   const value = raw || {};
   const workbench = value.workbench || {};
@@ -21,18 +44,28 @@ function normalize(raw) {
   const logs = value.logs || {};
   return {
     ...value,
-    workbench: { host: workbench.host || '127.0.0.1', port: Number(workbench.port) || 17755 },
+    workbench: { host: envText('WORKBENCH_HOST', workbench.host || '127.0.0.1'), port: envNumber('WORKBENCH_PORT', Number(workbench.port) || 17755) },
     ssh: {
-      host: typeof ssh.host === 'string' ? ssh.host.trim() : '',
-      port: Number(ssh.port) || 22,
-      username: typeof ssh.username === 'string' ? ssh.username.trim() : '',
-      password: typeof ssh.password === 'string' ? ssh.password : '',
+      host: envText('SSH_HOST', typeof ssh.host === 'string' ? ssh.host : '').trim(),
+      port: envNumber('SSH_PORT', Number(ssh.port) || 22),
+      username: envText('SSH_USERNAME', typeof ssh.username === 'string' ? ssh.username : '').trim(),
+      password: envText('SSH_PASSWORD', typeof ssh.password === 'string' ? ssh.password : ''),
       timeoutMs: Number(ssh.timeoutMs || value.sshTimeoutMs) || 15000,
       execTimeoutMs: Number(ssh.execTimeoutMs || value.execTimeoutMs) || 30000,
       execMaxTimeoutMs: Number(ssh.execMaxTimeoutMs || value.execMaxTimeoutMs) || 120000,
       execMaxOutputBytes: Number(ssh.execMaxOutputBytes || value.execMaxOutputBytes) || 2 * 1024 * 1024,
     },
-    cdr: { upstream: cdr.upstream || `http://${cdr.host || '127.0.0.1'}:${Number(cdr.port) || 8000}` },
+    database: {
+      udal: {
+        host: envText('UDAL_HOST').trim(), port: envNumber('UDAL_PORT', 8901), username: envText('UDAL_USERNAME').trim(), password: envText('UDAL_PASSWORD'),
+        databases: envText('UDAL_DATABASES', 'CRM3DB,CONFIGDB_CNOS_JF_TEST').split(',').map((item) => item.trim()).filter(Boolean),
+      },
+      doris: {
+        host: envText('DORIS_HOST').trim(), port: envNumber('DORIS_PORT', 9030), username: envText('DORIS_USERNAME').trim(), password: envText('DORIS_PASSWORD'),
+        database: envText('DORIS_DATABASE').trim(), databases: [null],
+      },
+    },
+    cdr: { upstream: envText('CDR_UPSTREAM', cdr.upstream || `http://${cdr.host || '127.0.0.1'}:${Number(cdr.port) || 8000}`) },
     hdfsTimeoutMs: Number(value.hdfsTimeoutMs) || 90000,
     hbaseTimeoutMs: Number(value.hbaseTimeoutMs) || 120000,
     logs: {
@@ -48,7 +81,8 @@ const isExample = path.resolve(loadedFrom) === path.resolve(examplePath);
 
 function validate() {
   const errors = [];
-  if (!normalized.ssh.host || !normalized.ssh.username) errors.push('缺少 SSH host 或 username，请复制 config.example.js 为 config.js 并填写');
+  if (!normalized.ssh.host || !normalized.ssh.username) errors.push('缺少 SSH_HOST 或 SSH_USERNAME，请在项目根目录 .env 中填写');
+  for (const [source, item] of Object.entries(normalized.database)) if (!item.host || !item.username) errors.push(`缺少 ${source.toUpperCase()}_HOST 或 ${source.toUpperCase()}_USERNAME，请在项目根目录 .env 中填写`);
   if (!Number.isInteger(normalized.workbench.port) || normalized.workbench.port < 1 || normalized.workbench.port > 65535) errors.push('workbench.port 必须是 1-65535 的整数');
   return errors;
 }
@@ -58,4 +92,4 @@ function resolveLogDir() {
   return path.isAbsolute(value) ? value : path.resolve(root, value);
 }
 
-module.exports = { ...normalized, loadedFrom, isExample, validate, resolveLogDir, root, exists: fs.existsSync(localPath) };
+module.exports = { ...normalized, loadedFrom: fs.existsSync(envPath) ? envPath : loadedFrom, isExample: !fs.existsSync(envPath), validate, resolveLogDir, root, envPath, exists: fs.existsSync(envPath), parseEnv };

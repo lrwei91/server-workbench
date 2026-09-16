@@ -9,6 +9,7 @@ const sftp = require('../../server/sftp');
 const log = require('../../server/log');
 const hdfs = require('../../server/hdfs');
 const hbase = require('../../server/hbase');
+const config = require('../../server/config-loader');
 const { createServer, asRequestError, MAX_BODY_BYTES } = require('../../server/server');
 
 function request(server, method, path, body) {
@@ -79,6 +80,15 @@ test('HDFS listing never treats partial stdout with a failed exit code as succes
   } finally { ssh.execCommand = originalExec; }
 });
 
+test('HDFS preview is structured, bounded, and reports truncation', async () => {
+  const originalExec = ssh.execCommand;
+  ssh.execCommand = async (command) => ({ code: 0, stdout: 'x'.repeat(262145), stderr: '', truncated: false });
+  try {
+    const result = await hdfs.hdfsPreview('/apps/a.txt', 262144);
+    assert.equal(result.text.length, 262144); assert.equal(result.truncated, true);
+  } finally { ssh.execCommand = originalExec; }
+});
+
 test('HBase paths reject shell control characters before SSH execution', async () => {
   const originalExec = ssh.execCommand;
   let called = false;
@@ -89,6 +99,13 @@ test('HBase paths reject shell control characters before SSH execution', async (
     await assert.rejects(hbase.hbaseList("/ns'; list_namespace"), /HBase namespace包含不支持的字符/);
     assert.equal(called, false);
   } finally { ssh.execCommand = originalExec; }
+});
+
+test('HBase path errors map to 400 and HBase shell failures map to 502', () => {
+  const invalid = asRequestError(new Error('HBase 表名包含不支持的字符'));
+  assert.equal(invalid.status, 400); assert.equal(invalid.code, 'HBASE_INVALID_PATH'); assert.equal(invalid.retryable, false);
+  const failed = asRequestError(new Error('HBase shell 执行失败：Master is initializing'));
+  assert.equal(failed.status, 502); assert.equal(failed.code, 'REMOTE_ERROR'); assert.equal(failed.retryable, true);
 });
 
 test('HTTP errors have real status and normalized shape', async () => {
@@ -106,6 +123,12 @@ test('HTTP errors have real status and normalized shape', async () => {
     assert.equal(unknown.status, 400); assert.equal(unknown.body.error.code, 'UNKNOWN_FIELD');
     const tooLarge = await request(server, 'POST', '/api/exec', 'x'.repeat(MAX_BODY_BYTES + 1));
     assert.equal(tooLarge.status, 413); assert.equal(tooLarge.body.error.code, 'BODY_TOO_LARGE');
+    const invalidDb = await request(server, 'POST', '/api/db/connect', { source: 'oracle', host: 'HOST', port: 1, username: 'USER', password: '' });
+    assert.equal(invalidDb.status, 400); assert.equal(invalidDb.body.error.code, 'INVALID_INPUT');
+    const disconnectedQuery = await request(server, 'POST', '/api/query/phone', { phone: '13338297988' });
+    assert.equal(disconnectedQuery.status, 409); assert.equal(disconnectedQuery.body.error.code, 'DB_NOT_CONNECTED');
+    const disconnectedThreshold = await request(server, 'POST', '/api/query/threshold', { aProductInstanceId: '48243980' });
+    assert.equal(disconnectedThreshold.status, 409); assert.equal(disconnectedThreshold.body.error.code, 'DB_NOT_CONNECTED');
   } finally { await new Promise((resolve) => server.close(resolve)); }
 });
 
@@ -162,12 +185,42 @@ test('log queue writes asynchronously and paginates newest entries', async () =>
   } finally { await fs.promises.unlink(fixturePath).catch(() => {}); }
 });
 
-test('connected console empty state does not reuse the disconnect action', () => {
+test('database query panel replaces command and log interactions', () => {
+  const html = fs.readFileSync(path.join(__dirname, '../../public/index.html'), 'utf8');
   const source = fs.readFileSync(path.join(__dirname, '../../public/js/main.js'), 'utf8');
-  assert.match(source, /function renderConsoleEmptyState\(\)[\s\S]*?state\.connected \? '暂无执行日志'/);
-  assert.match(source, /if \(connected\) \{[^}]*renderConsoleEmptyState\(\); return; \}/);
-  assert.match(source, /\$\('#emptyConnect'\)\.addEventListener\('click', openSettingsDialog\)/);
-  assert.doesNotMatch(source, /\$\('#emptyConnect'\)[^\n]*btnConnect[^\n]*click/);
+  assert.match(html, /<h1>数据库查询<\/h1>/); assert.match(html, /查询手机号/); assert.match(html, /阈值查询/); assert.match(html, /id="connectionDialog"/);
+  assert.doesNotMatch(html, /Redis|cacheRedis|data-cache-/);
+  assert.doesNotMatch(html, /id="cmdInput"|id="logFlow"|id="btnCmds"|id="commandsDialog"/);
+  assert.match(source, /postJson\('\/api\/query\/phone'/); assert.match(source, /postJson\('\/api\/query\/threshold'/); assert.match(source, /\/api\/hdfs\/preview/);
+  assert.doesNotMatch(source, /\/api\/cache\/|state\.cache|CACHE_FIELDS/);
+  assert.doesNotMatch(source, /postJson\('\/api\/exec'|postJson\('\/api\/log\/append'|\/api\/log\/list/);
+});
+
+test('workbench keeps a 1 to 1.5 desktop ratio and the phone query action on one line', () => {
+  const css = fs.readFileSync(path.join(__dirname, '../../public/style.css'), 'utf8');
+  assert.match(css, /grid-template-columns:\s*minmax\(0,\s*1fr\)\s+minmax\(0,\s*1\.5fr\)/);
+  assert.match(css, /\.query-input-row \.wb-button \{[^}]*flex:\s*0 0 auto;[^}]*white-space:\s*nowrap;/);
+  assert.match(css, /dialog#connectionDialog\[open\][^{]*\{[^}]*width:\s*min\(1200px,\s*calc\(100vw - 32px\)\);[^}]*max-width:\s*none;/);
+});
+
+test('connection settings use one read-only list and keep credentials out of browser storage', () => {
+  const html = fs.readFileSync(path.join(__dirname, '../../public/index.html'), 'utf8');
+  const source = fs.readFileSync(path.join(__dirname, '../../public/js/main.js'), 'utf8');
+  const dialog = html.match(/<dialog id="connectionDialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+  assert.match(dialog, /data-connection-source="ssh"/); assert.match(dialog, /data-connection-source="udal"/); assert.match(dialog, /data-connection-source="doris"/);
+  assert.equal((dialog.match(/id="btnConnectAll"/g) || []).length, 1); assert.doesNotMatch(dialog, /<input\b|type="password"|data-db-connect|data-db-disconnect/);
+  assert.doesNotMatch(html, /id="settingsDialog"|id="dbSettingsDialog"|id="btnSettings"|id="btnDbSettings"/);
+  assert.match(source, /postJson\('\/api\/connections\/connect', \{\}/); assert.doesNotMatch(source, /wb_conn_cfg|wb_db_cfg|sessionPassword|DB_FIELDS/);
+});
+
+test('local env parser supports quoted credentials without exposing them through config masks', () => {
+  assert.deepEqual(config.parseEnv('SSH_HOST=HOST\nSSH_PASSWORD="a#b$1"\nexport SSH_PORT=22\n'), { SSH_HOST: 'HOST', SSH_PASSWORD: 'a#b$1', SSH_PORT: '22' });
+  const masked = ssh.maskConfig(config.ssh); assert.equal(masked.hasPassword, Boolean(config.ssh.password)); assert.equal(Object.hasOwn(masked, 'password'), false);
+});
+
+test('server-generated resource timestamps use an explicit UTC+8 offset', () => {
+  assert.equal(sftp.utc8IsoFromEpochSeconds(0), '1970-01-01T08:00:00.000+08:00');
+  assert.match(log.today(new Date('2026-09-15T17:00:00.000Z')), /^2026-09-16$/);
 });
 
 test('resource refresh keeps one visible countdown and ignores duplicate in-flight refreshes', () => {

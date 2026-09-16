@@ -13,6 +13,8 @@ const hdfs = require('./hdfs');
 const hbase = require('./hbase');
 const proxy = require('./proxy');
 const log = require('./log');
+const { manager: database } = require('./database');
+const phoneQuery = require('./phone-query');
 
 const ROOT = path.join(__dirname, '..');
 const PUBLIC_DIR = path.join(ROOT, 'public');
@@ -37,6 +39,7 @@ function asRequestError(error) {
   if (/连接请求已过期/i.test(raw)) return new RequestError(409, 'STALE_CONNECTION_REQUEST', '连接请求已过期，请重试', true);
   if (/认证失败/i.test(raw)) return new RequestError(401, 'AUTH_FAILED', 'SSH 认证失败，请检查用户名和密码', false);
   if (/已拦截|交互式终端/i.test(raw)) return new RequestError(403, 'COMMAND_BLOCKED', raw, false);
+  if (/MySQL \/ UDAL 尚未连接|Doris 尚未连接/i.test(raw)) return new RequestError(409, 'DB_NOT_CONNECTED', raw, false);
   if (/尚未连接|NOT_CONNECTED/i.test(raw)) return new RequestError(409, 'NOT_CONNECTED', '尚未连接服务器，请先点击连接');
   if (/连接超时|超时：/i.test(raw)) return new RequestError(504, 'REMOTE_TIMEOUT', raw, true);
   if (/连接被拒绝|网络不可达|无法解析主机/i.test(raw)) return new RequestError(502, 'REMOTE_CONNECTION', raw, true);
@@ -45,8 +48,12 @@ function asRequestError(error) {
   if (/^HDFS 目标已存在同名文件：/i.test(raw)) return new RequestError(409, 'HDFS_TARGET_EXISTS', raw, false);
   if (/^HDFS 上不存在该路径：|^本地文件不存在或 HDFS 目标目录不存在：/i.test(raw)) return new RequestError(404, 'HDFS_PATH_NOT_FOUND', raw, false);
   if (/^HDFS (?:上传|列目录)失败：/i.test(raw)) return new RequestError(502, 'HDFS_OPERATION_FAILED', raw, true);
+  if (/数据源必须是|数据库地址、端口和账号|手机号或接入号码|客户 ID|产品实例 ID/i.test(raw)) return new RequestError(400, 'INVALID_INPUT', raw, false);
+  if (/查询已取消/i.test(raw)) return new RequestError(499, 'QUERY_CANCELLED', '查询已取消', false);
+  if (/Access denied|ER_ACCESS_DENIED_ERROR/i.test(raw)) return new RequestError(401, 'DB_AUTH_FAILED', '数据库认证失败，请检查账号和密码', false);
+  if (/ECONNREFUSED|ENETUNREACH|EHOSTUNREACH|getaddrinfo|connect ETIMEDOUT/i.test(raw)) return new RequestError(502, 'DB_CONNECTION_FAILED', '数据库连接失败，请检查地址、端口和网络', true);
   if (/^(?:HBase .+包含不支持的字符|HBase 路径格式|扫描表路径格式)/i.test(raw)) return new RequestError(400, 'HBASE_INVALID_PATH', raw, false);
-  if (/SFTP|SSH|hadoop|ECONN|EHOST|ENET|channel/i.test(raw)) return new RequestError(502, 'REMOTE_ERROR', '远端服务请求失败，请检查连接后重试', true);
+  if (/SFTP|SSH|hadoop|hbase|ECONN|EHOST|ENET|channel/i.test(raw)) return new RequestError(502, 'REMOTE_ERROR', '远端服务请求失败，请检查连接后重试', true);
   return new RequestError(500, 'INTERNAL_ERROR', '服务器内部错误，请稍后重试', true);
 }
 function sendError(res, error) { const normalized = asRequestError(error); sendJson(res, normalized.status, errorBody(normalized)); }
@@ -104,6 +111,15 @@ function requireDate(value, name = 'date') {
   return date;
 }
 function requireConnected() { if (!ssh.conn) throw new RequestError(409, 'NOT_CONNECTED', '尚未连接服务器，请先点击连接'); }
+async function runQueryRequest(req, res, work) {
+  const controller = new AbortController(); let timedOut = false;
+  const timer = setTimeout(() => { timedOut = true; controller.abort(); }, 60000);
+  const abort = () => controller.abort(); const close = () => { if (!res.writableEnded) controller.abort(); };
+  req.once('aborted', abort); res.once('close', close);
+  try { return await work(controller.signal); }
+  catch (error) { if (timedOut) throw new RequestError(504, 'DB_QUERY_TIMEOUT', '数据库聚合查询超过 60 秒', true); throw error; }
+  finally { clearTimeout(timer); req.off('aborted', abort); res.off('close', close); }
+}
 function safeRemotePath(value) {
   const target = ssh.expandTilde(requireString(value, 'path'));
   const normalized = path.posix.normalize(target);
@@ -168,12 +184,61 @@ async function handle(req, res) {
     return sendJson(res, 200, {
       ok: true,
       config: ssh.maskConfig(ssh.DEFAULT_CONFIG),
+      connections: { ssh: ssh.maskConfig(ssh.DEFAULT_CONFIG), ...database.defaults() },
       configured: !config.isExample,
       errors: config.validate(),
       timeouts: { hdfsListMs: hdfsTimeoutMs * 2 + 10000, hbaseScanMs: hbaseTimeoutMs + 10000 },
     });
   }
   if (req.method === 'GET' && p === '/api/status') return sendJson(res, 200, { ok: true, connected: Boolean(ssh.conn), conn: ssh.connInfo ? ssh.maskConfig(ssh.connInfo) : null, home: ssh.home || null });
+  if (req.method === 'GET' && p === '/api/db/status') return sendJson(res, 200, { ok: true, sources: database.status(), defaults: database.defaults() });
+  if (req.method === 'POST' && p === '/api/connections/connect') {
+    const body = await readBody(req); assertObject(body, []);
+    const attempts = await Promise.allSettled([
+      ssh.connect(),
+      database.connect('udal'),
+      database.connect('doris'),
+    ]);
+    let home = '~';
+    if (attempts[0].status === 'fulfilled') {
+      try { const result = await ssh.execCommand('echo $HOME'); home = result.stdout?.trim().split('\n').pop() || '~'; } catch (_) {}
+      void hdfs.warmupHdfs();
+    }
+    const safeFailure = (attempt) => attempt.status === 'rejected' ? asRequestError(attempt.reason).message : '';
+    const sources = {
+      ssh: { connected: attempts[0].status === 'fulfilled', config: attempts[0].status === 'fulfilled' ? attempts[0].value : ssh.maskConfig(ssh.DEFAULT_CONFIG), home, error: safeFailure(attempts[0]) },
+      udal: { connected: attempts[1].status === 'fulfilled', config: attempts[1].status === 'fulfilled' ? attempts[1].value : database.defaults().udal, error: safeFailure(attempts[1]) },
+      doris: { connected: attempts[2].status === 'fulfilled', config: attempts[2].status === 'fulfilled' ? attempts[2].value : database.defaults().doris, error: safeFailure(attempts[2]) },
+    };
+    const connectedCount = Object.values(sources).filter((item) => item.connected).length;
+    return sendJson(res, 200, { ok: true, status: connectedCount === 3 ? 'complete' : connectedCount ? 'partial' : 'failed', sources });
+  }
+  if (req.method === 'POST' && p === '/api/db/connect') {
+    const body = await readBody(req); assertObject(body, ['source', 'host', 'port', 'username', 'password', 'database']);
+    const source = requireString(body.source, 'source');
+    for (const field of ['host', 'username', 'password', 'database']) if (body[field] !== undefined && typeof body[field] !== 'string') throw new RequestError(400, 'INVALID_INPUT', `${field} 必须是字符串`);
+    if (body.port !== undefined && (!Number.isInteger(Number(body.port)) || Number(body.port) < 1 || Number(body.port) > 65535)) throw new RequestError(400, 'INVALID_INPUT', 'port 必须是 1-65535 的整数');
+    const connected = await database.connect(source, body); return sendJson(res, 200, { ok: true, source: source.toLowerCase(), config: connected });
+  }
+  if (req.method === 'POST' && p === '/api/db/disconnect') {
+    const body = await readBody(req); assertObject(body, ['source']); const source = requireString(body.source, 'source'); await database.disconnect(source); return sendJson(res, 200, { ok: true, source: source.toLowerCase() });
+  }
+  if (req.method === 'POST' && p === '/api/query/phone') {
+    const body = await readBody(req); assertObject(body, ['phone']);
+    const result = await runQueryRequest(req, res, (signal) => phoneQuery.queryPhone(database, requireString(body.phone, 'phone'), { signal })); return sendJson(res, 200, { ok: true, result });
+  }
+  if (req.method === 'POST' && p === '/api/query/threshold') {
+    const body = await readBody(req); assertObject(body, ['aProductInstanceId']);
+    const result = await runQueryRequest(req, res, (signal) => phoneQuery.queryThreshold(database, requireString(body.aProductInstanceId, 'aProductInstanceId'), { signal })); return sendJson(res, 200, { ok: true, result });
+  }
+  if (req.method === 'POST' && p === '/api/query/customer-products') {
+    const body = await readBody(req); assertObject(body, ['customerId']);
+    const result = await runQueryRequest(req, res, (signal) => phoneQuery.queryCustomerProducts(database, body.customerId, { signal })); return sendJson(res, 200, { ok: true, result });
+  }
+  if (req.method === 'POST' && p === '/api/query/account-candidates') {
+    const body = await readBody(req); assertObject(body, ['productInstanceId', 'customerId']);
+    const result = await runQueryRequest(req, res, (signal) => phoneQuery.queryAccountCandidates(database, body, { signal })); return sendJson(res, 200, { ok: true, result });
+  }
   if (req.method === 'POST' && p === '/api/connect') {
     const body = await readBody(req); assertObject(body, ['host', 'port', 'username', 'password']);
     if (body.host !== undefined && typeof body.host !== 'string') throw new RequestError(400, 'INVALID_INPUT', 'host 必须是字符串');
@@ -239,6 +304,10 @@ async function handle(req, res) {
   if (req.method === 'POST' && p === '/api/hdfs/list') {
     const body = await readBody(req); assertObject(body, ['path']); requireConnected(); const target = String(body.path || '/').trim() || '/'; if (!target.startsWith('/')) throw new RequestError(400, 'INVALID_INPUT', 'HDFS 路径必须以 / 开头'); const items = await hdfs.hdfsList(target); return sendJson(res, 200, { ok: true, path: target, items });
   }
+  if (req.method === 'POST' && p === '/api/hdfs/preview') {
+    const body = await readBody(req); assertObject(body, ['path', 'maxBytes']); requireConnected(); const target = requireString(body.path, 'path');
+    const result = await hdfs.hdfsPreview(target, body.maxBytes); return sendJson(res, 200, { ok: true, path: target, ...result });
+  }
   if (req.method === 'POST' && p === '/api/hdfs/upload') {
     const body = await readBody(req); assertObject(body, ['localPath', 'hdfsDir']); requireConnected();
     const localPath = ssh.expandTilde(requireString(body.localPath, 'localPath'));
@@ -256,12 +325,10 @@ async function handle(req, res) {
   }
   if (req.method === 'POST' && p === '/api/hbase/list') {
     const body = await readBody(req); assertObject(body, ['path']); requireConnected(); const target = String(body.path || '/').trim() || '/';
-    if (target !== '/' && !/^\/[A-Za-z0-9_][A-Za-z0-9_.-]*$/.test(target)) throw new RequestError(400, 'INVALID_INPUT', 'HBase 路径只能为 / 或 /namespace');
     const result = await hbase.hbaseList(target); return sendJson(res, 200, { ok: true, path: result.path, items: result.items });
   }
   if (req.method === 'POST' && p === '/api/hbase/scan') {
     const body = await readBody(req); assertObject(body, ['path', 'limit']); requireConnected(); const target = requireString(body.path, 'path');
-    if (!/^\/[A-Za-z0-9_][A-Za-z0-9_.-]*:[A-Za-z0-9_][A-Za-z0-9_.-]*$/.test(target)) throw new RequestError(400, 'INVALID_INPUT', 'HBase 表路径必须为 /namespace:table');
     const limit = Math.min(Math.max(Number(body.limit) || 20, 1), 200); const result = await hbase.hbaseScan(target, limit); return sendJson(res, 200, { ok: true, ...result });
   }
   return sendError(res, new RequestError(404, 'NOT_FOUND', `接口不存在: ${p}`));
@@ -274,5 +341,7 @@ if (require.main === module) {
   if (errors.length) console.warn('[配置提示]', errors.join('；'));
   server.listen(config.workbench.port, config.workbench.host, () => console.log(`远程服务器管理工作台已启动: http://${config.workbench.host}:${config.workbench.port}`));
   server.on('error', (error) => { console.error('[服务错误]', error); process.exitCode = 1; });
+  const shutdown = () => { void database.closeAll().finally(() => server.close(() => process.exit(0))); };
+  process.once('SIGINT', shutdown); process.once('SIGTERM', shutdown);
 }
 module.exports = { createServer, handle, RequestError, asRequestError, MAX_BODY_BYTES };

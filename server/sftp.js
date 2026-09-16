@@ -53,6 +53,10 @@ function call(channel, method, ...args) {
   });
 }
 
+function utc8IsoFromEpochSeconds(seconds) {
+  return new Date(Number(seconds) * 1000 + 8 * 60 * 60 * 1000).toISOString().replace('Z', '+08:00');
+}
+
 function sftpList(remotePath) {
   return withSftp(async (sftp) => {
     const st = await call(sftp, 'stat', remotePath);
@@ -66,7 +70,7 @@ function sftpList(remotePath) {
         isDir: (mode & 0o170000) === 0o040000 || (entry.longname || '')[0] === 'd',
         isLink: (entry.longname || '')[0] === 'l',
         size: Number(attrs.size) || 0,
-        mtime: attrs.mtime ? new Date(attrs.mtime * 1000).toISOString() : '',
+        mtime: attrs.mtime ? utc8IsoFromEpochSeconds(attrs.mtime) : '',
         longname: entry.longname || '',
       };
     }).sort((a, b) => (Number(b.isDir) - Number(a.isDir)) || a.name.localeCompare(b.name));
@@ -120,4 +124,4 @@ async function sftpUpload(remoteDir, fileName, buffer) {
   }
 }
 
-module.exports = { getSftp, withSftp, sftpList, sftpRealpath, sftpStat, sftpMkdir, sftpTouch, sftpDelete, sftpPreview, sftpUpload };
+module.exports = { getSftp, withSftp, sftpList, sftpRealpath, sftpStat, sftpMkdir, sftpTouch, sftpDelete, sftpPreview, sftpUpload, utc8IsoFromEpochSeconds };

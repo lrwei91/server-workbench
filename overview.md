@@ -1,6 +1,6 @@
 # Server Workbench 项目总览
 
-本项目当前采用 Node.js + FastAPI + 原生 ES Modules 双运行时，面向 Windows/PC 工具场景。Node 负责本地 HTTP、SSH、SFTP、HDFS 和 CDR 代理；FastAPI 负责话单内存模型。两者通过同源 `/cdr/` 代理连接，当前保持 SSH、SFTP、HDFS、日志和话单源文件格式兼容。
+本项目当前采用 Node.js + FastAPI + 原生 ES Modules 双运行时，面向 Windows/PC 工具场景。Node 负责本地 HTTP、SSH、SFTP、HDFS、数据库查询和 CDR 代理；FastAPI 负责话单内存模型。两者通过同源 `/cdr/` 代理连接。
 
 ## 运行结构
 
@@ -9,20 +9,23 @@
   └─ Node server/server.js :17755
        ├─ public/ + shared/
        ├─ SSH / SFTP / HDFS
-       ├─ 本地日志队列
+       ├─ MySQL/UDAL + Doris 连接与固定只读查询
+       ├─ 兼容保留的自由命令与本地日志接口
        └─ /cdr/* 反向代理
             └─ FastAPI cdr/server.py :8000
                  └─ cdr/engine.py（最多 100,000 条内存记录）
 ```
 
-`start.bat` 只从 PATH 查找 `node`、`python`/`py`，不包含个人绝对路径。`config.example.js` 展示结构，复制成未纳入 Git 的 `config.js` 后填写真实连接信息。Node 启动时会报告配置缺失，但不把凭据写入前端或日志。
+`start.bat` 只从 PATH 查找 `node`、`python`/`py`，不包含个人绝对路径。`.env.example` 展示连接结构，复制成未纳入 Git 的 `.env` 后填写真实连接信息。Node 启动时会报告配置缺失，接口仅返回掩码后的连接状态。
 
 ## 前端架构
 
 - `shared/tokens.css` 是纯白工具覆盖：画布/表面白、黑墨层级、荧光黄主操作与选中、蓝色焦点、独立状态色，视觉旋钮按 4/3/6 控制密度、圆角和阴影。
 - `shared/ui.js` 提供统一请求错误模型、可区分的超时/主动取消、DOM 节点创建、状态播报、格式化和原生 `dialog` 焦点进入/恢复。
 - `shared/icons.svg` 为图标精灵。主工作台和 CDR 前端均使用 `textContent`/节点构造渲染远端数据，不把文件名、路径、字段值拼入 `innerHTML`。
-- 主工作台保持稳定 PC 双栏：左侧服务器文件/HDFS 浏览，右侧日志和命令；连接状态与主要操作集中在顶栏，引导仅在空态出现。
+- 主工作台保持稳定 PC 双栏，资源浏览与数据库查询宽度比例为 1:1.5；统一连接弹窗以只读列表展示 SSH、MySQL/UDAL 和 Doris，并由单个按钮发起各自独立的连接。
+- 右侧首个固定查询以手机号为入口，在 Node 层依次读取 CRM 产品/账户/销售品实例和 CONFIGDB 销售品/定价计划，再按关联 ID 聚合展示；同客户其他产品和账户候选为按需查询。
+- 阈值查询以 A 端产品实例 ID 为入口，分步读取 `prod_inst_rel`、产品规格为 `900178630` 的 `prod_inst`，以及六个固定档位属性对应的 `prod_inst_attr`，避免 UDAL 子查询路由限制。
 - 主工作台的三类资源列表在已加载数据上本地搜索/排序并保留收藏；HBase 查看窗口只读取指定行数的样本，查找和高亮不触发额外扫描。月度 `ACCUMULATOR_<账期>` 在前端拆解列族 `f` 的 Qualifier；`ACCUMULATOR_DETAIL_<账期>` 拆解 MS/SM RowKey；未处理和已处理话单分发表分别按各自七段 RowKey 拆解来源标识/文件、时间键、分发类型、处理场景和附加编码；采预/批价的在途与已完成主表按批次 ID 汇总 `batch_info` 字段，子表拆解输入/输出方向、来源/目标路径及结果段；原始结果仍用于复制。
 - CDR 以「文件与会话 → 记录浏览 → 批量修改/造数 → 导出」顺序组织，字段错误、加载/空/错误状态和影响数量均在原位反馈。
 
@@ -34,6 +37,9 @@
 
 - 请求体限制 1 MiB，非法 JSON/未知字段返回真实 HTTP 状态和 `{ok:false,error:{code,message,retryable}}`。
 - `/api/exec` 是明确的高级自由命令入口；交互式命令和根目录递归强删拦截，删除类命令需 `confirmed:true`。所有参数化路径使用单引号 shell 转义。
+- `/api/connections/connect` 从本地 `.env` 读取配置并一次发起 SSH、MySQL/UDAL 与 Doris 连接；`/api/db/*` 保留独立会话管理，`/api/query/*` 只接受固定参数并使用占位符执行单表 SQL。每条 SQL 15 秒、整次手机号查询 60 秒，分步最多 500 行、整次最多 5,000 行。
+- UDAL 按逻辑库建立 `utf8mb4` 连接，不在查询中写库名前缀；结果中的大整数、金额和日期保留字符串。可无损识别的 UTF-8/GB18030 历史错码业务名称恢复显示并保留原始值。分支失败、关联缺失与空结果分别返回，跨库结果不表示同一事务快照。
+- 浏览器日期格式化、查询元数据、SFTP 修改时间、Node 日志日期和 CDR 生成时间均显式使用 UTC+8；数据库业务日期字符串保持原值并标注 UTC+8，不做二次偏移。
 - `/api/sftp/list|preview|mkdir|touch|delete|download` 使用结构化 SFTP；删除区分 file/空 dir，根路径保护。
 - `/api/hdfs/list` 沿用后端一次重试，`/api/config` 将 HDFS 列表和 HBase 查询的实际执行时限下发给前端；`/api/hbase/scan` 保留原请求格式并返回 `truncated` 元数据。
 - 命令 stdout/stderr 共用 2 MiB 预算并返回 `truncated`；日志通过异步队列写 JSONL，过期清理每天最多一次，读取支持 `limit/offset`，默认 200 条。
@@ -51,4 +57,4 @@
 
 Node builtin tests 覆盖 shell 转义、危险删除、真实错误状态、日志分页；Python unittest 覆盖非法 NDJSON、混合类型、ID 生成、批量一致性、版本/容量/原子导出等。测试使用假数据和临时目录，不接触真实凭据。
 
-浏览器验收按受影响流程和布局变化选择环境，规则见 [AGENTS.md](./AGENTS.md)。真实 SSH/SFTP/HDFS smoke 需要本机 `config.js` 和已安装 `ssh2`。
+浏览器验收按受影响流程和布局变化选择环境，规则见 [AGENTS.md](./AGENTS.md)。真实 SSH/SFTP/HDFS smoke 需要本机 `.env` 和已安装 `ssh2`。

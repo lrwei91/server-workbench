@@ -56,7 +56,12 @@ export function el(tag, attrs = {}, ...children) {
 }
 export function announce(node, message, tone = 'info') { if (!node) return; node.dataset.tone = tone; node.textContent = message || ''; }
 export function formatBytes(value) { const n = Number(value); if (!Number.isFinite(n)) return '—'; if (n < 1024) return `${n} B`; if (n < 1024 ** 2) return `${(n / 1024).toFixed(1)} KiB`; if (n < 1024 ** 3) return `${(n / 1024 ** 2).toFixed(1)} MiB`; return `${(n / 1024 ** 3).toFixed(1)} GiB`; }
-export function formatDate(value) { if (!value) return '—'; const date = new Date(value); return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString(); }
+export function formatDate(value, { withZone = false, milliseconds = false } = {}) {
+  if (!value) return '—'; const date = new Date(value); if (Number.isNaN(date.getTime())) return String(value);
+  const options = { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23', ...(milliseconds ? { fractionalSecondDigits: 3 } : {}) };
+  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-CA', options).formatToParts(date).map((part) => [part.type, part.value]));
+  return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second}${milliseconds ? `.${parts.fractionalSecond}` : ''}${withZone ? ' +08:00' : ''}`;
+}
 export function createRequestGate() { let seq = 0; let controller = null; return { next() { controller?.abort(); controller = new AbortController(); const id = ++seq; return { id, signal: controller.signal, isCurrent: () => id === seq }; }, cancel() { controller?.abort(); controller = null; ++seq; } }; }
 export class DialogController {
   constructor(dialog) { this.dialog = dialog; this.previous = null; this.onCancel = this.onCancel.bind(this); }

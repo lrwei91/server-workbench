@@ -9,6 +9,9 @@ cdr/data/logs/
 # ---- 本地配置（含真实凭据，不提交）----
 # 如需分享配置结构，请复制为 config.example.js 并移除密码
 config.js
+.env
+.env.*
+!.env.example
 
 # ---- 系统/编辑器 ----
 .DS_Store
@@ -17,6 +20,7 @@ desktop.ini
 *.swp
 .idea/
 .vscode/
+.workbuddy/
 .npm/
 node_modules/
 __pycache__/

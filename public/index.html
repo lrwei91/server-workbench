@@ -14,8 +14,6 @@
       <div class="connection" aria-live="polite"><span id="statusDot" class="status-dot" aria-hidden="true"></span><span id="statusText">未连接</span></div>
       <div class="top-actions">
         <button id="btnConnect" class="wb-button primary" type="button">连接</button>
-        <button id="btnSettings" class="wb-button" type="button">连接设置</button>
-        <button id="btnCmds" class="wb-button" type="button">快捷指令</button>
         <button id="btnBilling" class="wb-button" type="button">计费速查</button>
         <button id="btnCdr" class="wb-button" type="button">话单工具</button>
       </div>
@@ -56,24 +54,33 @@
         </section>
       </section>
 
-      <section class="console-panel" aria-label="执行日志与命令">
-        <div class="console-heading"><div><h1>执行日志</h1><p>输出默认限制 2 MiB，按时间保留最近记录</p></div><div class="console-actions"><button id="btnClear" class="wb-button" type="button">清空</button><button id="btnExport" class="wb-button" type="button">导出日志</button></div></div>
-        <div class="log-toolbar"><label class="inline-field">日期 <input id="logDate" class="wb-field" type="date"></label><button id="btnLogReload" class="wb-button" type="button">加载</button><label class="switch"><input id="autoStatus" type="checkbox"><span>连接状态自动检查</span></label></div>
-        <div id="logFlow" class="log-flow" aria-live="polite"></div>
-        <div id="emptyState" class="console-empty"><strong>连接后从这里开始</strong><span>可以浏览目录、使用快捷指令，或直接执行一条命令。</span><button id="emptyConnect" class="wb-button primary" type="button">打开连接设置</button></div>
-        <div class="command-bar"><label for="cmdInput">命令</label><textarea id="cmdInput" class="wb-field" rows="2" placeholder="连接后输入命令，Enter 执行；↑↓ 浏览历史"></textarea><button id="btnRun" class="wb-button primary" type="button">执行</button></div>
-        <div id="chips" class="command-chips" aria-label="常用命令"><button type="button" class="chip" data-command="pwd">pwd</button><button type="button" class="chip" data-command="ls -lh">ls -lh</button><button type="button" class="chip" data-command="df -h">df -h</button><button type="button" class="chip" data-command="free -h">free -h</button><button type="button" class="chip" data-command="ps -ef | head -60">ps -ef | head -60</button></div>
+      <section class="query-panel" aria-label="数据库数据查询">
+        <div class="query-heading"><div><h1>数据库查询</h1><p>固定只读查询 · 多库分步读取并聚合展示</p></div><button id="btnQueryReset" class="wb-button ghost" type="button">清空结果</button></div>
+        <div id="dbStatusCards" class="db-status-cards" aria-live="polite"></div>
+        <div class="query-tabs" role="tablist" aria-label="查询功能"><button class="tab active" type="button" role="tab" data-query-tab="phone" aria-selected="true" aria-controls="phoneQueryForm">查询手机号</button><button class="tab" type="button" role="tab" data-query-tab="threshold" aria-selected="false" aria-controls="thresholdQueryForm">阈值查询</button></div>
+        <form id="phoneQueryForm" class="phone-query-form query-form" data-query-pane="phone">
+          <label for="phoneInput">手机号或接入号码</label>
+          <div class="query-input-row"><input id="phoneInput" class="wb-field" autocomplete="off" placeholder="输入后精确查询" required><button id="btnPhoneQuery" class="wb-button primary" type="submit">查询</button><button id="btnPhoneCancel" class="wb-button hidden" type="button">取消</button></div>
+          <p class="query-help">返回产品、套餐/销售品、账户合同与定价计划；状态与有效期保留原始值。</p>
+        </form>
+        <form id="thresholdQueryForm" class="phone-query-form query-form hidden" data-query-pane="threshold">
+          <label for="thresholdProductInput">A 端产品实例 ID</label>
+          <div class="query-input-row"><input id="thresholdProductInput" class="wb-field" autocomplete="off" placeholder="输入 A 端产品实例 ID" required><button id="btnThresholdQuery" class="wb-button primary" type="submit">查询</button><button id="btnThresholdCancel" class="wb-button hidden" type="button">取消</button></div>
+          <p class="query-help">查询 A/Z 关系，筛选产品规格 900178630，并返回 20%、40%、80%、100%、150%、200% 档位提醒配置。</p>
+        </form>
+        <div id="queryState" class="query-state" role="status" aria-live="polite"></div>
+        <div id="queryResults" class="query-results" aria-live="polite"><div class="query-empty"><strong>等待查询</strong><span>请先连接 MySQL / UDAL，再输入号码。</span><button id="emptyDbConnect" class="wb-button primary" type="button">打开数据源连接</button></div></div>
       </section>
     </main>
   </div>
   <div id="toast" class="toast-region" role="status" aria-live="polite"></div>
   <div id="live" class="wb-live" aria-live="assertive"></div>
 
-  <dialog id="settingsDialog" class="wb-dialog" aria-labelledby="settingsTitle"><form method="dialog" class="dialog-form"><header class="wb-dialog__header"><h2 id="settingsTitle" class="wb-dialog__title">连接设置</h2><button class="wb-button ghost" type="button" data-dialog-close="settingsDialog" aria-label="关闭连接设置">关闭</button></header><div class="wb-dialog__body"><p class="dialog-note">密码只在当前页面内存中使用，不会写入浏览器存储。</p><div class="form-grid"><label><span class="wb-label">服务器地址</span><input id="cfgHost" class="wb-field" aria-describedby="settingsError" autocomplete="off" required></label><label><span class="wb-label">端口</span><input id="cfgPort" class="wb-field" aria-describedby="settingsError" type="number" min="1" max="65535" value="22" required></label><label><span class="wb-label">用户名</span><input id="cfgUser" class="wb-field" aria-describedby="settingsError" autocomplete="username" required></label><label><span class="wb-label">密码（可留空使用配置文件）</span><input id="cfgPass" class="wb-field" aria-describedby="settingsError" type="password" autocomplete="current-password"></label></div><p id="settingsError" class="wb-status" role="alert"></p></div><footer class="wb-dialog__footer"><button class="wb-button" type="button" data-dialog-close="settingsDialog">取消</button><button id="btnSaveCfg" class="wb-button primary" type="button">保存并连接</button></footer></form></dialog>
-
-  <dialog id="commandsDialog" class="wb-dialog wide-dialog" aria-labelledby="commandsTitle"><header class="wb-dialog__header"><h2 id="commandsTitle" class="wb-dialog__title">快捷指令</h2><button class="wb-button ghost" type="button" data-dialog-close="commandsDialog" aria-label="关闭快捷指令">关闭</button></header><div class="wb-dialog__body"><div id="commandGroups" class="command-groups"></div></div></dialog>
-
-  <dialog id="paramDialog" class="wb-dialog" aria-labelledby="paramTitle"><header class="wb-dialog__header"><h2 id="paramTitle" class="wb-dialog__title">指令参数</h2><button class="wb-button ghost" type="button" data-dialog-close="paramDialog" aria-label="关闭指令参数">关闭</button></header><div class="wb-dialog__body"><label><span id="paramLabel" class="wb-label">参数</span><input id="paramInput" class="wb-field" aria-describedby="paramError" autocomplete="off"></label><p id="paramError" class="wb-status" role="alert"></p></div><footer class="wb-dialog__footer"><button class="wb-button" type="button" data-dialog-close="paramDialog">取消</button><button id="btnParamSubmit" class="wb-button primary" type="button">执行</button></footer></dialog>
+  <dialog id="connectionDialog" class="wb-dialog wide-dialog" aria-labelledby="connectionTitle"><header class="wb-dialog__header"><h2 id="connectionTitle" class="wb-dialog__title">连接设置</h2><button class="wb-button ghost" type="button" data-dialog-close="connectionDialog" aria-label="关闭连接设置">关闭</button></header><div class="wb-dialog__body"><p class="dialog-note">连接信息读取自项目根目录 <code>.env</code>；密码仅显示配置状态。</p><div id="connectionList" class="connection-list" aria-live="polite">
+    <section class="connection-list-item" data-connection-source="ssh"><div class="connection-list-heading"><span class="status-dot" data-connection-dot="ssh" aria-hidden="true"></span><div><h3>SSH / SFTP / HDFS</h3><p>服务器资源浏览连接</p></div><strong data-connection-status="ssh">未连接</strong></div><dl><div><dt>地址</dt><dd data-connection-field="ssh.host">—</dd></div><div><dt>端口</dt><dd data-connection-field="ssh.port">—</dd></div><div><dt>账号</dt><dd data-connection-field="ssh.username">—</dd></div><div><dt>密码</dt><dd data-connection-field="ssh.password">—</dd></div></dl><p class="wb-status" data-connection-error="ssh"></p></section>
+    <section class="connection-list-item" data-connection-source="udal"><div class="connection-list-heading"><span class="status-dot" data-connection-dot="udal" aria-hidden="true"></span><div><h3>MySQL / UDAL</h3><p>CRM 档案与配置库</p></div><strong data-connection-status="udal">未连接</strong></div><dl><div><dt>地址</dt><dd data-connection-field="udal.host">—</dd></div><div><dt>端口</dt><dd data-connection-field="udal.port">—</dd></div><div><dt>账号</dt><dd data-connection-field="udal.username">—</dd></div><div><dt>逻辑库</dt><dd data-connection-field="udal.database">CRM3DB、CONFIGDB_CNOS_JF_TEST</dd></div><div><dt>密码</dt><dd data-connection-field="udal.password">—</dd></div></dl><p class="wb-status" data-connection-error="udal"></p></section>
+    <section class="connection-list-item" data-connection-source="doris"><div class="connection-list-heading"><span class="status-dot" data-connection-dot="doris" aria-hidden="true"></span><div><h3>Doris</h3><p>数据仓库连接</p></div><strong data-connection-status="doris">未连接</strong></div><dl><div><dt>地址</dt><dd data-connection-field="doris.host">—</dd></div><div><dt>端口</dt><dd data-connection-field="doris.port">—</dd></div><div><dt>账号</dt><dd data-connection-field="doris.username">—</dd></div><div><dt>默认数据库</dt><dd data-connection-field="doris.database">—</dd></div><div><dt>密码</dt><dd data-connection-field="doris.password">—</dd></div></dl><p class="wb-status" data-connection-error="doris"></p></section>
+  </div><p id="connectionError" class="wb-status" role="alert"></p></div><footer class="wb-dialog__footer"><button id="btnConnectAll" class="wb-button primary" type="button">连接</button></footer></dialog>
 
   <dialog id="billingDialog" class="wb-dialog wide-dialog" aria-labelledby="billingTitle"><header class="wb-dialog__header"><h2 id="billingTitle" class="wb-dialog__title">计费速查</h2><button class="wb-button ghost" type="button" data-dialog-close="billingDialog" aria-label="关闭计费速查">关闭</button></header><div class="wb-dialog__body"><div class="form-grid compact"><label><span class="wb-label">表后缀</span><input id="billSuffix" class="wb-field" value="597_2606"></label><label><span class="wb-label">账期</span><input id="billMonth" class="wb-field" value="202410"></label><label><span class="wb-label">HBase 命名空间</span><input id="billNs" class="wb-field" value="ns_aibcp_dev"></label><label><span class="wb-label">筛选</span><input id="billSearch" class="wb-field" placeholder="按表名或说明筛选"></label></div><div id="billingContent" class="billing-content"></div></div></dialog>
 

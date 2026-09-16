@@ -1,30 +1,32 @@
 # Server Workbench
 
-面向测试人员的 Windows 优先本地工具工作台，集中处理 SSH 命令、SFTP 文件、HDFS 浏览、执行日志和 CDR 话单。当前交付重点是 PC 端；移动端专用布局、深色模式和运行时迁移不在范围内。
+面向测试人员的 Windows 优先本地工具工作台，集中处理 SSH/SFTP 文件、HDFS、HBase、数据库档案查询和 CDR 话单。当前交付重点是 PC 端；移动端专用布局、深色模式和运行时迁移不在范围内。
 
 ## 快速开始
 
-1. 安装 Node.js 18+、Python 3.10+，在项目根目录运行：
+1. 安装 Node.js 18+、Python 3.10+，在项目根目录运行（Node 依赖包含 `ssh2`、`mysql2` 与 `iconv-lite`）：
 
    ```powershell
    npm install
    python -m pip install -r .\cdr\requirements.txt
    ```
 
-2. 复制 `config.example.js` 为根目录 `config.js`，填写 SSH 主机、用户名和密码。`config.js` 已被 `.gitignore` 排除，不要提交真实凭据。
+2. 复制 `.env.example` 为根目录 `.env`，填写 SSH、MySQL/UDAL 与 Doris 连接信息。`.env` 已被 `.gitignore` 排除，不要提交真实凭据。
 3. Windows 双击 `start.bat`，或分别运行 `python .\cdr\server.py` 和 `node .\server\server.js`。
 4. 浏览器打开 <http://127.0.0.1:17755>。
 
-启动入口从 PATH 查找 Node/Python，不依赖个人绝对路径。缺少 `config.js` 时服务仍可启动，但会在连接时提示配置问题。
+启动入口从 PATH 查找 Node/Python，不依赖个人绝对路径。缺少 `.env` 或关键连接项时服务仍可启动，并在连接列表中显示配置状态。
 
 ## 功能与安全边界
 
-- 主工作台采用纯白工具主题：黑墨层级、荧光黄主操作/选中、独立成功/警告/错误色；固定浅色，PC 视口支持 1024–1920 宽度和浏览器缩放。
+- 主工作台采用纯白工具主题：左侧浏览服务器资源，右侧执行固定只读数据库查询，桌面双栏比例为 1:1.5；固定浅色，PC 视口支持 1024–1920 宽度和浏览器缩放。
 - 文件浏览使用结构化 SFTP 接口：目录列表、预览、新建文件/目录、删除文件或空目录、下载。删除需要二次确认，根路径受保护。
 - 服务器文件、HDFS 和 HBase 列表支持基于已加载结果的名称/路径/中文备注搜索与排序；常用目录和 HBase 表可收藏到当前浏览器。
-- HDFS 浏览只读，路径使用单引号 shell 转义；HBase 表查看支持 20/50/100/200 行样本、当前样本内查找和原始结果复制；月度 `ACCUMULATOR_<账期>` 会拆解列族 `f` 的 Qualifier，`ACCUMULATOR_DETAIL_<账期>` 会拆解 MS/SM RowKey，`TICKET_DISPATCH_FILE` 和 `TICKET_DISPATCHED_FILE` 会拆解七段分发 RowKey，采预/批价的在途与已完成主子批次表会按批次和文件记录归组展示，其他表仍显示原始样本。高级自由命令仍保留在 `/api/exec`，删除类命令需要确认，根目录递归强删会被拦截。
-- 命令输出默认限制 2 MiB，日志异步排队写入并分页读取，页面默认最多挂载 200 条；隐藏页面暂停状态检查和自动刷新，单个刷新请求不会重入。
-- 自定义密码只存在当前页面内存；浏览器仅保存主机、端口和用户名。
+- HDFS 浏览只读，文件内容在预览窗口显示；HBase 表查看支持 20/50/100/200 行样本、当前样本内查找和原始结果复制。高级自由命令与日志接口为兼容目的保留在后端，主界面不再提供入口。
+- 「查询手机号」按 `CRM3DB` 与 `CONFIGDB_CNOS_JF_TEST` 的单表关联链读取产品、套餐/销售品、账户合同和定价计划；由后端聚合多库结果，不使用跨表 JOIN。
+- 「阈值查询」以 A 端产品实例 ID 为入口，先读取 A/Z 产品关系，再筛选产品规格 `900178630` 的 Z 端实例，最后返回 20%、40%、80%、100%、150%、200% 六档提醒属性；同样采用固定参数化单表查询。
+- 右上角统一连接入口将 SSH、MySQL/UDAL 与 Doris 合并为只读列表，一次操作分别建立三个连接；Doris 首版仅管理连接状态。全部连接信息从本地 `.env` 读取，页面只显示非敏感项和密码配置状态。
+- 数据库连接固定使用 `utf8mb4`；已被上游错误转码且可无损识别的业务名称会恢复显示并保留“原始值”列。页面及服务生成的时间统一按 UTC+8 展示和记录。
 - CDR 源 NDJSON 只读，修改留在内存；支持版本冲突检测、10 万条记录上限、批量预览/应用一致性、O(1) ID 索引和原子导出校验。
 
 ## 目录
@@ -32,11 +34,11 @@
 ```text
 server-workbench/
 ├─ start.bat                 # Windows 启动入口（PATH 查找运行时）
-├─ config.example.js         # 无凭据配置样例
+├─ .env.example              # SSH 与数据库连接配置样例
 ├─ package.json / lock        # 可复现 Node 依赖和检查脚本
 ├─ shared/                   # 共享令牌、图标精灵、请求/DOM/对话框工具
 ├─ public/                   # PC 主工作台（原生 ES Modules）
-├─ server/                   # Node HTTP、SSH、SFTP、HDFS、日志、CDR 代理
+├─ server/                   # Node HTTP、SSH、SFTP、HDFS、数据库查询、CDR 代理
 ├─ cdr/                      # FastAPI + 内存 CDR 引擎与前端
 └─ tests/                    # Node builtin test、Python unittest、fixture
 ```
@@ -54,6 +56,6 @@ npm run test:python
 git diff --check
 ```
 
-测试不需要真实 SSH/SFTP/HDFS 或凭据；真实远端链路需在本机准备 `config.js` 和 `ssh2` 后另行 smoke。
+测试不需要真实 SSH/SFTP/HDFS 或凭据；真实远端链路需在本机准备 `.env` 和 `ssh2` 后另行 smoke。
 
 更多说明见 [overview.md](./overview.md) 和 [cdr/README.md](./cdr/README.md)。

@@ -10,7 +10,7 @@ import tempfile
 import threading
 import uuid
 from copy import deepcopy
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from config import SOURCE_DIR, OUTPUT_DIR, LOG_DIR, MAX_RECORDS, UNDO_MAX_CHANGES, UNDO_DEPTH, MAX_PREVIEW
@@ -18,6 +18,7 @@ from config import SOURCE_DIR, OUTPUT_DIR, LOG_DIR, MAX_RECORDS, UNDO_MAX_CHANGE
 # 路径常量统一由 config.py 提供（与工作台 config.js 口径一致）
 TOOL_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = TOOL_DIR.parent.parent
+CN_TZ = timezone(timedelta(hours=8), "UTC+8")
 
 BIZ_TYPE_MAP = {
     47: "SP增值短信",
@@ -263,7 +264,7 @@ def list_files():
                 "name": p.name,
                 "size_bytes": st.st_size,
                 "size_mb": round(st.st_size / 1048576, 2),
-                "mtime": datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
+                "mtime": datetime.fromtimestamp(st.st_mtime, CN_TZ).strftime("%Y-%m-%d %H:%M:%S"),
             })
     return files
 
@@ -665,7 +666,7 @@ def _new_org_cdr_id(rec):
     if len(old) >= 12:
         prefix, suffix = old[:12], (old[12:] or "00000000")
     else:
-        prefix, suffix = datetime.now().strftime("%y%m%d%H%M%S"), "00000000"
+        prefix, suffix = datetime.now(CN_TZ).strftime("%y%m%d%H%M%S"), "00000000"
     try:
         n = int(suffix) + 1
     except (TypeError, ValueError):
@@ -908,7 +909,7 @@ def export(out_dir=None, filename=None):
         raise ValueError("请先加载话单文件")
     out = Path(out_dir) if out_dir else OUTPUT_DIR
     out.mkdir(parents=True, exist_ok=True)
-    ts = datetime.now().strftime("%Y%m%d%H%M%S")
+    ts = datetime.now(CN_TZ).strftime("%Y%m%d%H%M%S")
     name = filename or f"{Path(_session.filename).stem}_mod_{ts}.json"
     dest = (out / name).resolve()
     if dest.parent != out.resolve():
@@ -950,7 +951,7 @@ def export_history():
             "name": p.name,
             "size_bytes": st.st_size,
             "size_mb": round(st.st_size / 1048576, 2),
-            "mtime": datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
+            "mtime": datetime.fromtimestamp(st.st_mtime, CN_TZ).strftime("%Y-%m-%d %H:%M:%S"),
         })
     return items[:50]
 
@@ -960,9 +961,10 @@ def export_history():
 def log_op(action, params=None, affected=None):
     try:
         LOG_DIR.mkdir(parents=True, exist_ok=True)
-        path = LOG_DIR / f"oplog-{datetime.now():%Y%m%d}.jsonl"
+        now = datetime.now(CN_TZ)
+        path = LOG_DIR / f"oplog-{now:%Y%m%d}.jsonl"
         entry = {
-            "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "ts": now.strftime("%Y-%m-%d %H:%M:%S"),
             "action": action,
             "params": params or {},
             "affected": affected,

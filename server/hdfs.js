@@ -66,6 +66,22 @@ async function hdfsList(hdfsPath) {
   return items;
 }
 
+async function hdfsPreview(hdfsPath, maxBytes = 262144) {
+  const safePath = String(hdfsPath || '').trim();
+  if (!safePath.startsWith('/')) throw new Error('HDFS 路径必须以 / 开头');
+  const limit = Math.min(Math.max(Number(maxBytes) || 262144, 1), 262144);
+  if (warmupPromise) await warmupPromise;
+  const r = await ssh.execCommand(`hadoop fs -cat ${shellQuote(safePath)} | head -c ${limit + 1}`, config.hdfsTimeoutMs || 90000);
+  const out = String(r.stdout || ''); const err = String(r.stderr || '').trim();
+  if (r.timedOut || r.code === 124) throw new Error('HDFS 文件预览超时，请稍后重试');
+  if (r.code !== 0) {
+    if (/No such file or directory/i.test(err) || /No such file or directory/i.test(out)) throw new Error('HDFS 上不存在该路径：' + safePath);
+    if (/is a directory/i.test(err)) throw new Error('HDFS 预览目标不是普通文件：' + safePath);
+    throw new Error('HDFS 文件预览失败：' + (err || ('退出码 ' + r.code)));
+  }
+  return { text: out.slice(0, limit), size: Buffer.byteLength(out), truncated: Buffer.byteLength(out) > limit || Boolean(r.truncated) };
+}
+
 async function hdfsUpload(localPath, hdfsDir) {
   if (!localPath || typeof localPath !== 'string') throw new Error('本地文件路径不能为空');
   const cleanDir = String(hdfsDir || '/').trim();
@@ -108,6 +124,7 @@ module.exports = {
   shellQuote,
   parseHdfsLsLine,
   hdfsList,
+  hdfsPreview,
   hdfsUpload,
   warmupHdfs,
 };

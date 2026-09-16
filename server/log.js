@@ -11,7 +11,12 @@ const DEFAULT_LIMIT = Math.min(200, Math.max(1, Number(config.logs.maxEntries) |
 let writeQueue = Promise.resolve();
 let lastCleanupDay = '';
 
-function today() { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; }
+function today(date = new Date()) {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).formatToParts(date).map((part) => [part.type, part.value]));
+  return `${parts.year}-${parts.month}-${parts.day}`;
+}
 function logPath(date) { if (!/^\d{4}-\d{2}-\d{2}$/.test(date || '')) throw new Error('日期格式错误，应为 YYYY-MM-DD'); return path.join(LOG_DIR, date + '.log'); }
 async function ensureDir() { await fs.promises.mkdir(LOG_DIR, { recursive: true }); }
 async function cleanupExpired() {
@@ -24,7 +29,7 @@ async function cleanupExpired() {
     await Promise.all(names.map(async (name) => {
       const match = /^(\d{4}-\d{2}-\d{2})\.log$/.exec(name);
       if (!match) return;
-      if (new Date(match[1] + 'T00:00:00').getTime() < cutoff) await fs.promises.unlink(path.join(LOG_DIR, name)).catch(() => {});
+      if (new Date(match[1] + 'T00:00:00+08:00').getTime() < cutoff) await fs.promises.unlink(path.join(LOG_DIR, name)).catch(() => {});
     }));
   } catch (error) { console.warn('[日志清理失败]', error?.message || error); }
 }
