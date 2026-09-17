@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const iconv = require('iconv-lite');
 const { createDatabaseManager } = require('../../server/database');
 const { repairBusinessText, repairUtf8AsGbk } = require('../../server/encoding');
-const { queryPhone, queryCustomerProducts, queryAccountCandidates, queryThreshold, THRESHOLD_PRODUCT_ID, THRESHOLD_ATTR_IDS, utc8Iso } = require('../../server/phone-query');
+const { queryPhone, queryProductInstance, queryCustomerProducts, queryAccountCandidates, queryThreshold, THRESHOLD_PRODUCT_ID, THRESHOLD_ATTR_IDS, utc8Iso } = require('../../server/phone-query');
 
 test('database manager creates isolated UDAL pools, preserves values as strings, and never exposes passwords', async () => {
   const pools = [];
@@ -54,12 +54,13 @@ test('database query cancellation destroys the active connection instead of retu
 
 function fixtureDb({ failAccount = false, missingPricing = false } = {}) {
   const calls = [];
-  const query = async (_source, database, sql, values) => {
-    calls.push({ database, sql, values }); const id = String(values[0]);
+  const query = async (source, database, sql, values) => {
+    calls.push({ source, database, sql, values }); const id = String(values[0]);
     if (/FROM prod_inst WHERE acc_num/.test(sql)) return [
       { prod_inst_id: '11', PROD_ID: '101', acc_prod_inst_id: '11', acc_num: id, OWNER_CUST_ID: '900' },
       { prod_inst_id: '12', PROD_ID: '102', acc_prod_inst_id: '11', acc_num: id, OWNER_CUST_ID: '900' },
     ];
+    if (/FROM prod_inst WHERE prod_inst_id/.test(sql)) return [{ prod_inst_id: id, PROD_ID: '101', acc_num: '13338297988', OWNER_CUST_ID: '900' }];
     if (/FROM product WHERE/.test(sql)) return [{ prod_id: id, prod_name: `产品${id}` }];
     if (/FROM prod_inst_acct_rel/.test(sql)) { if (failAccount) throw new Error('账户分片查询失败'); return [{ prod_inst_acct_rel_id: `r${id}`, PROD_INST_ID: id, ACCT_ID: id === '11' ? '501' : '502' }]; }
     if (/FROM account WHERE acct_id/.test(sql)) return [{ acct_id: id, contract_no: `C${id}` }];
@@ -82,6 +83,27 @@ test('phone query aggregates multi-product and multi-account data while deduplic
   assert.equal(result.data.offerRelations.length, 2); assert.equal(result.data.offerInstances.length, 1); assert.equal(result.data.offers.length, 1);
   assert.equal(db.calls.filter((call) => /FROM offer_inst WHERE/.test(call.sql)).length, 1);
   assert.equal(db.calls.every((call) => call.values.length === 1 && call.sql.includes('?')), true);
+});
+
+test('phone query supports Voyage lower-case columns and records the selected source', async () => {
+  const base = fixtureDb();
+  const db = { calls: base.calls, query: async (source, database, sql, values) => {
+    const rows = await base.query(source, database, sql, values);
+    return rows.map((row) => Object.fromEntries(Object.entries(row).map(([key, value]) => [key.toLowerCase(), value])));
+  } };
+  const result = await queryPhone(db, '15305972490', { source: 'voyage' });
+  assert.equal(result.status, 'complete'); assert.equal(result.source, 'voyage');
+  assert.equal(result.data.accounts.length, 2); assert.equal(result.data.offers.length, 1);
+  assert.equal(result.steps.every((step) => step.source === 'voyage'), true);
+  assert.equal(db.calls.every((call) => call.source === 'voyage'), true);
+});
+
+test('product instance query reuses the archive chain and preserves a large string id', async () => {
+  const db = fixtureDb(); const id = '9007199254740993'; const result = await queryProductInstance(db, id, { source: 'voyage' });
+  assert.equal(result.productInstanceId, id); assert.equal(result.source, 'voyage'); assert.equal(result.status, 'complete');
+  assert.equal(result.data.productInstances[0].prod_inst_id, id); assert.equal(result.data.accounts.length, 1); assert.equal(result.data.offers.length, 1);
+  assert.equal(db.calls[0].source, 'voyage'); assert.match(db.calls[0].sql, /prod_inst_id = \?/); assert.deepEqual(db.calls[0].values, [id]);
+  await assert.rejects(queryProductInstance(db, 'ABC'), /必须是数字/);
 });
 
 test('phone query distinguishes empty, missing definition, and partial branch failures', async () => {

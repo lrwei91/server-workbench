@@ -15,6 +15,10 @@ const proxy = require('./proxy');
 const log = require('./log');
 const { manager: database } = require('./database');
 const phoneQuery = require('./phone-query');
+const { ArchiveService } = require('./archive-service');
+const { VoyageManager } = require('./voyage');
+const archive = new ArchiveService(config.archive);
+const voyage = new VoyageManager(config.voyage);
 
 const ROOT = path.join(__dirname, '..');
 const PUBLIC_DIR = path.join(ROOT, 'public');
@@ -33,6 +37,7 @@ function sendJson(res, status, body) {
 }
 function asRequestError(error) {
   if (error instanceof RequestError) return error;
+  if (Number.isInteger(error?.status) && error?.code) return new RequestError(error.status, error.code, error.message, Boolean(error.retryable), error.details || null);
   const raw = String(error?.message || error || '');
   if (/未安装 ssh2/i.test(raw)) return new RequestError(503, 'DEPENDENCY_MISSING', 'Node 依赖 ssh2 未安装，请先运行 npm install', false);
   if (/缺少主机|缺少.*用户名|连接配置/i.test(raw)) return new RequestError(400, 'INVALID_CONNECTION_CONFIG', '请填写有效的 SSH 主机、端口和用户名');
@@ -105,19 +110,25 @@ function requireString(value, name, { allowEmpty = false } = {}) {
   if (typeof value !== 'string' || (!allowEmpty && !value.trim())) throw new RequestError(400, 'INVALID_INPUT', `${name} 必须是非空字符串`);
   return value.trim();
 }
+function requireQuerySource(value) {
+  const source = value === undefined ? 'udal' : requireString(value, 'source').toLowerCase();
+  if (!['udal', 'voyage'].includes(source)) throw new RequestError(400, 'INVALID_INPUT', 'source 必须是 udal 或 voyage');
+  return source;
+}
+function queryManager(source) { return source === 'voyage' ? voyage : database; }
 function requireDate(value, name = 'date') {
   const date = requireString(value, name);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new RequestError(400, 'INVALID_DATE', `${name} 必须是 YYYY-MM-DD`);
   return date;
 }
 function requireConnected() { if (!ssh.conn) throw new RequestError(409, 'NOT_CONNECTED', '尚未连接服务器，请先点击连接'); }
-async function runQueryRequest(req, res, work) {
+async function runQueryRequest(req, res, work, { timeoutCode = 'DB_QUERY_TIMEOUT', timeoutMessage = '数据库聚合查询超过 60 秒' } = {}) {
   const controller = new AbortController(); let timedOut = false;
   const timer = setTimeout(() => { timedOut = true; controller.abort(); }, 60000);
   const abort = () => controller.abort(); const close = () => { if (!res.writableEnded) controller.abort(); };
   req.once('aborted', abort); res.once('close', close);
   try { return await work(controller.signal); }
-  catch (error) { if (timedOut) throw new RequestError(504, 'DB_QUERY_TIMEOUT', '数据库聚合查询超过 60 秒', true); throw error; }
+  catch (error) { if (timedOut) throw new RequestError(504, timeoutCode, timeoutMessage, true); throw error; }
   finally { clearTimeout(timer); req.off('aborted', abort); res.off('close', close); }
 }
 function safeRemotePath(value) {
@@ -184,7 +195,7 @@ async function handle(req, res) {
     return sendJson(res, 200, {
       ok: true,
       config: ssh.maskConfig(ssh.DEFAULT_CONFIG),
-      connections: { ssh: ssh.maskConfig(ssh.DEFAULT_CONFIG), ...database.defaults() },
+      connections: { ssh: ssh.maskConfig(ssh.DEFAULT_CONFIG), ...database.defaults(), voyage: voyage.defaults(), archive: archive.defaults() },
       configured: !config.isExample,
       errors: config.validate(),
       timeouts: { hdfsListMs: hdfsTimeoutMs * 2 + 10000, hbaseScanMs: hbaseTimeoutMs + 10000 },
@@ -192,6 +203,20 @@ async function handle(req, res) {
   }
   if (req.method === 'GET' && p === '/api/status') return sendJson(res, 200, { ok: true, connected: Boolean(ssh.conn), conn: ssh.connInfo ? ssh.maskConfig(ssh.connInfo) : null, home: ssh.home || null });
   if (req.method === 'GET' && p === '/api/db/status') return sendJson(res, 200, { ok: true, sources: database.status(), defaults: database.defaults() });
+  if (req.method === 'GET' && p === '/api/voyage/status') return sendJson(res, 200, { ok: true, ...voyage.status() });
+  if (req.method === 'POST' && p === '/api/voyage/connect') {
+    const body = await readBody(req); assertObject(body, []); const result = await voyage.connect(); return sendJson(res, 200, { ok: true, ...result });
+  }
+  if (req.method === 'POST' && p === '/api/voyage/disconnect') {
+    const body = await readBody(req); assertObject(body, []); await voyage.disconnect(); return sendJson(res, 200, { ok: true, ...voyage.status() });
+  }
+  if (req.method === 'GET' && p === '/api/archive/status') return sendJson(res, 200, { ok: true, ...archive.status() });
+  if (req.method === 'POST' && p === '/api/archive/connect') {
+    const body = await readBody(req); assertObject(body, []); const result = await archive.connect(); return sendJson(res, 200, { ok: true, ...result });
+  }
+  if (req.method === 'POST' && p === '/api/archive/disconnect') {
+    const body = await readBody(req); assertObject(body, []); await archive.disconnect(); return sendJson(res, 200, { ok: true, ...archive.status() });
+  }
   if (req.method === 'POST' && p === '/api/db/connect') {
     const body = await readBody(req); assertObject(body, ['source', 'host', 'port', 'username', 'password', 'database']);
     const source = requireString(body.source, 'source');
@@ -203,20 +228,29 @@ async function handle(req, res) {
     const body = await readBody(req); assertObject(body, ['source']); const source = requireString(body.source, 'source'); await database.disconnect(source); return sendJson(res, 200, { ok: true, source: source.toLowerCase() });
   }
   if (req.method === 'POST' && p === '/api/query/phone') {
-    const body = await readBody(req); assertObject(body, ['phone']);
-    const result = await runQueryRequest(req, res, (signal) => phoneQuery.queryPhone(database, requireString(body.phone, 'phone'), { signal })); return sendJson(res, 200, { ok: true, result });
+    const body = await readBody(req); assertObject(body, ['phone', 'source']); const source = requireQuerySource(body.source);
+    const result = await runQueryRequest(req, res, (signal) => phoneQuery.queryPhone(queryManager(source), requireString(body.phone, 'phone'), { signal, source })); return sendJson(res, 200, { ok: true, result });
+  }
+  if (req.method === 'POST' && p === '/api/query/product-instance') {
+    const body = await readBody(req); assertObject(body, ['productInstanceId', 'source']); const source = requireQuerySource(body.source);
+    const result = await runQueryRequest(req, res, (signal) => phoneQuery.queryProductInstance(queryManager(source), requireString(body.productInstanceId, 'productInstanceId'), { signal, source })); return sendJson(res, 200, { ok: true, result });
   }
   if (req.method === 'POST' && p === '/api/query/threshold') {
-    const body = await readBody(req); assertObject(body, ['aProductInstanceId']);
-    const result = await runQueryRequest(req, res, (signal) => phoneQuery.queryThreshold(database, requireString(body.aProductInstanceId, 'aProductInstanceId'), { signal })); return sendJson(res, 200, { ok: true, result });
+    const body = await readBody(req); assertObject(body, ['aProductInstanceId', 'source']); const source = requireQuerySource(body.source);
+    const result = await runQueryRequest(req, res, (signal) => phoneQuery.queryThreshold(queryManager(source), requireString(body.aProductInstanceId, 'aProductInstanceId'), { signal, source })); return sendJson(res, 200, { ok: true, result });
   }
   if (req.method === 'POST' && p === '/api/query/customer-products') {
-    const body = await readBody(req); assertObject(body, ['customerId']);
-    const result = await runQueryRequest(req, res, (signal) => phoneQuery.queryCustomerProducts(database, body.customerId, { signal })); return sendJson(res, 200, { ok: true, result });
+    const body = await readBody(req); assertObject(body, ['customerId', 'source']); const source = requireQuerySource(body.source);
+    const result = await runQueryRequest(req, res, (signal) => phoneQuery.queryCustomerProducts(queryManager(source), body.customerId, { signal, source })); return sendJson(res, 200, { ok: true, result });
   }
   if (req.method === 'POST' && p === '/api/query/account-candidates') {
-    const body = await readBody(req); assertObject(body, ['productInstanceId', 'customerId']);
-    const result = await runQueryRequest(req, res, (signal) => phoneQuery.queryAccountCandidates(database, body, { signal })); return sendJson(res, 200, { ok: true, result });
+    const body = await readBody(req); assertObject(body, ['productInstanceId', 'customerId', 'source']); const source = requireQuerySource(body.source);
+    const result = await runQueryRequest(req, res, (signal) => phoneQuery.queryAccountCandidates(queryManager(source), body, { signal, source })); return sendJson(res, 200, { ok: true, result });
+  }
+  if (req.method === 'POST' && p === '/api/query/archive') {
+    const body = await readBody(req); assertObject(body, ['key']);
+    const result = await runQueryRequest(req, res, (signal) => archive.query(requireString(body.key, 'key'), { signal }), { timeoutCode: 'ARCHIVE_QUERY_TIMEOUT', timeoutMessage: '内存档案查询超过 60 秒' });
+    return sendJson(res, 200, { ok: true, result });
   }
   if (req.method === 'POST' && p === '/api/connect') {
     const body = await readBody(req); assertObject(body, ['host', 'port', 'username', 'password']);
@@ -320,7 +354,7 @@ if (require.main === module) {
   if (errors.length) console.warn('[配置提示]', errors.join('；'));
   server.listen(config.workbench.port, config.workbench.host, () => console.log(`远程服务器管理工作台已启动: http://${config.workbench.host}:${config.workbench.port}`));
   server.on('error', (error) => { console.error('[服务错误]', error); process.exitCode = 1; });
-  const shutdown = () => { void database.closeAll().finally(() => server.close(() => process.exit(0))); };
+  const shutdown = () => { void Promise.allSettled([database.closeAll(), voyage.disconnect(), archive.disconnect()]).finally(() => server.close(() => process.exit(0))); };
   process.once('SIGINT', shutdown); process.once('SIGTERM', shutdown);
 }
-module.exports = { createServer, handle, RequestError, asRequestError, MAX_BODY_BYTES };
+module.exports = { createServer, handle, RequestError, asRequestError, MAX_BODY_BYTES, voyage, archive };

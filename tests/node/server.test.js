@@ -129,6 +129,16 @@ test('HTTP errors have real status and normalized shape', async () => {
     assert.equal(disconnectedQuery.status, 409); assert.equal(disconnectedQuery.body.error.code, 'DB_NOT_CONNECTED');
     const disconnectedThreshold = await request(server, 'POST', '/api/query/threshold', { aProductInstanceId: '48243980' });
     assert.equal(disconnectedThreshold.status, 409); assert.equal(disconnectedThreshold.body.error.code, 'DB_NOT_CONNECTED');
+    const voyageStatus = await request(server, 'GET', '/api/voyage/status');
+    assert.equal(voyageStatus.status, 200); assert.equal(Object.hasOwn(voyageStatus.body.config, 'token'), false);
+    const disconnectedVoyage = await request(server, 'POST', '/api/query/phone', { phone: '13338297988', source: 'voyage' });
+    assert.equal(disconnectedVoyage.status, 409); assert.equal(disconnectedVoyage.body.error.code, 'VOYAGE_NOT_CONNECTED');
+    const disconnectedVoyageInstance = await request(server, 'POST', '/api/query/product-instance', { productInstanceId: '48243980', source: 'voyage' });
+    assert.equal(disconnectedVoyageInstance.status, 409); assert.equal(disconnectedVoyageInstance.body.error.code, 'VOYAGE_NOT_CONNECTED');
+    const archiveStatus = await request(server, 'GET', '/api/archive/status');
+    assert.equal(archiveStatus.status, 200); assert.equal(Object.hasOwn(archiveStatus.body.config, 'authToken'), false);
+    const disconnectedArchive = await request(server, 'POST', '/api/query/archive', { key: '35772967' });
+    assert.equal(disconnectedArchive.status, 409); assert.equal(disconnectedArchive.body.error.code, 'ARCHIVE_NOT_CONNECTED');
   } finally { await new Promise((resolve) => server.close(resolve)); }
 });
 
@@ -185,15 +195,44 @@ test('log queue writes asynchronously and paginates newest entries', async () =>
   } finally { await fs.promises.unlink(fixturePath).catch(() => {}); }
 });
 
-test('database query panel replaces command and log interactions', () => {
+test('fixed query panel replaces command and log interactions', () => {
   const html = fs.readFileSync(path.join(__dirname, '../../public/index.html'), 'utf8');
   const source = fs.readFileSync(path.join(__dirname, '../../public/js/main.js'), 'utf8');
-  assert.match(html, /<h1>数据库查询<\/h1>/); assert.match(html, /查询手机号/); assert.match(html, /阈值查询/); assert.match(html, /id="connectionDialog"/);
+  assert.match(html, /<h1>数据库查询<\/h1>/); assert.match(html, /查询手机号/); assert.match(html, /实例查档案/); assert.match(html, /id="productInstanceQueryForm"/); assert.match(html, /阈值查询/); assert.match(html, /内存档案查询/); assert.match(html, /Voyage 在线数据库/); assert.match(html, /id="querySourceSelect"/); assert.match(html, /id="connectionDialog"/);
+  assert.match(html, /id="insertDialog"/); assert.match(html, /id="insertSqlCopy"/); assert.match(html, /一键复制/);
   assert.doesNotMatch(html, /Redis|cacheRedis|data-cache-/);
   assert.doesNotMatch(html, /id="cmdInput"|id="logFlow"|id="btnCmds"|id="commandsDialog"/);
-  assert.match(source, /postJson\('\/api\/query\/phone'/); assert.match(source, /postJson\('\/api\/query\/threshold'/); assert.match(source, /\/api\/hdfs\/preview/);
+  assert.match(source, /postJson\('\/api\/query\/phone'/); assert.match(source, /postJson\('\/api\/query\/product-instance'/); assert.match(source, /postJson\('\/api\/query\/threshold'/); assert.match(source, /postJson\('\/api\/query\/archive'/); assert.match(source, /postJson\('\/api\/voyage\/connect'/); assert.match(source, /generateInsertScript\(result\)/); assert.match(source, /\/api\/hdfs\/preview/);
   assert.doesNotMatch(source, /\/api\/cache\/|state\.cache|CACHE_FIELDS/);
   assert.doesNotMatch(source, /postJson\('\/api\/exec'|postJson\('\/api\/log\/append'|\/api\/log\/list/);
+});
+
+test('query tabs preserve independent results until explicitly cleared', () => {
+  const html = fs.readFileSync(path.join(__dirname, '../../public/index.html'), 'utf8');
+  const source = fs.readFileSync(path.join(__dirname, '../../public/js/main.js'), 'utf8');
+  assert.equal((html.match(/data-query-result="(?:phone|productInstance|threshold|archive)"/g) || []).length, 4);
+  assert.match(source, /function queryResultRoot\(query = state\.activeQuery\)/);
+  assert.match(source, /function syncActiveQueryView\(\)/);
+  const switchFunction = source.match(/function switchQueryTab\(query\) \{[^\n]+\}/)?.[0] || '';
+  assert.match(switchFunction, /syncActiveQueryView\(\)/);
+  assert.doesNotMatch(switchFunction, /clearQueryResult/);
+  assert.match(source, /queryResultRoot\('phone'\)\.replaceChildren/);
+  assert.match(source, /queryResultRoot\('productInstance'\)\.replaceChildren/);
+  assert.match(source, /queryResultRoot\('threshold'\)\.replaceChildren/);
+  assert.match(source, /queryResultRoot\('archive'\)\.replaceChildren/);
+});
+
+test('query result sections show source tables and long errors preserve vertical scrolling', () => {
+  const source = fs.readFileSync(path.join(__dirname, '../../public/js/main.js'), 'utf8');
+  const css = fs.readFileSync(path.join(__dirname, '../../public/style.css'), 'utf8');
+  assert.match(source, /resultSection\('产品实例',[^\n]+table: resultTable\('productInstances'\)/);
+  assert.match(source, /resultSection\('定价计划',[^\n]+table: resultTable\('pricingPlans'\)/);
+  assert.match(source, /resultSection\('档位提醒配置',[^\n]+table: resultTable\('thresholdAttributes'\)/);
+  assert.match(source, /`\$\{title\} · \$\{rows\?\.length \|\| 0\} 条\$\{tableSuffix\}`/);
+  assert.match(source, /数据表: tableForStep\(step\.name\)/);
+  assert.match(css, /\.query-results \{[^}]*overflow-x:\s*hidden;[^}]*overflow-y:\s*auto;/);
+  assert.match(css, /\.query-table-wrap \{[^}]*overflow-x:\s*auto;[^}]*overflow-y:\s*hidden;/);
+  assert.match(css, /\.query-step span \{[^}]*overflow-wrap:\s*anywhere;[^}]*word-break:\s*break-word;/);
 });
 
 test('workbench keeps a 1 to 1.5 desktop ratio and the phone query action on one line', () => {
@@ -209,11 +248,11 @@ test('connection settings use independent read-only source controls and keep cre
   const dialog = html.match(/<dialog id="connectionDialog"[\s\S]*?<\/dialog>/)?.[0] || '';
   assert.match(dialog, /<details class="connection-environment" data-connection-environment="test"><summary[^>]*><span>测试环境<\/span>/);
   assert.match(dialog, /<details class="connection-environment" data-connection-environment="project"><summary><span>工程环境<\/span>/);
-  assert.doesNotMatch(dialog, /<details[^>]*\bopen\b/); assert.match(dialog, /class="connection-environment-empty"/); assert.match(dialog, /暂无连接配置/);
+  assert.doesNotMatch(dialog, /<details[^>]*\bopen\b/); assert.match(dialog, /data-connection-source="voyage"/); assert.match(dialog, /Voyage 在线数据库/); assert.match(dialog, /data-connection-source="archive"/); assert.match(dialog, /内存档案服务/);
   assert.match(dialog, /data-connection-source="ssh"/); assert.match(dialog, /data-connection-source="udal"/); assert.match(dialog, /data-connection-source="doris"/);
-  assert.equal((dialog.match(/data-connection-connect="(?:ssh|udal|doris)"/g) || []).length, 3); assert.doesNotMatch(dialog, /<input\b|type="password"|id="btnConnectAll"|data-db-disconnect/);
+  assert.equal((dialog.match(/data-connection-connect="(?:ssh|udal|doris|voyage|archive)"/g) || []).length, 5); assert.doesNotMatch(dialog, /<input\b|type="password"|id="btnConnectAll"|data-db-disconnect/);
   assert.doesNotMatch(html, /id="settingsDialog"|id="dbSettingsDialog"|id="btnSettings"|id="btnDbSettings"/);
-  assert.match(source, /postJson\('\/api\/connect', \{\}/); assert.match(source, /postJson\('\/api\/db\/connect', \{ source \}/); assert.doesNotMatch(source, /\/api\/connections\/connect|wb_conn_cfg|wb_db_cfg|sessionPassword|DB_FIELDS/);
+  assert.match(source, /postJson\('\/api\/connect', \{\}/); assert.match(source, /postJson\('\/api\/db\/connect', \{ source \}/); assert.match(source, /postJson\('\/api\/voyage\/connect', \{\}/); assert.match(source, /postJson\('\/api\/archive\/connect', \{\}/); assert.doesNotMatch(source, /\/api\/connections\/connect|wb_conn_cfg|wb_db_cfg|sessionPassword|DB_FIELDS/);
 });
 
 test('SSH connection status is rendered inside the resource explorer instead of the top bar', () => {

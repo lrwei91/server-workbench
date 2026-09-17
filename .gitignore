@@ -23,6 +23,10 @@ desktop.ini
 .workbuddy/
 .npm/
 node_modules/
+
+# ---- 本地 Agent 协作指引（不提交）----
+AGENTS.md
+
 __pycache__/
 .pytest_cache/
 *.pyc

@@ -40,6 +40,8 @@ function normalize(raw) {
   const value = raw || {};
   const workbench = value.workbench || {};
   const ssh = value.ssh || {};
+  const archive = value.archive || {};
+  const voyage = value.voyage || {};
   const cdr = value.cdr || {};
   const logs = value.logs || {};
   return {
@@ -63,6 +65,29 @@ function normalize(raw) {
       doris: {
         host: envText('DORIS_HOST').trim(), port: envNumber('DORIS_PORT', 9030), username: envText('DORIS_USERNAME').trim(), password: envText('DORIS_PASSWORD'),
         database: envText('DORIS_DATABASE').trim(), databases: [null],
+      },
+    },
+    archive: {
+      pageUrl: envText('ARCHIVE_PAGE_URL', archive.pageUrl || 'http://134.155.157.3:30006/inmemory-manager/inmemory-manager-frontend/dataop').trim(),
+      apiUrl: envText('ARCHIVE_API_URL', archive.apiUrl || '').trim(),
+      authToken: envText('ARCHIVE_AUTH_TOKEN', archive.authToken || ''),
+      timeoutMs: envNumber('ARCHIVE_TIMEOUT_MS', Number(archive.timeoutMs) || 60000),
+    },
+    voyage: {
+      apiUrl: envText('VOYAGE_API_URL', voyage.apiUrl || 'http://134.155.157.3:30010/api/query/execute').trim(),
+      token: envText('VOYAGE_TOKEN', voyage.token || ''),
+      timeoutMs: envNumber('VOYAGE_TIMEOUT_MS', Number(voyage.timeoutMs) || 15000),
+      mappings: {
+        CRM3DB: {
+          datasourceId: envNumber('VOYAGE_CRM_DATASOURCE_ID', Number(voyage.mappings?.CRM3DB?.datasourceId) || 5),
+          database: envText('VOYAGE_CRM_DATABASE', voyage.mappings?.CRM3DB?.database || 'incf_db').trim(),
+          schema: envText('VOYAGE_CRM_SCHEMA', voyage.mappings?.CRM3DB?.schema || 'crmv3').trim(),
+        },
+        CONFIGDB_CNOS_JF_TEST: {
+          datasourceId: envNumber('VOYAGE_CONFIG_DATASOURCE_ID', Number(voyage.mappings?.CONFIGDB_CNOS_JF_TEST?.datasourceId) || 5),
+          database: envText('VOYAGE_CONFIG_DATABASE', voyage.mappings?.CONFIGDB_CNOS_JF_TEST?.database || 'incf_db').trim(),
+          schema: envText('VOYAGE_CONFIG_SCHEMA', voyage.mappings?.CONFIGDB_CNOS_JF_TEST?.schema || 'crmv3').trim(),
+        },
       },
     },
     cdr: { upstream: envText('CDR_UPSTREAM', cdr.upstream || `http://${cdr.host || '127.0.0.1'}:${Number(cdr.port) || 8000}`) },
