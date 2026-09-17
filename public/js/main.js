@@ -823,6 +823,11 @@ function renderTable(rows) {
   return el('div', { class: 'query-table-wrap' }, el('table', { class: 'query-table' }, el('thead', {}, head), body));
 }
 function resultSection(title, rows, { open = false, actions = [], table = '' } = {}) {
+  if (!rows?.length) {
+    const fragment = document.createDocumentFragment(); const availableActions = actions.filter((action) => !action.disabled);
+    if (availableActions.length) fragment.append(el('div', { class: 'query-row-actions' }, ...availableActions));
+    return fragment;
+  }
   const tableSuffix = table ? ` · ${table}` : '';
   const details = el('details', { class: 'query-section', ...(open ? { open: '' } : {}) }, el('summary', { text: `${title} · ${rows?.length || 0} 条${tableSuffix}` }), renderTable(rows));
   if (actions.length) details.append(el('div', { class: 'query-row-actions' }, ...actions));
@@ -830,9 +835,13 @@ function resultSection(title, rows, { open = false, actions = [], table = '' } =
 }
 const RESULT_TABLE_BY_KEY = Object.freeze(Object.fromEntries(INSERT_TABLES.map(({ dataKey, table }) => [dataKey, table])));
 const STEP_TABLE_RULES = Object.freeze([
-  [/定价计划/, 'pricing_plan'], [/销售品定义/, 'offer'], [/销售品实例/, 'offer_inst'], [/产品销售品关系/, 'offer_prod_inst_rel'],
-  [/产品账户关系/, 'prod_inst_acct_rel'], [/账户|查账户候选/, 'account'], [/产品定义/, 'product'], [/档位提醒配置/, 'prod_inst_attr'],
-  [/A\/Z 产品实例关系/, 'prod_inst_rel'], [/终端产品实例|号码产品实例|产品实例档案|同客户其他产品/, 'prod_inst'],
+  [/定价计划/, 'pricing_plan'], [/销售品定义/, 'offer'], [/销售品实例属性/, 'offer_inst_attr'], [/销售品实例费用/, 'offer_inst_fee_info'],
+  [/销售品实例/, 'offer_inst'], [/产品销售品关系/, 'offer_prod_inst_rel'],
+  [/产品账户关系/, 'prod_inst_acct_rel'], [/账户|查账户候选/, 'account'], [/产品定义/, 'product'], [/档位提醒配置|产品实例属性/, 'prod_inst_attr'],
+  [/A\/Z 产品实例关系|产品实例关系/, 'prod_inst_rel'], [/产品实例状态/, 'prod_inst_state'], [/产品实例扩展/, 'prod_inst_ext'],
+  [/产品实例联系人/, 'prod_inst_contact'], [/产品实例付费方式/, 'prod_inst_paymode'], [/产品实例接入号码/, 'prod_inst_acc_num'],
+  [/产品号码关联/, 'prod_inst_acc_nbr_rela'], [/产品实例参与人/, 'prod_inst_party'], [/产品资源实例关系/, 'prod_res_inst_rel'],
+  [/关联产品实例|接入产品实例|终端产品实例|号码产品实例|产品实例档案|同客户其他产品/, 'prod_inst'],
 ]);
 function resultTable(dataKey) { return RESULT_TABLE_BY_KEY[dataKey] || ''; }
 function tableForStep(name) { return STEP_TABLE_RULES.find(([pattern]) => pattern.test(String(name || '')))?.[1] || '—'; }
@@ -881,8 +890,16 @@ function renderQueryResult(result) {
   const candidateButton = el('button', { class: 'wb-button', type: 'button', text: '辅助定位账户', disabled: !customerId && !productInstanceId, on: { click: () => loadAccountCandidates(productInstanceId, customerId, result.source, query) } });
   root.append(
     resultSection('产品实例', data.productInstances, { open: true, actions: [customerButton], table: resultTable('productInstances') }), resultSection('产品定义', data.productDefinitions, { table: resultTable('productDefinitions') }),
+    resultSection('接入产品实例', data.accessProductInstances, { table: resultTable('accessProductInstances') }), resultSection('产品实例关系', data.productRelationships, { open: true, table: resultTable('productRelationships') }),
+    resultSection('关联产品实例', data.relatedProductInstances, { table: resultTable('relatedProductInstances') }), resultSection('产品实例属性', data.productAttributes, { open: true, table: resultTable('productAttributes') }),
+    resultSection('产品实例状态', data.productStates, { table: resultTable('productStates') }), resultSection('产品实例扩展', data.productExtensions, { table: resultTable('productExtensions') }),
+    resultSection('产品实例联系人', data.productContacts, { table: resultTable('productContacts') }), resultSection('产品实例付费方式', data.productPaymodes, { table: resultTable('productPaymodes') }),
+    resultSection('产品实例接入号码', data.productAccessNumbers, { table: resultTable('productAccessNumbers') }), resultSection('产品号码关联', data.productNumberRelations, { table: resultTable('productNumberRelations') }),
+    resultSection('产品实例参与人', data.productParties, { table: resultTable('productParties') }), resultSection('产品资源实例关系', data.productResourceRelations, { table: resultTable('productResourceRelations') }),
     resultSection('账户付费关系', data.accountRelations, { open: true, actions: data.productInstances?.length && !data.accountRelations?.length ? [candidateButton] : [], table: resultTable('accountRelations') }), resultSection('账户与合同', data.accounts, { open: true, table: resultTable('accounts') }),
-    resultSection('产品与销售品关系', data.offerRelations, { table: resultTable('offerRelations') }), resultSection('销售品实例', data.offerInstances, { table: resultTable('offerInstances') }), resultSection('套餐 / 销售品定义', data.offers, { open: true, table: resultTable('offers') }), resultSection('定价计划', data.pricingPlans, { table: resultTable('pricingPlans') }),
+    resultSection('产品与销售品关系', data.offerRelations, { table: resultTable('offerRelations') }), resultSection('销售品实例', data.offerInstances, { table: resultTable('offerInstances') }),
+    resultSection('销售品实例属性', data.offerInstanceAttributes, { table: resultTable('offerInstanceAttributes') }), resultSection('销售品实例费用', data.offerInstanceFees, { table: resultTable('offerInstanceFees') }),
+    resultSection('套餐 / 销售品定义', data.offers, { open: true, table: resultTable('offers') }), resultSection('定价计划', data.pricingPlans, { table: resultTable('pricingPlans') }),
   );
 }
 function renderThresholdResult(result) {

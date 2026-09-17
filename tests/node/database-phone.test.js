@@ -52,7 +52,7 @@ test('database query cancellation destroys the active connection instead of retu
   await assert.rejects(pending, /查询已取消/); assert.equal(destroyed, true); assert.equal(released, false); await manager.closeAll();
 });
 
-function fixtureDb({ failAccount = false, missingPricing = false } = {}) {
+function fixtureDb({ failAccount = false, failExtension = false, missingPricing = false } = {}) {
   const calls = [];
   const query = async (source, database, sql, values) => {
     calls.push({ source, database, sql, values }); const id = String(values[0]);
@@ -60,12 +60,25 @@ function fixtureDb({ failAccount = false, missingPricing = false } = {}) {
       { prod_inst_id: '11', PROD_ID: '101', acc_prod_inst_id: '11', acc_num: id, OWNER_CUST_ID: '900' },
       { prod_inst_id: '12', PROD_ID: '102', acc_prod_inst_id: '11', acc_num: id, OWNER_CUST_ID: '900' },
     ];
-    if (/FROM prod_inst WHERE prod_inst_id/.test(sql)) return [{ prod_inst_id: id, PROD_ID: '101', acc_num: '13338297988', OWNER_CUST_ID: '900' }];
+    if (/FROM prod_inst_rel WHERE a_prod_inst_id/.test(sql)) return [{ prod_inst_rel_id: `az${id}`, a_prod_inst_id: id, z_prod_inst_id: '777' }];
+    if (/FROM prod_inst_rel WHERE z_prod_inst_id/.test(sql)) return [{ prod_inst_rel_id: `za${id}`, a_prod_inst_id: '778', z_prod_inst_id: id }];
+    if (/FROM prod_inst_attr WHERE prod_inst_id/.test(sql)) return [{ prod_inst_attr_id: `pa${id}`, prod_inst_id: id, attr_id: '800000251' }];
+    if (/FROM prod_inst_state/.test(sql)) { if (failExtension) throw new Error('状态档案查询失败'); return [{ prod_inst_state_id: `ps${id}`, prod_inst_id: id }]; }
+    if (/FROM prod_inst_ext/.test(sql)) return [{ prod_inst_id: id, ext_value: '扩展' }];
+    if (/FROM prod_inst_contact/.test(sql)) return [{ prod_inst_contact_id: `pc${id}`, prod_inst_id: id }];
+    if (/FROM prod_inst_paymode/.test(sql)) return [{ prod_inst_id: id, pay_mode: '1' }];
+    if (/FROM prod_inst_acc_num/.test(sql)) return [{ prod_inst_id: id, acc_num: '13338297988' }];
+    if (/FROM prod_inst_acc_nbr_rela/.test(sql)) return [{ prod_inst_id: id, acc_nbr: '13338297988' }];
+    if (/FROM prod_inst_party/.test(sql)) return [{ prod_inst_id: id, party_id: 'P1' }];
+    if (/FROM prod_res_inst_rel/.test(sql)) return [{ prod_inst_id: id, res_inst_id: 'R1' }];
+    if (/FROM prod_inst WHERE prod_inst_id/.test(sql)) return [{ prod_inst_id: id, PROD_ID: '101', acc_prod_inst_id: id === '9007199254740993' ? '779' : id, acc_num: '13338297988', OWNER_CUST_ID: '900' }];
     if (/FROM product WHERE/.test(sql)) return [{ prod_id: id, prod_name: `产品${id}` }];
     if (/FROM prod_inst_acct_rel/.test(sql)) { if (failAccount) throw new Error('账户分片查询失败'); return [{ prod_inst_acct_rel_id: `r${id}`, PROD_INST_ID: id, ACCT_ID: id === '11' ? '501' : '502' }]; }
     if (/FROM account WHERE acct_id/.test(sql)) return [{ acct_id: id, contract_no: `C${id}` }];
     if (/FROM offer_prod_inst_rel/.test(sql)) return [{ offer_prod_inst_rel_id: `o${id}`, PROD_INST_ID: id, OFFER_INST_ID: '701' }];
     if (/FROM offer_inst WHERE/.test(sql)) return [{ offer_inst_id: id, offer_id: '801' }];
+    if (/FROM offer_inst_attr/.test(sql)) return [{ offer_inst_attr_id: `oa${id}`, offer_inst_id: id }];
+    if (/FROM offer_inst_fee_info/.test(sql)) return [{ offer_inst_fee_info_id: `of${id}`, offer_inst_id: id }];
     if (/FROM offer WHERE/.test(sql)) return [{ offer_id: id, offer_name: '共享套餐', pricing_plan_id: '901' }];
     if (/FROM pricing_plan/.test(sql)) return missingPricing ? [] : [{ pricing_plan_id: id, pricing_plan_name: '计划' }];
     if (/OWNER_CUST_ID =/.test(sql)) return [{ prod_inst_id: '13', acc_num: 'OTHER' }];
@@ -102,8 +115,21 @@ test('product instance query reuses the archive chain and preserves a large stri
   const db = fixtureDb(); const id = '9007199254740993'; const result = await queryProductInstance(db, id, { source: 'voyage' });
   assert.equal(result.productInstanceId, id); assert.equal(result.source, 'voyage'); assert.equal(result.status, 'complete');
   assert.equal(result.data.productInstances[0].prod_inst_id, id); assert.equal(result.data.accounts.length, 1); assert.equal(result.data.offers.length, 1);
+  assert.deepEqual(result.data.accessProductInstances.map((row) => row.prod_inst_id), ['779']);
+  assert.equal(result.data.productRelationships.length, 2); assert.deepEqual(result.data.relatedProductInstances.map((row) => row.prod_inst_id).sort(), ['777', '778']);
+  assert.equal(result.data.productAttributes.length, 1); assert.equal(result.data.productStates.length, 1); assert.equal(result.data.productExtensions.length, 1);
+  assert.equal(result.data.productContacts.length, 1); assert.equal(result.data.productPaymodes.length, 1); assert.equal(result.data.productAccessNumbers.length, 1);
+  assert.equal(result.data.productNumberRelations.length, 1); assert.equal(result.data.productParties.length, 1); assert.equal(result.data.productResourceRelations.length, 1);
+  assert.equal(result.data.offerInstanceAttributes.length, 1); assert.equal(result.data.offerInstanceFees.length, 1);
+  assert.equal(db.calls.filter((call) => /FROM prod_inst_rel/.test(call.sql)).length, 2);
   assert.equal(db.calls[0].source, 'voyage'); assert.match(db.calls[0].sql, /prod_inst_id = \?/); assert.deepEqual(db.calls[0].values, [id]);
   await assert.rejects(queryProductInstance(db, 'ABC'), /必须是数字/);
+});
+
+test('archive extension failures keep successful product-instance data and mark the result partial', async () => {
+  const result = await queryProductInstance(fixtureDb({ failExtension: true }), '123');
+  assert.equal(result.status, 'partial'); assert.equal(result.data.productAttributes.length, 1);
+  assert.equal(result.data.productStates.length, 0); assert.equal(result.steps.some((step) => step.name.startsWith('产品实例状态') && step.status === 'error'), true);
 });
 
 test('phone query distinguishes empty, missing definition, and partial branch failures', async () => {

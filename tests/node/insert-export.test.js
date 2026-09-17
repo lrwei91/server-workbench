@@ -51,3 +51,22 @@ test('threshold Voyage results map back to relationship, product, and attribute 
   assert.match(sql, /表：prod_inst_attr/);
   assert.doesNotMatch(sql, /threshold_level|80%/);
 });
+
+test('product archive extensions export to their source tables and deduplicate shared product rows', async () => {
+  const { generateInsertScript } = await import(moduleUrl);
+  const shared = { prod_inst_id: '11', prod_id: '101' };
+  const sql = generateInsertScript({ source: 'voyage', productInstanceId: '11', data: {
+    productInstances: [shared], accessProductInstances: [shared], relatedProductInstances: [{ prod_inst_id: '12', prod_id: '102' }],
+    productRelationships: [{ a_prod_inst_id: '11', z_prod_inst_id: '12' }],
+    productAttributes: [{ prod_inst_id: '11', attr_id: '800000251' }],
+    productStates: [{ prod_inst_id: '11', status_cd: '1000' }],
+    offerInstanceAttributes: [{ offer_inst_id: '701', attr_id: '1' }],
+    offerInstanceFees: [{ offer_inst_id: '701', fee: '10.00' }],
+  } }, { generatedAt: 'TIME' });
+  assert.match(sql, /表：prod_inst \| 2 行/);
+  assert.match(sql, /表：prod_inst_rel \| 1 行/);
+  assert.match(sql, /表：prod_inst_attr \| 1 行/);
+  assert.match(sql, /表：prod_inst_state \| 1 行/);
+  assert.match(sql, /表：offer_inst_attr \| 1 行/);
+  assert.match(sql, /表：offer_inst_fee_info \| 1 行/);
+});

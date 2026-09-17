@@ -222,12 +222,16 @@ test('query tabs preserve independent results until explicitly cleared', () => {
   assert.match(source, /queryResultRoot\('archive'\)\.replaceChildren/);
 });
 
-test('query result sections show source tables and long errors preserve vertical scrolling', () => {
+test('query result sections show source tables, hide empty categories, and preserve vertical scrolling', () => {
   const source = fs.readFileSync(path.join(__dirname, '../../public/js/main.js'), 'utf8');
   const css = fs.readFileSync(path.join(__dirname, '../../public/style.css'), 'utf8');
   assert.match(source, /resultSection\('产品实例',[^\n]+table: resultTable\('productInstances'\)/);
   assert.match(source, /resultSection\('定价计划',[^\n]+table: resultTable\('pricingPlans'\)/);
   assert.match(source, /resultSection\('档位提醒配置',[^\n]+table: resultTable\('thresholdAttributes'\)/);
+  assert.match(source, /if \(!rows\?\.length\)/);
+  assert.match(source, /resultSection\('产品实例关系',[^\n]+table: resultTable\('productRelationships'\)/);
+  assert.match(source, /resultSection\('产品实例属性',[^\n]+table: resultTable\('productAttributes'\)/);
+  assert.match(source, /resultSection\('销售品实例费用',[^\n]+table: resultTable\('offerInstanceFees'\)/);
   assert.match(source, /`\$\{title\} · \$\{rows\?\.length \|\| 0\} 条\$\{tableSuffix\}`/);
   assert.match(source, /数据表: tableForStep\(step\.name\)/);
   assert.match(css, /\.query-results \{[^}]*overflow-x:\s*hidden;[^}]*overflow-y:\s*auto;/);

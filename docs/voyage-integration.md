@@ -31,6 +31,6 @@ Token 过期后更新 `.env` 并重启 Node 服务，再在连接设置中单独
 
 ## 当前数据边界
 
-手机号查询和实例档案查询均使用固定单表链读取 `prod_inst`、`product`、`prod_inst_acct_rel`、`account`、`offer_prod_inst_rel`、`offer_inst`、`offer` 与 `pricing_plan`。当前映射为 `incf_db / crmv3`；具体表的存在状态以实际查询结果为准，某个关联表报错时，前面成功取得的数据继续展示，整次结果标记为“部分完成”。
+手机号查询使用固定单表链读取 `prod_inst`、`product`、`prod_inst_acct_rel`、`account`、`offer_prod_inst_rel`、`offer_inst`、`offer` 与 `pricing_plan`。实例档案查询在此基础上补充 `acc_prod_inst_id` 对应实例、双向 `prod_inst_rel` 及关联实例，并读取 `prod_inst_attr`、`prod_inst_state`、`prod_inst_ext`、`prod_inst_contact`、`prod_inst_paymode`、`prod_inst_acc_num`、`prod_inst_acc_nbr_rela`、`prod_inst_party`、`prod_res_inst_rel`、`offer_inst_attr` 与 `offer_inst_fee_info`。当前映射为 `incf_db / crmv3`；具体表的存在状态以实际查询结果为准，某个关联表报错时，前面成功取得的数据继续展示，整次结果标记为“部分完成”。没有返回数据的分类不会在结果区域生成空表。
 
 若后续取得定价计划所在的 datasource、database 和 schema，只需调整 `VOYAGE_CONFIG_*` 映射或对应固定查询，不影响页面查询契约。

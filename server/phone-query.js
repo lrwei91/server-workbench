@@ -26,6 +26,19 @@ const SQL = {
   offerInst: 'SELECT * FROM offer_inst WHERE offer_inst_id = ? LIMIT 500',
   offer: 'SELECT * FROM offer WHERE offer_id = ? LIMIT 500',
   pricingPlan: 'SELECT * FROM pricing_plan WHERE pricing_plan_id = ? LIMIT 500',
+  relationshipByA: `SELECT * FROM prod_inst_rel WHERE a_prod_inst_id = ? LIMIT ${STEP_LIMIT}`,
+  relationshipByZ: `SELECT * FROM prod_inst_rel WHERE z_prod_inst_id = ? LIMIT ${STEP_LIMIT}`,
+  productAttribute: `SELECT * FROM prod_inst_attr WHERE prod_inst_id = ? LIMIT ${STEP_LIMIT}`,
+  productState: `SELECT * FROM prod_inst_state WHERE prod_inst_id = ? LIMIT ${STEP_LIMIT}`,
+  productExtension: `SELECT * FROM prod_inst_ext WHERE prod_inst_id = ? LIMIT ${STEP_LIMIT}`,
+  productContact: `SELECT * FROM prod_inst_contact WHERE prod_inst_id = ? LIMIT ${STEP_LIMIT}`,
+  productPaymode: `SELECT * FROM prod_inst_paymode WHERE prod_inst_id = ? LIMIT ${STEP_LIMIT}`,
+  productAccessNumber: `SELECT * FROM prod_inst_acc_num WHERE prod_inst_id = ? LIMIT ${STEP_LIMIT}`,
+  productNumberRelation: `SELECT * FROM prod_inst_acc_nbr_rela WHERE prod_inst_id = ? LIMIT ${STEP_LIMIT}`,
+  productParty: `SELECT * FROM prod_inst_party WHERE prod_inst_id = ? LIMIT ${STEP_LIMIT}`,
+  productResourceRelation: `SELECT * FROM prod_res_inst_rel WHERE prod_inst_id = ? LIMIT ${STEP_LIMIT}`,
+  offerInstanceAttribute: `SELECT * FROM offer_inst_attr WHERE offer_inst_id = ? LIMIT ${STEP_LIMIT}`,
+  offerInstanceFee: `SELECT * FROM offer_inst_fee_info WHERE offer_inst_id = ? LIMIT ${STEP_LIMIT}`,
   thresholdRelations: `SELECT * FROM prod_inst_rel WHERE a_prod_inst_id = ? LIMIT ${STEP_LIMIT}`,
   thresholdTerminalProduct: `SELECT * FROM prod_inst WHERE prod_id = ${THRESHOLD_PRODUCT_ID} AND prod_inst_id = ? LIMIT ${STEP_LIMIT}`,
   thresholdAttributes: `SELECT * FROM prod_inst_attr WHERE attr_id IN (${THRESHOLD_ATTR_IDS.join(',')}) AND prod_inst_id = ? LIMIT ${STEP_LIMIT}`,
@@ -39,6 +52,14 @@ function rowValue(row, key) {
   return actual === undefined ? undefined : row[actual];
 }
 function valuesOf(rows, key) { return [...new Set(rows.map((row) => rowValue(row, key)).filter((value) => value !== null && value !== undefined && value !== ''))]; }
+function uniqueRows(rows) {
+  const seen = new Set();
+  return rows.filter((row) => {
+    const key = JSON.stringify(Object.entries(row || {}).sort(([left], [right]) => left.localeCompare(right)));
+    if (seen.has(key)) return false;
+    seen.add(key); return true;
+  });
+}
 function utc8Iso(date = new Date()) { return new Date(date.getTime() + 8 * 60 * 60 * 1000).toISOString().replace('Z', '+08:00'); }
 function sourceMeta(source, database) { return { source, database, readAt: utc8Iso() }; }
 
@@ -70,7 +91,7 @@ class QueryContext {
   }
 }
 
-async function aggregateProductArchive(ctx, productInstances) {
+async function aggregateProductArchive(ctx, productInstances, { includeArchiveExtensions = false } = {}) {
   const productIds = valuesOf(productInstances, 'PROD_ID');
   const instanceIds = valuesOf(productInstances, 'prod_inst_id');
   const [productDefinitions, accountRelations, offerRelations] = await Promise.all([
@@ -78,8 +99,45 @@ async function aggregateProductArchive(ctx, productInstances) {
     ctx.each('产品账户关系', CRM, SQL.accountRel, instanceIds),
     ctx.each('产品销售品关系', CRM, SQL.offerRel, instanceIds),
   ]);
+  let accessProductInstances = []; let productRelationships = []; let relatedProductInstances = [];
+  let productAttributes = []; let productStates = []; let productExtensions = []; let productContacts = [];
+  let productPaymodes = []; let productAccessNumbers = []; let productNumberRelations = []; let productParties = [];
+  let productResourceRelations = [];
+  if (includeArchiveExtensions) {
+    const rootIds = instanceIds.map(String);
+    const accessInstanceIds = valuesOf(productInstances, 'acc_prod_inst_id').filter((id) => !rootIds.includes(String(id)));
+    const [relationshipsByA, relationshipsByZ, attributes, states, extensions, contacts, paymodes, accessNumbers,
+      numberRelations, parties, resourceRelations, accessInstances] = await Promise.all([
+      ctx.each('产品实例关系(A端)', CRM, SQL.relationshipByA, instanceIds),
+      ctx.each('产品实例关系(Z端)', CRM, SQL.relationshipByZ, instanceIds),
+      ctx.each('产品实例属性', CRM, SQL.productAttribute, instanceIds),
+      ctx.each('产品实例状态', CRM, SQL.productState, instanceIds),
+      ctx.each('产品实例扩展', CRM, SQL.productExtension, instanceIds),
+      ctx.each('产品实例联系人', CRM, SQL.productContact, instanceIds),
+      ctx.each('产品实例付费方式', CRM, SQL.productPaymode, instanceIds),
+      ctx.each('产品实例接入号码', CRM, SQL.productAccessNumber, instanceIds),
+      ctx.each('产品号码关联', CRM, SQL.productNumberRelation, instanceIds),
+      ctx.each('产品实例参与人', CRM, SQL.productParty, instanceIds),
+      ctx.each('产品资源实例关系', CRM, SQL.productResourceRelation, instanceIds),
+      ctx.each('接入产品实例', CRM, SQL.productsByInstance, accessInstanceIds),
+    ]);
+    productRelationships = uniqueRows([...relationshipsByA, ...relationshipsByZ]);
+    const relatedInstanceIds = [...new Set([
+      ...valuesOf(productRelationships, 'a_prod_inst_id'), ...valuesOf(productRelationships, 'z_prod_inst_id'),
+    ].map(String))].filter((id) => !rootIds.includes(id) && !accessInstanceIds.map(String).includes(id));
+    relatedProductInstances = await ctx.each('关联产品实例', CRM, SQL.productsByInstance, relatedInstanceIds);
+    [productAttributes, productStates, productExtensions, productContacts, productPaymodes, productAccessNumbers,
+      productNumberRelations, productParties, productResourceRelations, accessProductInstances] = [
+      attributes, states, extensions, contacts, paymodes, accessNumbers, numberRelations, parties, resourceRelations, accessInstances,
+    ];
+  }
   const accounts = await ctx.each('账户', CRM, SQL.account, valuesOf(accountRelations, 'ACCT_ID'));
   const offerInstances = await ctx.each('销售品实例', CRM, SQL.offerInst, valuesOf(offerRelations, 'OFFER_INST_ID'));
+  const offerInstanceIds = valuesOf(offerRelations, 'OFFER_INST_ID');
+  const [offerInstanceAttributes, offerInstanceFees] = includeArchiveExtensions ? await Promise.all([
+    ctx.each('销售品实例属性', CRM, SQL.offerInstanceAttribute, offerInstanceIds),
+    ctx.each('销售品实例费用', CRM, SQL.offerInstanceFee, offerInstanceIds),
+  ]) : [[], []];
   const offers = await ctx.each('销售品定义', CONFIG, SQL.offer, valuesOf(offerInstances, 'offer_id'));
   const pricingPlans = await ctx.each('定价计划', CONFIG, SQL.pricingPlan, valuesOf(offers, 'pricing_plan_id'));
   const hasErrors = ctx.steps.some((step) => step.status === 'error');
@@ -91,7 +149,12 @@ async function aggregateProductArchive(ctx, productInstances) {
   return {
     status: !productInstances.length ? (hasErrors ? 'failed' : 'empty') : (hasErrors || missingRelations || ctx.truncated ? 'partial' : 'complete'),
     queriedAt: utc8Iso(), truncated: ctx.truncated, totalRows: ctx.count, steps: ctx.steps,
-    data: { productInstances, productDefinitions, accountRelations, accounts, offerRelations, offerInstances, offers, pricingPlans },
+    data: {
+      productInstances, productDefinitions, accessProductInstances, productRelationships, relatedProductInstances,
+      productAttributes, productStates, productExtensions, productContacts, productPaymodes, productAccessNumbers,
+      productNumberRelations, productParties, productResourceRelations, accountRelations, accounts, offerRelations,
+      offerInstances, offerInstanceAttributes, offerInstanceFees, offers, pricingPlans,
+    },
   };
 }
 
@@ -109,7 +172,7 @@ async function queryProductInstance(db, productInstanceId, { signal, source = 'u
   if (!/^\d+$/.test(input)) throw new Error('产品实例 ID 必须是数字');
   const ctx = new QueryContext(db, signal, source);
   const productInstances = await ctx.step('产品实例档案', CRM, SQL.productsByInstance, [input]);
-  return { productInstanceId: input, source, ...await aggregateProductArchive(ctx, productInstances) };
+  return { productInstanceId: input, source, ...await aggregateProductArchive(ctx, productInstances, { includeArchiveExtensions: true }) };
 }
 
 async function queryCustomerProducts(db, customerId, options = {}) {
@@ -148,4 +211,4 @@ async function queryThreshold(db, aProductInstanceId, { signal, source = 'udal' 
   };
 }
 
-module.exports = { CRM, CONFIG, STEP_LIMIT, TOTAL_LIMIT, THRESHOLD_PRODUCT_ID, THRESHOLD_LEVELS, THRESHOLD_ATTR_IDS, SQL, QueryContext, aggregateProductArchive, queryPhone, queryProductInstance, queryCustomerProducts, queryAccountCandidates, queryThreshold, rowValue, valuesOf, utc8Iso };
+module.exports = { CRM, CONFIG, STEP_LIMIT, TOTAL_LIMIT, THRESHOLD_PRODUCT_ID, THRESHOLD_LEVELS, THRESHOLD_ATTR_IDS, SQL, QueryContext, aggregateProductArchive, queryPhone, queryProductInstance, queryCustomerProducts, queryAccountCandidates, queryThreshold, rowValue, valuesOf, uniqueRows, utc8Iso };
