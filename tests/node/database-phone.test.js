@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const iconv = require('iconv-lite');
 const { createDatabaseManager } = require('../../server/database');
 const { repairBusinessText, repairUtf8AsGbk } = require('../../server/encoding');
-const { queryPhone, queryProductInstance, queryCustomerProducts, queryAccountCandidates, queryThreshold, THRESHOLD_PRODUCT_ID, THRESHOLD_ATTR_IDS, utc8Iso } = require('../../server/phone-query');
+const { queryPhone, queryProductInstance, queryCustomerProducts, queryAccountCandidates, queryEventType, queryThreshold, THRESHOLD_PRODUCT_ID, THRESHOLD_ATTR_IDS, EVENT_TYPE_CATALOG, VOYAGE_BILL_INMEMORY_TABLE_MAP, mapQueryTables, utc8Iso } = require('../../server/phone-query');
 
 test('database manager creates isolated UDAL pools, preserves values as strings, and never exposes passwords', async () => {
   const pools = [];
@@ -33,6 +33,19 @@ test('query metadata uses an explicit UTC+8 offset', () => {
   assert.equal(utc8Iso(new Date('2026-09-15T02:35:26.813Z')), '2026-09-15T10:35:26.813+08:00');
 });
 
+test('Voyage bill_inmemory maps logical CRM archive tables to physical table names', () => {
+  assert.equal(VOYAGE_BILL_INMEMORY_TABLE_MAP.offer_inst, 'prod_offer_inst');
+  const mapped = mapQueryTables('SELECT * FROM offer_inst WHERE offer_id = ?', 'voyage', 'bill_inmemory');
+  assert.match(mapped.sql, /FROM prod_offer_inst WHERE/);
+  assert.deepEqual(mapped.tableMap, [{ logicalTable: 'offer_inst', physicalTable: 'prod_offer_inst' }]);
+  assert.match(mapQueryTables('SELECT * FROM prod_inst WHERE acc_num = ?', 'voyage', 'bill_inmemory').sql, /acc_nbr = \?/);
+  assert.match(mapQueryTables('SELECT * FROM offer_inst WHERE offer_inst_id = ?', 'voyage', 'bill_inmemory').sql, /FROM prod_offer_inst WHERE prod_offer_inst_id = \?/);
+  assert.equal(mapQueryTables('SELECT * FROM pricing_plan WHERE pricing_plan_id = ?', 'voyage', 'bill_inmemory').sql, 'SELECT * FROM pricing_plan WHERE pricing_plan_id = ?');
+  assert.equal(mapQueryTables('SELECT * FROM offer_inst WHERE offer_id = ?', 'voyage', 'crmv3').sql, 'SELECT * FROM offer_inst WHERE offer_id = ?');
+  assert.match(mapQueryTables('SELECT * FROM offer_inst_attr WHERE offer_inst_id = ?', 'voyage', 'bill_inmemory').sql, /FROM prod_offer_inst_attr WHERE/);
+  assert.match(mapQueryTables('SELECT * FROM prod_inst_acct_rel WHERE prod_inst_id = ?', 'voyage', 'bill_inmemory').sql, /FROM prod_inst_acct WHERE/);
+});
+
 test('database reconnect closes the previous source pools before switching configuration', async () => {
   const pools = []; const mysql = { createPool(options) { const pool = { options, ended: false, async query() { return [[{ ok: 1 }]]; }, async end() { this.ended = true; } }; pools.push(pool); return pool; } };
   const manager = createDatabaseManager(mysql);
@@ -54,8 +67,18 @@ test('database query cancellation destroys the active connection instead of retu
 
 function fixtureDb({ failAccount = false, failExtension = false, missingPricing = false } = {}) {
   const calls = [];
-  const query = async (source, database, sql, values) => {
-    calls.push({ source, database, sql, values }); const id = String(values[0]);
+  const query = async (source, database, sql, values, options = {}) => {
+    calls.push({ source, database, sql, values, options }); const id = String(values[0]);
+    if (/FROM source_event_type_format/.test(sql)) return [{ SOURCE_EVENT_TYPE_ID: '8', EVENT_TYPE_ID: '206080000', SOURCE_EVENT_FORMAT_ID: '3001', VERSION: '1' }];
+    if (/FROM ratable_event_type_format/.test(sql)) return [{ EVENT_FORMAT_ID: '4001', EVENT_TYPE_ID: '206080000', MODULE_ID: '1' }];
+    if (/FROM ratable_event_format WHERE/.test(sql)) return [{ EVENT_FORMAT_ID: id, CH_NAME: 'CDMA集团格式' }];
+    if (/FROM ratable_event_format_item/.test(sql)) return [{ EVENT_FORMAT_ID: id, EVENT_ATTR_ID: '5001', SORT_ID: '1' }];
+    if (/FROM tpr_resource_attr/.test(sql)) return [{ ATTR_ID: id, EN_NAME: 'SOURCE_EVENT_TYPE_ID', CH_NAME: '源事件类型' }];
+    if (/FROM TPL_INDB_TABLE_PG/.test(sql)) return [{ EVENT_TYPE_ID: '206080000', TABLE_NAME: 'TICKET_CDMA_GROUP_597_2606', BILLING_CYCLE_ID: '202609' }];
+    if (/SELECT DISTINCT o\.\*/.test(sql)) return [{ offer_id: '801', offer_name: '共享套餐', pricing_plan_id: '901', status_cd: '1000' }];
+    if (/FROM event_pricing_strategy/.test(sql)) return [{ EVENT_PRICING_STRATEGY_ID: '610', EVENT_TYPE_ID: '206080100' }];
+    if (/FROM pricing_combine/.test(sql)) return [{ PRICING_COMBINE_ID: '611', EVENT_PRICING_STRATEGY_ID: id, PRICING_OBJECT_ID: '620', PRICING_PLAN_ID: '901' }];
+    if (/FROM pricing_object/.test(sql)) return [{ PRICING_OBJECT_ID: id, OBJECT_TYPE: '1', OBJECT_ID: '801' }];
     if (/FROM prod_inst WHERE acc_num/.test(sql)) return [
       { prod_inst_id: '11', PROD_ID: '101', acc_prod_inst_id: '11', acc_num: id, OWNER_CUST_ID: '900' },
       { prod_inst_id: '12', PROD_ID: '102', acc_prod_inst_id: '11', acc_num: id, OWNER_CUST_ID: '900' },
@@ -75,10 +98,22 @@ function fixtureDb({ failAccount = false, failExtension = false, missingPricing 
     if (/FROM product WHERE/.test(sql)) return [{ prod_id: id, prod_name: `产品${id}` }];
     if (/FROM prod_inst_acct_rel/.test(sql)) { if (failAccount) throw new Error('账户分片查询失败'); return [{ prod_inst_acct_rel_id: `r${id}`, PROD_INST_ID: id, ACCT_ID: id === '11' ? '501' : '502' }]; }
     if (/FROM account WHERE acct_id/.test(sql)) return [{ acct_id: id, contract_no: `C${id}` }];
+    if (/FROM offer_prod_inst_rel WHERE OFFER_INST_ID/.test(sql)) return [{ offer_prod_inst_rel_id: `oi${id}`, PROD_INST_ID: '11', OFFER_INST_ID: id }];
     if (/FROM offer_prod_inst_rel/.test(sql)) return [{ offer_prod_inst_rel_id: `o${id}`, PROD_INST_ID: id, OFFER_INST_ID: '701' }];
+    if (/FROM offer_inst_rel WHERE A_OFFER_INST_ID/.test(sql)) return [{ offer_inst_rel_id: `oira${id}`, A_OFFER_INST_ID: id, Z_OFFER_INST_ID: '702' }];
+    if (/FROM offer_inst_rel WHERE Z_OFFER_INST_ID/.test(sql)) return [{ offer_inst_rel_id: `oirz${id}`, A_OFFER_INST_ID: '703', Z_OFFER_INST_ID: id }];
+    if (/FROM (?:offer_inst|prod_offer_inst) WHERE OFFER_ID/.test(sql)) return [{ offer_inst_id: '701', offer_id: id }];
     if (/FROM offer_inst WHERE/.test(sql)) return [{ offer_inst_id: id, offer_id: '801' }];
     if (/FROM offer_inst_attr/.test(sql)) return [{ offer_inst_attr_id: `oa${id}`, offer_inst_id: id }];
     if (/FROM offer_inst_fee_info/.test(sql)) return [{ offer_inst_fee_info_id: `of${id}`, offer_inst_id: id }];
+    if (/FROM offer_inst_fee_attr/.test(sql)) return [{ offer_inst_fee_attr_id: `ofa${id}`, offer_inst_fee_info_id: id }];
+    if (/FROM offer_obj_inst_rel/.test(sql)) return [{ offer_obj_inst_rel_id: `oo${id}`, offer_inst_id: id }];
+    if (/FROM offer_res_inst_rel/.test(sql)) return [{ offer_res_inst_rel_id: `or${id}`, offer_inst_id: id }];
+    if (/FROM offer_inst_assure/.test(sql)) return [{ offer_inst_assure_id: `oas${id}`, offer_inst_id: id }];
+    if (/FROM offer_coupon_inst_rel/.test(sql)) return [{ offer_coupon_inst_rel_id: `oc${id}`, offer_inst_id: id }];
+    if (/FROM sku_inst/.test(sql)) return [{ sku_inst_id: `sku${id}`, offer_inst_id: id }];
+    if (/FROM va_order_rel/.test(sql)) return [{ va_order_rel_id: `va${id}`, offer_inst_id: id }];
+    if (/FROM offer WHERE PRICING_PLAN_ID/.test(sql)) return [{ offer_id: '801', offer_name: '共享套餐', pricing_plan_id: id }];
     if (/FROM offer WHERE/.test(sql)) return [{ offer_id: id, offer_name: '共享套餐', pricing_plan_id: '901' }];
     if (/FROM pricing_plan/.test(sql)) return missingPricing ? [] : [{ pricing_plan_id: id, pricing_plan_name: '计划' }];
     if (/OWNER_CUST_ID =/.test(sql)) return [{ prod_inst_id: '13', acc_num: 'OTHER' }];
@@ -98,17 +133,30 @@ test('phone query aggregates multi-product and multi-account data while deduplic
   assert.equal(db.calls.every((call) => call.values.length === 1 && call.sql.includes('?')), true);
 });
 
-test('phone query supports Voyage lower-case columns and records the selected source', async () => {
+test('phone query supports Voyage lower-case columns and propagates the selected schema', async () => {
   const base = fixtureDb();
-  const db = { calls: base.calls, query: async (source, database, sql, values) => {
-    const rows = await base.query(source, database, sql, values);
+  const db = { calls: base.calls, query: async (source, database, sql, values, options) => {
+    const rows = await base.query(source, database, sql, values, options);
     return rows.map((row) => Object.fromEntries(Object.entries(row).map(([key, value]) => [key.toLowerCase(), value])));
   } };
-  const result = await queryPhone(db, '15305972490', { source: 'voyage' });
-  assert.equal(result.status, 'complete'); assert.equal(result.source, 'voyage');
+  const result = await queryPhone(db, '15305972490', { source: 'voyage', schema: 'crmv3' });
+  assert.equal(result.status, 'complete'); assert.equal(result.source, 'voyage'); assert.equal(result.schema, 'crmv3');
   assert.equal(result.data.accounts.length, 2); assert.equal(result.data.offers.length, 1);
   assert.equal(result.steps.every((step) => step.source === 'voyage'), true);
+  assert.equal(result.steps.every((step) => step.schema === 'crmv3'), true);
   assert.equal(db.calls.every((call) => call.source === 'voyage'), true);
+  assert.equal(db.calls.every((call) => call.options.schema === 'crmv3'), true);
+});
+
+test('Voyage bill_inmemory phone lookup uses acc_nbr and preserves it as the access number', async () => {
+  const calls = []; const db = { query: async (source, database, sql, values, options) => {
+    calls.push({ source, database, sql, values, options });
+    if (/FROM prod_inst WHERE acc_nbr =/.test(sql)) return [{ prod_inst_id: '11', prod_id: '101', owner_cust_id: '900', acc_nbr: values[0] }];
+    return [];
+  } };
+  const result = await queryPhone(db, '18959025796', { source: 'voyage', schema: 'bill_inmemory' });
+  assert.equal(result.data.productInstances[0].acc_nbr, '18959025796'); assert.match(calls[0].sql, /acc_nbr = \?/);
+  assert.deepEqual(result.steps[0].columnMap, [{ logicalColumn: 'acc_num', physicalColumn: 'acc_nbr' }]);
 });
 
 test('product instance query reuses the archive chain and preserves a large string id', async () => {
@@ -120,8 +168,13 @@ test('product instance query reuses the archive chain and preserves a large stri
   assert.equal(result.data.productAttributes.length, 1); assert.equal(result.data.productStates.length, 1); assert.equal(result.data.productExtensions.length, 1);
   assert.equal(result.data.productContacts.length, 1); assert.equal(result.data.productPaymodes.length, 1); assert.equal(result.data.productAccessNumbers.length, 1);
   assert.equal(result.data.productNumberRelations.length, 1); assert.equal(result.data.productParties.length, 1); assert.equal(result.data.productResourceRelations.length, 1);
-  assert.equal(result.data.offerInstanceAttributes.length, 1); assert.equal(result.data.offerInstanceFees.length, 1);
+  assert.equal(result.data.offerInstanceRelationships.length, 2); assert.deepEqual(result.data.relatedOfferInstances.map((row) => row.offer_inst_id).sort(), ['702', '703']);
+  assert.equal(result.data.offerInstanceAttributes.length, 3); assert.equal(result.data.offerInstanceFees.length, 3); assert.equal(result.data.offerInstanceFeeAttributes.length, 3);
+  assert.equal(result.data.offerObjectInstanceRelations.length, 3); assert.equal(result.data.offerResourceInstanceRelations.length, 3);
+  assert.equal(result.data.offerInstanceAssurances.length, 3); assert.equal(result.data.offerCouponInstanceRelations.length, 3);
+  assert.equal(result.data.skuInstances.length, 3); assert.equal(result.data.valueAddedOrderRelations.length, 3);
   assert.equal(db.calls.filter((call) => /FROM prod_inst_rel/.test(call.sql)).length, 2);
+  assert.equal(db.calls.filter((call) => /FROM offer_inst_rel/.test(call.sql)).length, 2);
   assert.equal(db.calls[0].source, 'voyage'); assert.match(db.calls[0].sql, /prod_inst_id = \?/); assert.deepEqual(db.calls[0].values, [id]);
   await assert.rejects(queryProductInstance(db, 'ABC'), /必须是数字/);
 });
@@ -150,6 +203,44 @@ test('on-demand customer products and account candidates keep candidate semantic
   assert.equal(candidates.candidate, true); assert.deepEqual(candidates.rows.map((row) => row.acct_id), ['501', '503']);
 });
 
+test('event type query returns format configuration and reverse-finds owning product instances', async () => {
+  const db = fixtureDb(); const result = await queryEventType(db, '206080000', { source: 'udal' });
+  assert.equal(EVENT_TYPE_CATALOG[0].routeEventTypeId, '206080000'); assert.equal(result.status, 'complete'); assert.equal(result.definition.name, 'CDMA 集团');
+  assert.equal(result.data.eventTypeMappings.length, 1); assert.equal(result.data.eventTypeFormats.length, 1); assert.equal(result.data.eventFormats.length, 1);
+  assert.equal(result.data.eventFormatItems.length, 1); assert.equal(result.data.resourceAttributes.length, 1); assert.equal(result.data.targetTables[0].TABLE_NAME, 'TICKET_CDMA_GROUP_597_2606');
+  assert.equal(result.data.eventPricingStrategies[0].EVENT_PRICING_STRATEGY_ID, '610');
+  assert.equal(result.data.pricingCombines[0].PRICING_COMBINE_ID, '611'); assert.equal(result.data.pricingObjects[0].PRICING_OBJECT_ID, '620');
+  assert.equal(result.data.pricingPlans[0].pricing_plan_id, '901'); assert.equal(result.data.offers[0].offer_id, '801');
+  assert.equal(result.data.offerInstances[0].offer_inst_id, '701'); assert.equal(result.data.offerRelations[0].PROD_INST_ID, '11'); assert.equal(result.data.productInstances[0].prod_inst_id, '11');
+  assert.equal(result.data.subscribers[0].OWNER_CUST_ID, ''); assert.equal(result.data.subscribers[0].ACC_NUM, '13338297988');
+  assert.equal(db.calls.some((call) => call.database === 'CONFIGDB_CNOS_JF_TEST'), true); assert.equal(db.calls.some((call) => call.database === 'CRM3DB'), true);
+  assert.equal(result.schema, undefined);
+  assert.equal(db.calls.every((call) => call.source === 'udal' && call.options.schema === undefined), true);
+  assert.deepEqual(result.eventTypeFamily, { start: '206080000', endExclusive: '206081000' });
+  assert.deepEqual(db.calls.find((call) => /event_pricing_strategy WHERE EVENT_TYPE_ID/.test(call.sql)).values, ['206080000', '206081000']);
+  assert.equal(db.calls.filter((call) => /\bJOIN\b/i.test(call.sql)).length, 1);
+  assert.deepEqual(db.calls.find((call) => /source_event_type_format/.test(call.sql)).values, ['8', '206080000', '206080000', '206080000']);
+  await assert.rejects(queryEventType(db, 'ABC'), /必须是数字/);
+});
+
+test('engineering event query follows offer name to instance, attributes, relations, and products within Voyage', async () => {
+  const calls = []; const db = { query: async (source, database, sql, values, options) => {
+    calls.push({ source, database, sql, values, options });
+    if (/FROM offer_ces/.test(sql)) return [{ offer_id: '801', offer_name: 'CDMA集团套餐' }];
+    if (/FROM prod_offer_inst WHERE/.test(sql)) return [{ prod_offer_inst_id: '701', offer_id: '801', status_cd: '1000' }];
+    if (/FROM offer_prod_inst_rel/.test(sql)) return [{ prod_offer_inst_id: '701', prod_inst_id: '11' }];
+    if (/FROM prod_offer_inst_attr/.test(sql)) return [{ prod_offer_inst_id: '701', attr_id: 'A1', attr_value: 'V1' }];
+    if (/FROM prod_inst WHERE/.test(sql)) return [{ prod_inst_id: '11', owner_cust_id: '900', acc_num: '13338297988', prod_id: '101', status_cd: '1000' }];
+    return [];
+  } };
+  const result = await queryEventType(db, '206080000', { source: 'voyage', schema: 'bill_inmemory' });
+  assert.equal(result.status, 'complete'); assert.equal(result.source, 'voyage'); assert.equal(result.schema, 'bill_inmemory'); assert.equal(result.offerNameQuery, 'CDMA 集团');
+  assert.equal(result.data.offers[0].offer_id, '801'); assert.equal(result.data.offerInstances[0].prod_offer_inst_id, '701');
+  assert.equal(result.data.offerInstanceAttributes[0].attr_id, 'A1'); assert.equal(result.data.productInstances[0].prod_inst_id, '11');
+  assert.equal(result.data.subscribers[0].ACC_NUM, '13338297988'); assert.equal(result.data.subscribers[0].OWNER_CUST_ID, '900');
+  assert.equal(calls[0].values[0], '%CDMA%集团%'); assert.equal(calls.every((call) => call.source === 'voyage' && call.options.schema === 'bill_inmemory'), true);
+});
+
 test('threshold query follows A/Z relations with fixed single-table parameterized steps', async () => {
   const calls = [];
   const db = { query: async (_source, database, sql, values) => {
@@ -169,8 +260,9 @@ test('threshold query follows A/Z relations with fixed single-table parameterize
 });
 
 test('threshold query distinguishes no relation, no matching terminal, and missing threshold attributes', async () => {
-  const noRelation = await queryThreshold({ query: async () => [] }, 'A1'); assert.equal(noRelation.status, 'empty');
-  const noTerminal = await queryThreshold({ query: async (_source, _database, sql) => /FROM prod_inst_rel/.test(sql) ? [{ z_prod_inst_id: 'Z1' }] : [] }, 'A1'); assert.equal(noTerminal.status, 'empty');
-  const missingAttr = await queryThreshold({ query: async (_source, _database, sql) => /FROM prod_inst_rel/.test(sql) ? [{ z_prod_inst_id: 'Z1' }] : /FROM prod_inst WHERE/.test(sql) ? [{ prod_inst_id: 'Z1', PROD_ID: THRESHOLD_PRODUCT_ID }] : [] }, 'A1'); assert.equal(missingAttr.status, 'partial');
+  const noRelation = await queryThreshold({ query: async () => [] }, '11'); assert.equal(noRelation.status, 'empty');
+  const noTerminal = await queryThreshold({ query: async (_source, _database, sql) => /FROM prod_inst_rel/.test(sql) ? [{ z_prod_inst_id: '21' }] : [] }, '11'); assert.equal(noTerminal.status, 'empty');
+  const missingAttr = await queryThreshold({ query: async (_source, _database, sql) => /FROM prod_inst_rel/.test(sql) ? [{ z_prod_inst_id: '21' }] : /FROM prod_inst WHERE/.test(sql) ? [{ prod_inst_id: '21', PROD_ID: THRESHOLD_PRODUCT_ID }] : [] }, '11'); assert.equal(missingAttr.status, 'partial');
   await assert.rejects(queryThreshold({ query: async () => [] }, ' '), /A 端产品实例 ID/);
+  await assert.rejects(queryThreshold({ query: async () => [] }, 'ABC'), /必须是数字/);
 });

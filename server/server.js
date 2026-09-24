@@ -17,8 +17,11 @@ const { manager: database } = require('./database');
 const phoneQuery = require('./phone-query');
 const { ArchiveService } = require('./archive-service');
 const { VoyageManager } = require('./voyage');
+const { manager: bigdata } = require('./bigdata-client');
+const { DcosLogs } = require('./dcos-logs');
 const archive = new ArchiveService(config.archive);
 const voyage = new VoyageManager(config.voyage);
+const dcos = new DcosLogs(config.dcos);
 
 const ROOT = path.join(__dirname, '..');
 const PUBLIC_DIR = path.join(ROOT, 'public');
@@ -51,8 +54,9 @@ function asRequestError(error) {
   if (/^HDFS .*超时/i.test(raw)) return new RequestError(504, 'HDFS_TIMEOUT', raw, true);
   if (/timeout|timed? out|超时/i.test(raw)) return new RequestError(504, 'REMOTE_TIMEOUT', '远端服务响应超时，请稍后重试', true);
   if (/^HDFS 目标已存在同名文件：/i.test(raw)) return new RequestError(409, 'HDFS_TARGET_EXISTS', raw, false);
+  if (/^HDFS 目录非空/i.test(raw)) return new RequestError(409, 'HDFS_DIRECTORY_NOT_EMPTY', raw, false);
   if (/^HDFS 上不存在该路径：|^本地文件不存在或 HDFS 目标目录不存在：/i.test(raw)) return new RequestError(404, 'HDFS_PATH_NOT_FOUND', raw, false);
-  if (/^HDFS (?:上传|列目录)失败：/i.test(raw)) return new RequestError(502, 'HDFS_OPERATION_FAILED', raw, true);
+  if (/^HDFS (?:上传|删除|列目录)失败：/i.test(raw)) return new RequestError(502, 'HDFS_OPERATION_FAILED', raw, true);
   if (/数据源必须是|数据库地址、端口和账号|手机号或接入号码|客户 ID|产品实例 ID/i.test(raw)) return new RequestError(400, 'INVALID_INPUT', raw, false);
   if (/查询已取消/i.test(raw)) return new RequestError(499, 'QUERY_CANCELLED', '查询已取消', false);
   if (/Access denied|ER_ACCESS_DENIED_ERROR/i.test(raw)) return new RequestError(401, 'DB_AUTH_FAILED', '数据库认证失败，请检查账号和密码', false);
@@ -115,6 +119,12 @@ function requireQuerySource(value) {
   if (!['udal', 'voyage'].includes(source)) throw new RequestError(400, 'INVALID_INPUT', 'source 必须是 udal 或 voyage');
   return source;
 }
+function requireQuerySchema(value, source) {
+  if (source !== 'voyage') return undefined;
+  const schema = value === undefined ? 'bill_inmemory' : requireString(value, 'schema');
+  if (!['bill_inmemory', 'crmv3'].includes(schema)) throw new RequestError(400, 'INVALID_INPUT', 'schema 必须是 bill_inmemory 或 crmv3');
+  return schema;
+}
 function queryManager(source) { return source === 'voyage' ? voyage : database; }
 function requireDate(value, name = 'date') {
   const date = requireString(value, name);
@@ -125,6 +135,15 @@ function requireConnected() { if (!ssh.conn) throw new RequestError(409, 'NOT_CO
 async function runQueryRequest(req, res, work, { timeoutCode = 'DB_QUERY_TIMEOUT', timeoutMessage = '数据库聚合查询超过 60 秒' } = {}) {
   const controller = new AbortController(); let timedOut = false;
   const timer = setTimeout(() => { timedOut = true; controller.abort(); }, 60000);
+  const abort = () => controller.abort(); const close = () => { if (!res.writableEnded) controller.abort(); };
+  req.once('aborted', abort); res.once('close', close);
+  try { return await work(controller.signal); }
+  catch (error) { if (timedOut) throw new RequestError(504, timeoutCode, timeoutMessage, true); throw error; }
+  finally { clearTimeout(timer); req.off('aborted', abort); res.off('close', close); }
+}
+async function runAbortableRequest(req, res, work, { timeoutMs = 120000, timeoutCode = 'REMOTE_TIMEOUT', timeoutMessage = '远端服务响应超时' } = {}) {
+  const controller = new AbortController(); let timedOut = false;
+  const timer = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
   const abort = () => controller.abort(); const close = () => { if (!res.writableEnded) controller.abort(); };
   req.once('aborted', abort); res.once('close', close);
   try { return await work(controller.signal); }
@@ -195,17 +214,78 @@ async function handle(req, res) {
     return sendJson(res, 200, {
       ok: true,
       config: ssh.maskConfig(ssh.DEFAULT_CONFIG),
-      connections: { ssh: ssh.maskConfig(ssh.DEFAULT_CONFIG), ...database.defaults(), voyage: voyage.defaults(), archive: archive.defaults() },
+      connections: { ssh: ssh.maskConfig(ssh.DEFAULT_CONFIG), bigdata: bigdata.defaults(), ...database.defaults(), voyage: voyage.defaults(), archive: archive.defaults() },
       configured: !config.isExample,
       errors: config.validate(),
       timeouts: { hdfsListMs: hdfsTimeoutMs * 2 + 10000, hbaseScanMs: hbaseTimeoutMs + 10000 },
     });
   }
   if (req.method === 'GET' && p === '/api/status') return sendJson(res, 200, { ok: true, connected: Boolean(ssh.conn), conn: ssh.connInfo ? ssh.maskConfig(ssh.connInfo) : null, home: ssh.home || null });
+  if (req.method === 'GET' && p === '/api/dcos/status') return sendJson(res, 200, { ok: true, ...dcos.status() });
+  if (req.method === 'POST' && p === '/api/dcos/connect') {
+    const body = await readBody(req); assertObject(body, ['cookie']);
+    const result = await runAbortableRequest(req, res, (signal) => dcos.connect(body.cookie, { signal }), { timeoutMs: config.dcos.timeoutMs });
+    return sendJson(res, 200, { ok: true, ...result });
+  }
+  if (req.method === 'POST' && p === '/api/dcos/disconnect') {
+    const body = await readBody(req); assertObject(body, []);
+    return sendJson(res, 200, { ok: true, ...dcos.disconnect() });
+  }
+  if (req.method === 'GET' && p === '/api/dcos/namespaces') {
+    const result = await runAbortableRequest(req, res, (signal) => dcos.namespaces(requireString(url.searchParams.get('clusterId'), 'clusterId'), { signal }), { timeoutMs: config.dcos.timeoutMs });
+    return sendJson(res, 200, { ok: true, namespaces: result });
+  }
+  if (req.method === 'GET' && p === '/api/dcos/workloads') {
+    const clusterId = requireString(url.searchParams.get('clusterId'), 'clusterId');
+    const namespaceName = requireString(url.searchParams.get('namespaceName'), 'namespaceName');
+    const pageNow = Number(url.searchParams.get('pageNow') || 1);
+    const pageSize = Number(url.searchParams.get('pageSize') || 50);
+    const search = (url.searchParams.get('search') || '').trim();
+    if (!Number.isInteger(pageNow) || pageNow < 1 || !Number.isInteger(pageSize) || pageSize < 1 || pageSize > 100 || search.length > 100) throw new RequestError(400, 'INVALID_INPUT', '工作负载分页或筛选参数无效');
+    const result = await runAbortableRequest(req, res, (signal) => dcos.workloads(clusterId, namespaceName, { pageNow, pageSize, search, signal }), { timeoutMs: config.dcos.timeoutMs });
+    return sendJson(res, 200, { ok: true, ...result });
+  }
+  if (req.method === 'GET' && p === '/api/dcos/pods') {
+    const clusterId = requireString(url.searchParams.get('clusterId'), 'clusterId');
+    const namespaceName = requireString(url.searchParams.get('namespaceName'), 'namespaceName');
+    const workloadName = requireString(url.searchParams.get('workloadName'), 'workloadName');
+    const result = await runAbortableRequest(req, res, (signal) => dcos.pods(clusterId, namespaceName, workloadName, { signal }), { timeoutMs: config.dcos.timeoutMs });
+    return sendJson(res, 200, { ok: true, pods: result });
+  }
+  if (req.method === 'GET' && p === '/api/dcos/logs') {
+    const clusterId = requireString(url.searchParams.get('clusterId'), 'clusterId');
+    const namespaceName = requireString(url.searchParams.get('namespaceName'), 'namespaceName');
+    const podName = requireString(url.searchParams.get('podName'), 'podName');
+    const containerName = requireString(url.searchParams.get('containerName'), 'containerName');
+    const tailingLines = Number(url.searchParams.get('tailingLines') || 100);
+    const result = await runAbortableRequest(req, res, (signal) => dcos.logs(clusterId, namespaceName, podName, containerName, tailingLines, { signal }), { timeoutMs: config.dcos.timeoutMs });
+    return sendJson(res, 200, { ok: true, ...result });
+  }
+  if (req.method === 'POST' && (p === '/api/dcos/workload/start' || p === '/api/dcos/workload/stop')) {
+    const body = await readBody(req); assertObject(body, ['clusterId', 'namespaceName', 'workloadName']);
+    const action = p.endsWith('/stop') ? 'stop' : 'start';
+    const clusterId = requireString(body.clusterId, 'clusterId');
+    const namespaceName = requireString(body.namespaceName, 'namespaceName');
+    const workloadName = requireString(body.workloadName, 'workloadName');
+    const result = await runAbortableRequest(req, res, (signal) => dcos.workloadAction(action, clusterId, namespaceName, workloadName, { signal }), { timeoutMs: config.dcos.timeoutMs });
+    return sendJson(res, 200, { ok: true, ...result });
+  }
+  if (req.method === 'GET' && p === '/api/bigdata/status') return sendJson(res, 200, { ok: true, ...bigdata.status() });
+  if (req.method === 'POST' && p === '/api/bigdata/connect') {
+    const body = await readBody(req); assertObject(body, []); const result = await bigdata.connect(); return sendJson(res, 200, { ok: true, ...result });
+  }
+  if (req.method === 'POST' && p === '/api/bigdata/disconnect') {
+    const body = await readBody(req); assertObject(body, []); return sendJson(res, 200, { ok: true, ...bigdata.disconnect() });
+  }
+  if (req.method === 'POST' && p === '/api/bigdata/use-ssh') {
+    const body = await readBody(req); assertObject(body, []); return sendJson(res, 200, { ok: true, ...bigdata.useSshMode() });
+  }
   if (req.method === 'GET' && p === '/api/db/status') return sendJson(res, 200, { ok: true, sources: database.status(), defaults: database.defaults() });
   if (req.method === 'GET' && p === '/api/voyage/status') return sendJson(res, 200, { ok: true, ...voyage.status() });
   if (req.method === 'POST' && p === '/api/voyage/connect') {
-    const body = await readBody(req); assertObject(body, []); const result = await voyage.connect(); return sendJson(res, 200, { ok: true, ...result });
+    const body = await readBody(req); assertObject(body, ['token']);
+    if (body.token !== undefined && typeof body.token !== 'string') throw new RequestError(400, 'INVALID_INPUT', 'token 必须是字符串');
+    const result = await voyage.connect(body.token === undefined ? {} : { token: body.token }); return sendJson(res, 200, { ok: true, ...result });
   }
   if (req.method === 'POST' && p === '/api/voyage/disconnect') {
     const body = await readBody(req); assertObject(body, []); await voyage.disconnect(); return sendJson(res, 200, { ok: true, ...voyage.status() });
@@ -228,24 +308,29 @@ async function handle(req, res) {
     const body = await readBody(req); assertObject(body, ['source']); const source = requireString(body.source, 'source'); await database.disconnect(source); return sendJson(res, 200, { ok: true, source: source.toLowerCase() });
   }
   if (req.method === 'POST' && p === '/api/query/phone') {
-    const body = await readBody(req); assertObject(body, ['phone', 'source']); const source = requireQuerySource(body.source);
-    const result = await runQueryRequest(req, res, (signal) => phoneQuery.queryPhone(queryManager(source), requireString(body.phone, 'phone'), { signal, source })); return sendJson(res, 200, { ok: true, result });
+    const body = await readBody(req); assertObject(body, ['phone', 'source', 'schema']); const source = requireQuerySource(body.source); const schema = requireQuerySchema(body.schema, source);
+    const result = await runQueryRequest(req, res, (signal) => phoneQuery.queryPhone(queryManager(source), requireString(body.phone, 'phone'), { signal, source, schema })); return sendJson(res, 200, { ok: true, result });
   }
   if (req.method === 'POST' && p === '/api/query/product-instance') {
-    const body = await readBody(req); assertObject(body, ['productInstanceId', 'source']); const source = requireQuerySource(body.source);
-    const result = await runQueryRequest(req, res, (signal) => phoneQuery.queryProductInstance(queryManager(source), requireString(body.productInstanceId, 'productInstanceId'), { signal, source })); return sendJson(res, 200, { ok: true, result });
+    const body = await readBody(req); assertObject(body, ['productInstanceId', 'source', 'schema']); const source = requireQuerySource(body.source); const schema = requireQuerySchema(body.schema, source);
+    const result = await runQueryRequest(req, res, (signal) => phoneQuery.queryProductInstance(queryManager(source), requireString(body.productInstanceId, 'productInstanceId'), { signal, source, schema })); return sendJson(res, 200, { ok: true, result });
   }
   if (req.method === 'POST' && p === '/api/query/threshold') {
-    const body = await readBody(req); assertObject(body, ['aProductInstanceId', 'source']); const source = requireQuerySource(body.source);
-    const result = await runQueryRequest(req, res, (signal) => phoneQuery.queryThreshold(queryManager(source), requireString(body.aProductInstanceId, 'aProductInstanceId'), { signal, source })); return sendJson(res, 200, { ok: true, result });
+    const body = await readBody(req); assertObject(body, ['aProductInstanceId', 'source', 'schema']); const source = requireQuerySource(body.source); const schema = requireQuerySchema(body.schema, source);
+    const result = await runQueryRequest(req, res, (signal) => phoneQuery.queryThreshold(queryManager(source), requireString(body.aProductInstanceId, 'aProductInstanceId'), { signal, source, schema })); return sendJson(res, 200, { ok: true, result });
   }
   if (req.method === 'POST' && p === '/api/query/customer-products') {
-    const body = await readBody(req); assertObject(body, ['customerId', 'source']); const source = requireQuerySource(body.source);
-    const result = await runQueryRequest(req, res, (signal) => phoneQuery.queryCustomerProducts(queryManager(source), body.customerId, { signal, source })); return sendJson(res, 200, { ok: true, result });
+    const body = await readBody(req); assertObject(body, ['customerId', 'source', 'schema']); const source = requireQuerySource(body.source); const schema = requireQuerySchema(body.schema, source);
+    const result = await runQueryRequest(req, res, (signal) => phoneQuery.queryCustomerProducts(queryManager(source), body.customerId, { signal, source, schema })); return sendJson(res, 200, { ok: true, result });
   }
   if (req.method === 'POST' && p === '/api/query/account-candidates') {
-    const body = await readBody(req); assertObject(body, ['productInstanceId', 'customerId', 'source']); const source = requireQuerySource(body.source);
-    const result = await runQueryRequest(req, res, (signal) => phoneQuery.queryAccountCandidates(queryManager(source), body, { signal, source })); return sendJson(res, 200, { ok: true, result });
+    const body = await readBody(req); assertObject(body, ['productInstanceId', 'customerId', 'source', 'schema']); const source = requireQuerySource(body.source); const schema = requireQuerySchema(body.schema, source);
+    const result = await runQueryRequest(req, res, (signal) => phoneQuery.queryAccountCandidates(queryManager(source), body, { signal, source, schema })); return sendJson(res, 200, { ok: true, result });
+  }
+  if (req.method === 'POST' && p === '/api/query/event-type') {
+    const body = await readBody(req); assertObject(body, ['eventTypeId', 'source', 'schema', 'offerName']); const source = requireQuerySource(body.source); const schema = requireQuerySchema(body.schema, source);
+    const offerName = body.offerName === undefined ? undefined : requireString(body.offerName, 'offerName');
+    const result = await runQueryRequest(req, res, (signal) => phoneQuery.queryEventType(queryManager(source), requireString(body.eventTypeId, 'eventTypeId'), { signal, source, schema, offerName })); return sendJson(res, 200, { ok: true, result });
   }
   if (req.method === 'POST' && p === '/api/query/archive') {
     const body = await readBody(req); assertObject(body, ['key']);
@@ -261,10 +346,10 @@ async function handle(req, res) {
     const cfg = await ssh.connect(body);
     let home = '~';
     try { const result = await ssh.execCommand('echo $HOME'); home = result.stdout?.trim().split('\n').pop() || '~'; } catch (_) {}
-    void hdfs.warmupHdfs();
+    if (!bigdata.usingClient()) void hdfs.warmupHdfs();
     return sendJson(res, 200, { ok: true, config: cfg, home });
   }
-  if (req.method === 'POST' && p === '/api/disconnect') { ssh.disconnect(); return sendJson(res, 200, { ok: true }); }
+  if (req.method === 'POST' && p === '/api/disconnect') { bigdata.disconnect(); ssh.disconnect(); return sendJson(res, 200, { ok: true }); }
   if (req.method === 'POST' && p === '/api/exec') {
     const body = await readBody(req); assertObject(body, ['cmd', 'timeout', 'confirmed']);
     const cmd = requireString(body.cmd, 'cmd');
@@ -315,20 +400,47 @@ async function handle(req, res) {
     });
   }
   if (req.method === 'POST' && p === '/api/hdfs/list') {
-    const body = await readBody(req); assertObject(body, ['path']); requireConnected(); const target = String(body.path || '/').trim() || '/'; if (!target.startsWith('/')) throw new RequestError(400, 'INVALID_INPUT', 'HDFS 路径必须以 / 开头'); const items = await hdfs.hdfsList(target); return sendJson(res, 200, { ok: true, path: target, items });
+    const body = await readBody(req); assertObject(body, ['path']); const target = String(body.path || '/').trim() || '/'; if (!target.startsWith('/')) throw new RequestError(400, 'INVALID_INPUT', 'HDFS 路径必须以 / 开头');
+    if (bigdata.usingClient()) {
+      const result = await runAbortableRequest(req, res, (signal) => bigdata.hdfsList(target, { signal }), { timeoutMs: Math.max(Number(config.bigdataClient.timeoutMs) || 30000, 90000), timeoutCode: 'HDFS_TIMEOUT', timeoutMessage: 'HDFS 列目录超时' });
+      return sendJson(res, 200, { ok: true, ...result, path: result.path || target, items: Array.isArray(result.items) ? result.items : [], source: 'client' });
+    }
+    requireConnected(); const started = Date.now(); const items = await hdfs.hdfsList(target); return sendJson(res, 200, { ok: true, path: target, items, source: 'ssh-cli', cached: false, readAt: new Date().toISOString(), durationMs: Date.now() - started });
   }
   if (req.method === 'POST' && p === '/api/hdfs/preview') {
-    const body = await readBody(req); assertObject(body, ['path', 'maxBytes']); requireConnected(); const target = requireString(body.path, 'path');
-    const result = await hdfs.hdfsPreview(target, body.maxBytes); return sendJson(res, 200, { ok: true, path: target, ...result });
+    const body = await readBody(req); assertObject(body, ['path', 'maxBytes']); const target = requireString(body.path, 'path');
+    if (bigdata.usingClient()) { const result = await runAbortableRequest(req, res, (signal) => bigdata.hdfsPreview(target, body.maxBytes, { signal }), { timeoutMs: Math.max(Number(config.bigdataClient.timeoutMs) || 30000, 90000), timeoutCode: 'HDFS_TIMEOUT', timeoutMessage: 'HDFS 文件预览超时' }); return sendJson(res, 200, { ok: true, path: target, source: 'client', ...result }); }
+    requireConnected(); const started = Date.now(); const result = await hdfs.hdfsPreview(target, body.maxBytes); return sendJson(res, 200, { ok: true, path: target, source: 'ssh-cli', cached: false, readAt: new Date().toISOString(), durationMs: Date.now() - started, ...result });
   }
   if (req.method === 'POST' && p === '/api/hdfs/upload') {
     const body = await readBody(req); assertObject(body, ['localPath', 'hdfsDir']); requireConnected();
     const localPath = ssh.expandTilde(requireString(body.localPath, 'localPath'));
     const hdfsDir = requireString(body.hdfsDir, 'hdfsDir'); if (!hdfsDir.startsWith('/')) throw new RequestError(400, 'INVALID_INPUT', 'HDFS 目标目录必须以 / 开头');
+    if (bigdata.usingClient()) { const result = await runAbortableRequest(req, res, (signal) => bigdata.hdfsUpload(localPath, hdfsDir, { signal }), { timeoutMs: 210000, timeoutCode: 'HDFS_TIMEOUT', timeoutMessage: 'HDFS 上传超时' }); return sendJson(res, 200, { ok: true, ...result, source: 'client' }); }
     const result = await hdfs.hdfsUpload(localPath, hdfsDir); return sendJson(res, 200, { ok: true, ...result });
   }
+  // 常驻客户端服务没有新建接口，这两个操作固定走 SSH 命令链路，因此需要 SSH 已连接
+  if (req.method === 'POST' && (p === '/api/hdfs/mkdir' || p === '/api/hdfs/touch')) {
+    const body = await readBody(req); assertObject(body, ['dir', 'name']); requireConnected();
+    const dir = requireString(body.dir, 'dir'); if (!dir.startsWith('/')) throw new RequestError(400, 'INVALID_INPUT', 'HDFS 目录必须以 / 开头');
+    const name = requireString(body.name, 'name', { allowEmpty: false });
+    if (/[\\/]/.test(name) || name === '.' || name === '..') throw new RequestError(400, 'INVALID_INPUT', '名称不能包含路径分隔符，也不能是 . 或 ..');
+    const result = p.endsWith('/mkdir') ? await hdfs.hdfsMkdir(dir, name) : await hdfs.hdfsTouch(dir, name);
+    return sendJson(res, 200, { ok: true, ...result, source: 'ssh-cli' });
+  }
+  if (req.method === 'POST' && p === '/api/hdfs/delete') {
+    const body = await readBody(req); assertObject(body, ['path', 'kind', 'confirmed']);
+    const target = requireString(body.path, 'path'); if (!target.startsWith('/')) throw new RequestError(400, 'INVALID_INPUT', 'HDFS 路径必须以 / 开头');
+    if (target === '/') throw new RequestError(400, 'HDFS_ROOT_DELETE_BLOCKED', 'HDFS 根目录不允许删除');
+    const kind = body.kind === 'file' ? 'file' : body.kind === 'dir' ? 'dir' : null; if (!kind) throw new RequestError(400, 'INVALID_INPUT', 'kind 必须是 file 或 dir');
+    if (body.confirmed !== true) throw new RequestError(409, 'CONFIRMATION_REQUIRED', 'HDFS 删除操作需要确认');
+    if (bigdata.usingClient()) { const result = await runAbortableRequest(req, res, (signal) => bigdata.hdfsDelete(target, kind, { signal }), { timeoutMs: Math.max(Number(config.bigdataClient.timeoutMs) || 30000, 90000), timeoutCode: 'HDFS_TIMEOUT', timeoutMessage: 'HDFS 删除超时' }); return sendJson(res, 200, { ok: true, ...result, source: 'client' }); }
+    requireConnected(); const result = await hdfs.hdfsDelete(target, kind); return sendJson(res, 200, { ok: true, ...result, source: 'ssh-cli' });
+  }
   if (req.method === 'GET' && p === '/api/hdfs/download') {
-    requireConnected(); const hpath = String(url.searchParams.get('path') || '').trim(); if (!hpath.startsWith('/')) throw new RequestError(400, 'INVALID_INPUT', '缺少合法的 HDFS 路径'); const fileName = hpath.split('/').filter(Boolean).pop() || 'download.bin';
+    const hpath = String(url.searchParams.get('path') || '').trim(); if (!hpath.startsWith('/')) throw new RequestError(400, 'INVALID_INPUT', '缺少合法的 HDFS 路径');
+    if (bigdata.usingClient()) { const controller = new AbortController(); const abort = () => controller.abort(); req.once('aborted', abort); res.once('close', abort); try { return await bigdata.pipeHdfsDownload(hpath, res, { signal: controller.signal }); } finally { req.off('aborted', abort); res.off('close', abort); } }
+    requireConnected(); const fileName = hpath.split('/').filter(Boolean).pop() || 'download.bin';
     return new Promise((resolve) => ssh.conn.exec('hadoop fs -cat ' + hdfs.shellQuote(hpath), (err, stream) => {
       if (err) { sendError(res, new RequestError(502, 'HDFS_EXEC_FAILED', err.message, true)); return resolve(); }
       let stderr = ''; stream.stderr.on('data', (chunk) => { stderr += chunk.toString('utf8').slice(0, 8192); }); let sent = false;
@@ -337,12 +449,21 @@ async function handle(req, res) {
     }));
   }
   if (req.method === 'POST' && p === '/api/hbase/list') {
-    const body = await readBody(req); assertObject(body, ['path']); requireConnected(); const target = String(body.path || '/').trim() || '/';
-    const result = await hbase.hbaseList(target); return sendJson(res, 200, { ok: true, path: result.path, items: result.items });
+    const body = await readBody(req); assertObject(body, ['path', 'refresh']); const target = String(body.path || '/').trim() || '/';
+    if (body.refresh !== undefined && typeof body.refresh !== 'boolean') throw new RequestError(400, 'INVALID_INPUT', 'refresh 必须是布尔值');
+    if (bigdata.usingClient()) { const result = await runAbortableRequest(req, res, (signal) => bigdata.hbaseList(target, { refresh: Boolean(body.refresh), signal }), { timeoutMs: Math.max(Number(config.bigdataClient.timeoutMs) || 30000, 90000), timeoutCode: 'HBASE_TIMEOUT', timeoutMessage: 'HBase 列表读取超时' }); return sendJson(res, 200, { ok: true, ...result, path: result.path || target, items: Array.isArray(result.items) ? result.items : [], source: 'client' }); }
+    requireConnected(); const started = Date.now(); const result = await hbase.hbaseList(target); return sendJson(res, 200, { ok: true, path: result.path, items: result.items, source: 'ssh-cli', cached: false, readAt: new Date().toISOString(), durationMs: Date.now() - started });
   }
   if (req.method === 'POST' && p === '/api/hbase/scan') {
-    const body = await readBody(req); assertObject(body, ['path', 'limit']); requireConnected(); const target = requireString(body.path, 'path');
-    const limit = Math.min(Math.max(Number(body.limit) || 20, 1), 200); const result = await hbase.hbaseScan(target, limit); return sendJson(res, 200, { ok: true, ...result });
+    const body = await readBody(req); assertObject(body, ['path', 'limit']); const target = requireString(body.path, 'path'); const limit = Math.min(Math.max(Number(body.limit) || 20, 1), 200);
+    if (bigdata.usingClient()) { const result = await runAbortableRequest(req, res, (signal) => bigdata.hbaseScan(target, limit, { signal }), { timeoutMs: 130000, timeoutCode: 'HBASE_TIMEOUT', timeoutMessage: 'HBase 扫描超时' }); return sendJson(res, 200, { ok: true, ...result, source: 'client' }); }
+    requireConnected(); const started = Date.now(); const result = await hbase.hbaseScan(target, limit); return sendJson(res, 200, { ok: true, ...result, source: 'ssh-cli', cached: false, readAt: new Date().toISOString(), durationMs: Date.now() - started });
+  }
+  if (req.method === 'POST' && p === '/api/hbase/get') {
+    const body = await readBody(req); assertObject(body, ['path', 'rowKey']); const target = requireString(body.path, 'path'); const rowKey = requireString(body.rowKey, 'rowKey');
+    if (!bigdata.usingClient()) throw new RequestError(409, 'BIGDATA_CLIENT_REQUIRED', 'RowKey 精确查询需要切换到 HDFS/HBase 客户端服务');
+    const result = await runAbortableRequest(req, res, (signal) => bigdata.hbaseGet(target, rowKey, { signal }), { timeoutMs: 60000, timeoutCode: 'HBASE_TIMEOUT', timeoutMessage: 'HBase RowKey 查询超时' });
+    return sendJson(res, 200, { ok: true, ...result, source: 'client' });
   }
   return sendError(res, new RequestError(404, 'NOT_FOUND', `接口不存在: ${p}`));
 }
@@ -354,7 +475,7 @@ if (require.main === module) {
   if (errors.length) console.warn('[配置提示]', errors.join('；'));
   server.listen(config.workbench.port, config.workbench.host, () => console.log(`远程服务器管理工作台已启动: http://${config.workbench.host}:${config.workbench.port}`));
   server.on('error', (error) => { console.error('[服务错误]', error); process.exitCode = 1; });
-  const shutdown = () => { void Promise.allSettled([database.closeAll(), voyage.disconnect(), archive.disconnect()]).finally(() => server.close(() => process.exit(0))); };
+  const shutdown = () => { bigdata.disconnect(); void Promise.allSettled([database.closeAll(), voyage.disconnect(), archive.disconnect()]).finally(() => server.close(() => process.exit(0))); };
   process.once('SIGINT', shutdown); process.once('SIGTERM', shutdown);
 }
-module.exports = { createServer, handle, RequestError, asRequestError, MAX_BODY_BYTES, voyage, archive };
+module.exports = { createServer, handle, RequestError, asRequestError, MAX_BODY_BYTES, voyage, archive, bigdata };

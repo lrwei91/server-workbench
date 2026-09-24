@@ -6,8 +6,10 @@
 
 | 工作台逻辑库 | datasource_id | database | schema |
 | --- | ---: | --- | --- |
-| CRM3DB | 5 | incf_db | crmv3 |
-| CONFIGDB_CNOS_JF_TEST | 5 | incf_db | crmv3 |
+| CRM3DB | 5 | incf_db | bill_inmemory |
+| CONFIGDB_CNOS_JF_TEST | 5 | incf_db | bill_inmemory |
+
+查询面板在选择“工程环境 · Voyage”后可进一步选择 `bill_inmemory` 或 `crmv3` Schema，默认为 `bill_inmemory`。后端仅接受这两个白名单值。工程环境始终保持 Voyage 单一来源；“查询套餐”按套餐名读取 `offer_ces`，再查询 `prod_offer_inst`、`offer_prod_inst_rel`、`prod_offer_inst_attr` 和 `prod_inst`，不会读取测试环境 MySQL/UDAL。
 
 接口返回的 `columns` 与二维 `rows` 会还原为行对象；超过 JavaScript 安全整数范围的裸整数在解析前转换为字符串。HTTP 鉴权失败、接口失败和单条 SQL 的 `error` 分别保留明确状态。
 
@@ -21,16 +23,28 @@ VOYAGE_TOKEN=
 VOYAGE_TIMEOUT_MS=15000
 VOYAGE_CRM_DATASOURCE_ID=5
 VOYAGE_CRM_DATABASE=incf_db
-VOYAGE_CRM_SCHEMA=crmv3
+VOYAGE_CRM_SCHEMA=bill_inmemory
 VOYAGE_CONFIG_DATASOURCE_ID=5
 VOYAGE_CONFIG_DATABASE=incf_db
-VOYAGE_CONFIG_SCHEMA=crmv3
+VOYAGE_CONFIG_SCHEMA=bill_inmemory
 ```
 
-Token 过期后更新 `.env` 并重启 Node 服务，再在连接设置中单独连接 Voyage。
+Token 过期后可在连接设置的 Voyage 卡片中输入新 `VOYAGE_TOKEN` 并重新连接。新值会立即写入 Node 进程内存，不写入浏览器存储、日志或 `.env`，也无需重启服务。输入框在每次连接后清空；Node 服务重启后仍使用 `.env` 中的 Token。
 
 ## 当前数据边界
 
-手机号查询使用固定单表链读取 `prod_inst`、`product`、`prod_inst_acct_rel`、`account`、`offer_prod_inst_rel`、`offer_inst`、`offer` 与 `pricing_plan`。实例档案查询在此基础上补充 `acc_prod_inst_id` 对应实例、双向 `prod_inst_rel` 及关联实例，并读取 `prod_inst_attr`、`prod_inst_state`、`prod_inst_ext`、`prod_inst_contact`、`prod_inst_paymode`、`prod_inst_acc_num`、`prod_inst_acc_nbr_rela`、`prod_inst_party`、`prod_res_inst_rel`、`offer_inst_attr` 与 `offer_inst_fee_info`。当前映射为 `incf_db / crmv3`；具体表的存在状态以实际查询结果为准，某个关联表报错时，前面成功取得的数据继续展示，整次结果标记为“部分完成”。没有返回数据的分类不会在结果区域生成空表。
+`bill_inmemory` 使用工程环境物理表名，Node 层会在发起 Voyage 查询前应用以下固定映射；返回步骤同时展示逻辑表和实际表：
+
+| 测试环境逻辑表 | bill_inmemory 实际表 |
+| --- | --- |
+| `prod_inst_acct_rel` | `prod_inst_acct` |
+| `offer_inst` | `prod_offer_inst` |
+| `offer_inst_attr` | `prod_offer_inst_attr` |
+| `offer_inst_rel` | `prod_offer_inst_rel` |
+| `offer` | `offer_ces` |
+
+`account`、`prod_inst`、`prod_inst_attr`、`prod_inst_rel`、`offer_prod_inst_rel` 保持同名；查询父表，由数据源负责路由 `_p0` 至 `_p11` 分片及 `_z` 反向索引表。工程字段固定映射 `acc_num → acc_nbr`、`offer_inst_id → prod_offer_inst_id`，步骤结果会展示字段映射。`payment_plan` 是账户付费计划，不再当作 `pricing_plan`。
+
+测试环境号码和实例档案继续读取完整产品、账户、销售品、定价计划及扩展档案。工程 `bill_inmemory` 只执行已确认存在的主链：`prod_inst`、`prod_inst_acct`、`account`、`offer_prod_inst_rel`、`prod_offer_inst`、`offer_ces`；实例档案额外读取 `prod_inst_rel`、`prod_inst_attr` 和 `prod_offer_inst_attr`。当前清单中缺失的测试环境扩展表不再发起工程请求。默认映射为 `incf_db / bill_inmemory`，页面可切换到 `incf_db / crmv3`。
 
 若后续取得定价计划所在的 datasource、database 和 schema，只需调整 `VOYAGE_CONFIG_*` 映射或对应固定查询，不影响页面查询契约。

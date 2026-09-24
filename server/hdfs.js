@@ -109,6 +109,67 @@ async function hdfsUpload(localPath, hdfsDir) {
   return { localPath, fileName, hdfsDir: cleanDir, hdfsPath: target + fileName };
 }
 
+async function hdfsDelete(hdfsPath, kind) {
+  const safePath = String(hdfsPath || '').trim();
+  if (!safePath.startsWith('/')) throw new Error('HDFS 路径必须以 / 开头');
+  if (safePath === '/') throw new Error('HDFS 根目录不允许删除');
+  if (kind !== 'file' && kind !== 'dir') throw new Error('HDFS 删除类型必须是 file 或 dir');
+  if (warmupPromise) await warmupPromise;
+  const operation = kind === 'dir' ? '-rmdir' : '-rm';
+  const r = await ssh.execCommand(`hadoop fs ${operation} ${shellQuote(safePath)}`, config.hdfsTimeoutMs || 90000);
+  const out = String(r.stdout || ''); const err = String(r.stderr || '').trim();
+  if (r.timedOut || r.code === 124) throw new Error('HDFS 删除超时，请稍后重试');
+  if (r.code !== 0) {
+    if (/No such file or directory/i.test(err) || /No such file or directory/i.test(out)) throw new Error('HDFS 上不存在该路径：' + safePath);
+    if (/Directory is not empty|NonEmptyDirectoryException/i.test(err)) throw new Error('HDFS 目录非空，只允许删除空目录：' + safePath);
+    if (/Is a directory/i.test(err) || /not a directory/i.test(err)) throw new Error('HDFS 删除目标类型不匹配：' + safePath);
+    throw new Error('HDFS 删除失败：' + (err || ('退出码 ' + r.code)));
+  }
+  return { path: safePath, kind, deleted: true };
+}
+
+// 把「当前目录 + 名称」拼成一个合法的 HDFS 目标路径，名称只允许单层
+function hdfsEntryPath(hdfsDir, name) {
+  const dir = String(hdfsDir || '').trim();
+  if (!dir.startsWith('/')) throw new Error('HDFS 目录必须以 / 开头');
+  const entry = String(name == null ? '' : name).trim();
+  if (!entry) throw new Error('名称不能为空');
+  if (/[\\/]/.test(entry) || entry === '.' || entry === '..') throw new Error('名称不能包含路径分隔符，也不能是 . 或 ..');
+  const base = dir.endsWith('/') ? dir : dir + '/';
+  return base + entry;
+}
+
+async function hdfsMkdir(hdfsDir, name) {
+  const target = hdfsEntryPath(hdfsDir, name);
+  if (warmupPromise) await warmupPromise;
+  const r = await ssh.execCommand('hadoop fs -mkdir ' + shellQuote(target), config.hdfsTimeoutMs || 90000);
+  const out = String(r.stdout || ''); const err = String(r.stderr || '').trim();
+  if (r.timedOut || r.code === 124) throw new Error('HDFS 新建目录超时（Hadoop 客户端冷启动较慢），请稍后重试');
+  if (r.code !== 0) {
+    if (/File exists|AlreadyExists|FileAlreadyExists/i.test(err) || /File exists/i.test(out)) throw new Error('HDFS 目标已存在：' + target);
+    if (/No such file or directory/i.test(err) || /No such file or directory/i.test(out)) throw new Error('HDFS 父目录不存在：' + String(hdfsDir).trim());
+    if (/Permission denied|AccessControlException/i.test(err)) throw new Error('HDFS 权限不足，无法在该目录新建：' + String(hdfsDir).trim());
+    throw new Error('HDFS 新建目录失败：' + (err || ('退出码 ' + r.code)));
+  }
+  return { path: target, kind: 'dir', created: true };
+}
+
+async function hdfsTouch(hdfsDir, name) {
+  const target = hdfsEntryPath(hdfsDir, name);
+  if (warmupPromise) await warmupPromise;
+  // -touchz 创建长度为 0 的空文件；同名文件已存在时会报错，不覆盖
+  const r = await ssh.execCommand('hadoop fs -touchz ' + shellQuote(target), config.hdfsTimeoutMs || 90000);
+  const out = String(r.stdout || ''); const err = String(r.stderr || '').trim();
+  if (r.timedOut || r.code === 124) throw new Error('HDFS 新建文件超时（Hadoop 客户端冷启动较慢），请稍后重试');
+  if (r.code !== 0) {
+    if (/File exists|AlreadyExists|FileAlreadyExists/i.test(err) || /File exists/i.test(out)) throw new Error('HDFS 目标已存在：' + target);
+    if (/No such file or directory/i.test(err) || /No such file or directory/i.test(out)) throw new Error('HDFS 父目录不存在：' + String(hdfsDir).trim());
+    if (/Permission denied|AccessControlException/i.test(err)) throw new Error('HDFS 权限不足，无法在该目录新建：' + String(hdfsDir).trim());
+    throw new Error('HDFS 新建文件失败：' + (err || ('退出码 ' + r.code)));
+  }
+  return { path: target, kind: 'file', created: true };
+}
+
 // 连接建立后预热 HDFS：后台跑一次让 JVM/认证/NameNode 连接先热起来，避免用户首次操作撞冷启动
 function warmupHdfs() {
   if (!ssh.conn || warmupPromise) return warmupPromise;
@@ -123,8 +184,12 @@ let warmupPromise = null;
 module.exports = {
   shellQuote,
   parseHdfsLsLine,
+  hdfsEntryPath,
   hdfsList,
   hdfsPreview,
   hdfsUpload,
+  hdfsMkdir,
+  hdfsTouch,
+  hdfsDelete,
   warmupHdfs,
 };

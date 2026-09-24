@@ -62,6 +62,15 @@ test('product archive extensions export to their source tables and deduplicate s
     productStates: [{ prod_inst_id: '11', status_cd: '1000' }],
     offerInstanceAttributes: [{ offer_inst_id: '701', attr_id: '1' }],
     offerInstanceFees: [{ offer_inst_id: '701', fee: '10.00' }],
+    offerInstanceRelationships: [{ a_offer_inst_id: '701', z_offer_inst_id: '702' }],
+    relatedOfferInstances: [{ offer_inst_id: '702', offer_id: '801' }],
+    offerInstanceFeeAttributes: [{ offer_inst_fee_info_id: 'F701', attr_id: '2' }],
+    offerObjectInstanceRelations: [{ offer_inst_id: '701', obj_inst_id: 'O1' }],
+    offerResourceInstanceRelations: [{ offer_inst_id: '701', res_inst_id: 'R1' }],
+    offerInstanceAssurances: [{ offer_inst_id: '701', assure_id: 'A1' }],
+    offerCouponInstanceRelations: [{ offer_inst_id: '701', coupon_inst_id: 'C1' }],
+    skuInstances: [{ offer_inst_id: '701', sku_inst_id: 'S1' }],
+    valueAddedOrderRelations: [{ offer_inst_id: '701', order_id: 'V1' }],
   } }, { generatedAt: 'TIME' });
   assert.match(sql, /表：prod_inst \| 2 行/);
   assert.match(sql, /表：prod_inst_rel \| 1 行/);
@@ -69,4 +78,13 @@ test('product archive extensions export to their source tables and deduplicate s
   assert.match(sql, /表：prod_inst_state \| 1 行/);
   assert.match(sql, /表：offer_inst_attr \| 1 行/);
   assert.match(sql, /表：offer_inst_fee_info \| 1 行/);
+  assert.match(sql, /表：offer_inst_rel \| 1 行/);
+  assert.match(sql, /表：offer_inst \| 1 行/);
+  assert.match(sql, /表：offer_inst_fee_attr \| 1 行/);
+  assert.match(sql, /表：offer_obj_inst_rel \| 1 行/);
+  assert.match(sql, /表：offer_res_inst_rel \| 1 行/);
+  assert.match(sql, /表：offer_inst_assure \| 1 行/);
+  assert.match(sql, /表：offer_coupon_inst_rel \| 1 行/);
+  assert.match(sql, /表：sku_inst \| 1 行/);
+  assert.match(sql, /表：va_order_rel \| 1 行/);
 });

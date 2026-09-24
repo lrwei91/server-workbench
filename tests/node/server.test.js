@@ -10,6 +10,7 @@ const log = require('../../server/log');
 const hdfs = require('../../server/hdfs');
 const hbase = require('../../server/hbase');
 const config = require('../../server/config-loader');
+const { manager: bigdataClient } = require('../../server/bigdata-client');
 const { createServer, asRequestError, MAX_BODY_BYTES } = require('../../server/server');
 
 function request(server, method, path, body) {
@@ -89,6 +90,42 @@ test('HDFS preview is structured, bounded, and reports truncation', async () => 
   } finally { ssh.execCommand = originalExec; }
 });
 
+test('HDFS 新建目录与文件映射到固定命令并拦截非法名称', async () => {
+  const originalExec = ssh.execCommand;
+  const calls = [];
+  let response = { code: 0, stdout: '', stderr: '', timedOut: false };
+  ssh.execCommand = async (command) => { calls.push(command); return response; };
+  try {
+    assert.equal((await hdfs.hdfsMkdir('/apps/input', 'sub')).path, '/apps/input/sub');
+    assert.equal((await hdfs.hdfsTouch('/apps/input/', 'a.txt')).path, '/apps/input/a.txt');
+    assert.match(calls[0], /^hadoop fs -mkdir '/);
+    assert.match(calls[1], /^hadoop fs -touchz '/);
+    assert.ok(calls[0].endsWith("'/apps/input/sub'"));
+    await assert.rejects(hdfs.hdfsMkdir('/apps/input', 'a/b'), /路径分隔符/);
+    await assert.rejects(hdfs.hdfsTouch('/apps/input', '..'), /路径分隔符/);
+    await assert.rejects(hdfs.hdfsMkdir('apps/input', 'sub'), /HDFS 目录必须以 \/ 开头/);
+    await assert.rejects(hdfs.hdfsTouch('/apps/input', '   '), /名称不能为空/);
+    response = { code: 1, stdout: '', stderr: "mkdir: `/apps/input/sub': File exists", timedOut: false };
+    await assert.rejects(hdfs.hdfsMkdir('/apps/input', 'sub'), /HDFS 目标已存在/);
+    response = { code: 1, stdout: '', stderr: 'No such file or directory', timedOut: false };
+    await assert.rejects(hdfs.hdfsTouch('/apps/nope', 'a.txt'), /HDFS 父目录不存在/);
+    response = { code: 1, stdout: '', stderr: 'Permission denied: user=billtest', timedOut: false };
+    await assert.rejects(hdfs.hdfsMkdir('/apps/readonly', 'sub'), /HDFS 权限不足/);
+    response = { code: 0, stdout: '', stderr: '', timedOut: true };
+    await assert.rejects(hdfs.hdfsTouch('/apps/input', 'a.txt'), /新建文件超时/);
+  } finally { ssh.execCommand = originalExec; }
+});
+
+test('HDFS pane exposes create and upload actions wired to hdfs endpoints', () => {
+  const html = fs.readFileSync(path.join(__dirname, '../../public/index.html'), 'utf8');
+  const source = fs.readFileSync(path.join(__dirname, '../../public/js/main.js'), 'utf8');
+  const hdfsPane = html.match(/<section id="hdfsPane"[\s\S]*?<\/section>/)?.[0] || '';
+  assert.match(hdfsPane, /id="btnHdfsMkdir"/); assert.match(hdfsPane, /id="btnHdfsTouch"/); assert.match(hdfsPane, /id="btnHdfsUploadLocal"/);
+  assert.match(hdfsPane, /id="hdfsLocalFileInput"[^>]*type="file"[^>]*hidden/);
+  assert.match(source, /\/api\/hdfs\/\$\{kind\}/);
+  assert.match(source, /uploadLocalFile\(file, \{ thenHdfs: true \}\)/);
+});
+
 test('HBase paths reject shell control characters before SSH execution', async () => {
   const originalExec = ssh.execCommand;
   let called = false;
@@ -129,8 +166,14 @@ test('HTTP errors have real status and normalized shape', async () => {
     assert.equal(disconnectedQuery.status, 409); assert.equal(disconnectedQuery.body.error.code, 'DB_NOT_CONNECTED');
     const disconnectedThreshold = await request(server, 'POST', '/api/query/threshold', { aProductInstanceId: '48243980' });
     assert.equal(disconnectedThreshold.status, 409); assert.equal(disconnectedThreshold.body.error.code, 'DB_NOT_CONNECTED');
+    const disconnectedEventType = await request(server, 'POST', '/api/query/event-type', { eventTypeId: '206080000' });
+    assert.equal(disconnectedEventType.status, 409); assert.equal(disconnectedEventType.body.error.code, 'DB_NOT_CONNECTED');
     const voyageStatus = await request(server, 'GET', '/api/voyage/status');
     assert.equal(voyageStatus.status, 200); assert.equal(Object.hasOwn(voyageStatus.body.config, 'token'), false);
+    const invalidVoyageToken = await request(server, 'POST', '/api/voyage/connect', { token: 123 });
+    assert.equal(invalidVoyageToken.status, 400); assert.equal(invalidVoyageToken.body.error.code, 'INVALID_INPUT');
+    const invalidVoyageSchema = await request(server, 'POST', '/api/query/phone', { phone: '13338297988', source: 'voyage', schema: 'other' });
+    assert.equal(invalidVoyageSchema.status, 400); assert.equal(invalidVoyageSchema.body.error.code, 'INVALID_INPUT');
     const disconnectedVoyage = await request(server, 'POST', '/api/query/phone', { phone: '13338297988', source: 'voyage' });
     assert.equal(disconnectedVoyage.status, 409); assert.equal(disconnectedVoyage.body.error.code, 'VOYAGE_NOT_CONNECTED');
     const disconnectedVoyageInstance = await request(server, 'POST', '/api/query/product-instance', { productInstanceId: '48243980', source: 'voyage' });
@@ -139,6 +182,11 @@ test('HTTP errors have real status and normalized shape', async () => {
     assert.equal(archiveStatus.status, 200); assert.equal(Object.hasOwn(archiveStatus.body.config, 'authToken'), false);
     const disconnectedArchive = await request(server, 'POST', '/api/query/archive', { key: '35772967' });
     assert.equal(disconnectedArchive.status, 409); assert.equal(disconnectedArchive.body.error.code, 'ARCHIVE_NOT_CONNECTED');
+    const bigdataStatus = await request(server, 'GET', '/api/bigdata/status');
+    assert.equal(bigdataStatus.status, 200); assert.equal(Object.hasOwn(bigdataStatus.body.config, 'token'), false);
+    bigdataClient.useSshMode();
+    const rowKeyWithoutClient = await request(server, 'POST', '/api/hbase/get', { path: '/ns:t', rowKey: 'ROW' });
+    assert.equal(rowKeyWithoutClient.status, 409); assert.equal(rowKeyWithoutClient.body.error.code, 'BIGDATA_CLIENT_REQUIRED');
   } finally { await new Promise((resolve) => server.close(resolve)); }
 });
 
@@ -198,13 +246,30 @@ test('log queue writes asynchronously and paginates newest entries', async () =>
 test('fixed query panel replaces command and log interactions', () => {
   const html = fs.readFileSync(path.join(__dirname, '../../public/index.html'), 'utf8');
   const source = fs.readFileSync(path.join(__dirname, '../../public/js/main.js'), 'utf8');
-  assert.match(html, /<h1>数据库查询<\/h1>/); assert.match(html, /查询手机号/); assert.match(html, /实例查档案/); assert.match(html, /id="productInstanceQueryForm"/); assert.match(html, /阈值查询/); assert.match(html, /内存档案查询/); assert.match(html, /Voyage 在线数据库/); assert.match(html, /id="querySourceSelect"/); assert.match(html, /id="connectionDialog"/);
+  assert.match(html, /<h1>数据库查询<\/h1>/); assert.match(html, /查询手机号/); assert.match(html, /实例查档案/); assert.match(html, /id="productInstanceQueryForm"/); assert.match(html, /查询套餐/); assert.match(html, /id="eventTypeQueryForm"/); assert.match(html, /value="206080000" selected/); assert.match(html, /阈值查询/); assert.match(html, /内存档案查询/); assert.match(html, /Voyage 在线数据库/); assert.match(html, /id="querySourceSelect"/); assert.match(html, /id="querySchemaSelect"[^>]*disabled>[\s\S]*?<option value="bill_inmemory" selected>bill_inmemory<\/option>[\s\S]*?<option value="crmv3">crmv3<\/option>/); assert.match(html, /id="connectionDialog"/);
   assert.match(html, /id="insertDialog"/); assert.match(html, /id="insertSqlCopy"/); assert.match(html, /一键复制/);
   assert.doesNotMatch(html, /Redis|cacheRedis|data-cache-/);
   assert.doesNotMatch(html, /id="cmdInput"|id="logFlow"|id="btnCmds"|id="commandsDialog"/);
-  assert.match(source, /postJson\('\/api\/query\/phone'/); assert.match(source, /postJson\('\/api\/query\/product-instance'/); assert.match(source, /postJson\('\/api\/query\/threshold'/); assert.match(source, /postJson\('\/api\/query\/archive'/); assert.match(source, /postJson\('\/api\/voyage\/connect'/); assert.match(source, /generateInsertScript\(result\)/); assert.match(source, /\/api\/hdfs\/preview/);
+  assert.match(source, /postJson\('\/api\/query\/phone'/); assert.match(source, /postJson\('\/api\/query\/product-instance'/); assert.match(source, /postJson\('\/api\/query\/event-type'/); assert.match(source, /postJson\('\/api\/query\/threshold'/); assert.match(source, /postJson\('\/api\/query\/archive'/); assert.match(source, /postJson\('\/api\/voyage\/connect'/); assert.match(source, /generateInsertScript\(result\)/); assert.match(source, /\/api\/hdfs\/preview/);
+  assert.match(source, /querySourcePayload\(source, schema\)/); assert.match(source, /source === 'voyage' \? \{ schema: schema \|\| 'bill_inmemory' \}/);
+  assert.match(source, /resultSection\('销售品实例关系'/); assert.match(source, /resultSection\('关联销售品实例'/); assert.match(source, /resultSection\('销售品实例费用属性'/);
+  assert.match(source, /resultSection\('销售品关联对象'/); assert.match(source, /resultSection\('销售品关联资源'/); assert.match(source, /resultSection\('增值业务订购关系'/);
+  assert.match(source, /resultSection\('订购用户汇总'/); assert.match(source, /resultSection\('拥有套餐的产品实例'/); assert.match(source, /text: '查看档案'/); assert.match(html, /反查用户/);
+  assert.match(html, /id="eventOfferNameInput"/); assert.match(source, /offerName/); assert.match(source, /resultSection\('销售品实例属性'/);
   assert.doesNotMatch(source, /\/api\/cache\/|state\.cache|CACHE_FIELDS/);
   assert.doesNotMatch(source, /postJson\('\/api\/exec'|postJson\('\/api\/log\/append'|\/api\/log\/list/);
+});
+
+test('HDFS deletion is non-recursive, distinguishes files and directories, and blocks root', async () => {
+  const originalExec = ssh.execCommand; const commands = [];
+  ssh.execCommand = async (command) => { commands.push(command); return { code: 0, stdout: '', stderr: '', timedOut: false }; };
+  try {
+    assert.equal((await hdfs.hdfsDelete('/apps/input/a.json', 'file')).deleted, true);
+    assert.equal((await hdfs.hdfsDelete('/apps/input/empty', 'dir')).deleted, true);
+    assert.match(commands[0], /hadoop fs -rm '/); assert.match(commands[1], /hadoop fs -rmdir '/);
+    await assert.rejects(hdfs.hdfsDelete('/', 'dir'), /根目录不允许删除/);
+    await assert.rejects(hdfs.hdfsDelete('/apps/input', 'other'), /file 或 dir/);
+  } finally { ssh.execCommand = originalExec; }
 });
 
 test('query tabs preserve independent results until explicitly cleared', () => {
@@ -225,15 +290,15 @@ test('query tabs preserve independent results until explicitly cleared', () => {
 test('query result sections show source tables, hide empty categories, and preserve vertical scrolling', () => {
   const source = fs.readFileSync(path.join(__dirname, '../../public/js/main.js'), 'utf8');
   const css = fs.readFileSync(path.join(__dirname, '../../public/style.css'), 'utf8');
-  assert.match(source, /resultSection\('产品实例',[^\n]+table: resultTable\('productInstances'\)/);
-  assert.match(source, /resultSection\('定价计划',[^\n]+table: resultTable\('pricingPlans'\)/);
-  assert.match(source, /resultSection\('档位提醒配置',[^\n]+table: resultTable\('thresholdAttributes'\)/);
+  assert.match(source, /resultSection\('产品实例',[^\n]+table: resultTable\('productInstances', result\)/);
+  assert.match(source, /resultSection\('定价计划',[^\n]+table: resultTable\('pricingPlans', result\)/);
+  assert.match(source, /resultSection\('档位提醒配置',[^\n]+table: resultTable\('thresholdAttributes', result\)/);
   assert.match(source, /if \(!rows\?\.length\)/);
-  assert.match(source, /resultSection\('产品实例关系',[^\n]+table: resultTable\('productRelationships'\)/);
-  assert.match(source, /resultSection\('产品实例属性',[^\n]+table: resultTable\('productAttributes'\)/);
-  assert.match(source, /resultSection\('销售品实例费用',[^\n]+table: resultTable\('offerInstanceFees'\)/);
+  assert.match(source, /resultSection\('产品实例关系',[^\n]+table: resultTable\('productRelationships', result\)/);
+  assert.match(source, /resultSection\('产品实例属性',[^\n]+table: resultTable\('productAttributes', result\)/);
+  assert.match(source, /resultSection\('销售品实例费用',[^\n]+table: resultTable\('offerInstanceFees', result\)/);
   assert.match(source, /`\$\{title\} · \$\{rows\?\.length \|\| 0\} 条\$\{tableSuffix\}`/);
-  assert.match(source, /数据表: tableForStep\(step\.name\)/);
+  assert.match(source, /逻辑表: tableForStep\(step\.name\)/); assert.match(source, /实际表: physicalTables/);
   assert.match(css, /\.query-results \{[^}]*overflow-x:\s*hidden;[^}]*overflow-y:\s*auto;/);
   assert.match(css, /\.query-table-wrap \{[^}]*overflow-x:\s*auto;[^}]*overflow-y:\s*hidden;/);
   assert.match(css, /\.query-step span \{[^}]*overflow-wrap:\s*anywhere;[^}]*word-break:\s*break-word;/);
@@ -246,7 +311,7 @@ test('workbench keeps a 1 to 1.5 desktop ratio and the phone query action on one
   assert.match(css, /dialog#connectionDialog\[open\][^{]*\{[^}]*width:\s*min\(1200px,\s*calc\(100vw - 32px\)\);[^}]*max-width:\s*none;/);
 });
 
-test('connection settings use independent read-only source controls and keep credentials out of browser storage', () => {
+test('connection settings use independent source controls and keep credentials out of browser storage', () => {
   const html = fs.readFileSync(path.join(__dirname, '../../public/index.html'), 'utf8');
   const source = fs.readFileSync(path.join(__dirname, '../../public/js/main.js'), 'utf8');
   const dialog = html.match(/<dialog id="connectionDialog"[\s\S]*?<\/dialog>/)?.[0] || '';
@@ -254,9 +319,29 @@ test('connection settings use independent read-only source controls and keep cre
   assert.match(dialog, /<details class="connection-environment" data-connection-environment="project"><summary><span>工程环境<\/span>/);
   assert.doesNotMatch(dialog, /<details[^>]*\bopen\b/); assert.match(dialog, /data-connection-source="voyage"/); assert.match(dialog, /Voyage 在线数据库/); assert.match(dialog, /data-connection-source="archive"/); assert.match(dialog, /内存档案服务/);
   assert.match(dialog, /data-connection-source="ssh"/); assert.match(dialog, /data-connection-source="udal"/); assert.match(dialog, /data-connection-source="doris"/);
-  assert.equal((dialog.match(/data-connection-connect="(?:ssh|udal|doris|voyage|archive)"/g) || []).length, 5); assert.doesNotMatch(dialog, /<input\b|type="password"|id="btnConnectAll"|data-db-disconnect/);
+  assert.match(dialog, /data-connection-source="bigdata"/); assert.match(dialog, /HDFS\/HBase 客户端服务/);
+  assert.equal((dialog.match(/data-connection-connect="(?:ssh|bigdata|udal|doris|voyage|archive)"/g) || []).length, 6); assert.equal((dialog.match(/<input\b/g) || []).length, 1); assert.match(dialog, /id="voyageTokenInput"[^>]*type="password"[^>]*autocomplete="off"/); assert.doesNotMatch(dialog, /dcosCookieInput|data-connection-source="dcos"/); assert.doesNotMatch(dialog, /id="btnConnectAll"|data-db-disconnect/);
+  const processPage = html.match(/<section id="processLogsPage"[\s\S]*?<\/section>\s*<section id="cdrPage"/)?.[0] || '';
+  assert.match(processPage, /id="dcosCookieInput"[^>]*type="password"[^>]*autocomplete="off"/);
+  assert.match(processPage, /id="dcosStartWorkload"[^>]*disabled/);
+  assert.match(processPage, /id="dcosStopWorkload"[^>]*class="wb-button danger"[^>]*disabled/);
+  const dcosSource = fs.readFileSync(path.join(__dirname, '../../public/js/dcos-logs.js'), 'utf8');
+  assert.doesNotMatch(dcosSource, /localStorage|sessionStorage/);
+  assert.match(dcosSource, /\/api\/dcos\/workload\/\$\{action\}/);
   assert.doesNotMatch(html, /id="settingsDialog"|id="dbSettingsDialog"|id="btnSettings"|id="btnDbSettings"/);
-  assert.match(source, /postJson\('\/api\/connect', \{\}/); assert.match(source, /postJson\('\/api\/db\/connect', \{ source \}/); assert.match(source, /postJson\('\/api\/voyage\/connect', \{\}/); assert.match(source, /postJson\('\/api\/archive\/connect', \{\}/); assert.doesNotMatch(source, /\/api\/connections\/connect|wb_conn_cfg|wb_db_cfg|sessionPassword|DB_FIELDS/);
+  assert.match(source, /postJson\('\/api\/connect', \{\}/); assert.match(source, /postJson\('\/api\/bigdata\/connect', \{\}/); assert.match(source, /postJson\('\/api\/db\/connect', \{ source \}/); assert.match(source, /postJson\('\/api\/voyage\/connect', token \? \{ token \} : \{\}/); assert.match(source, /postJson\('\/api\/archive\/connect', \{\}/); assert.doesNotMatch(source, /\/api\/connections\/connect|wb_conn_cfg|wb_db_cfg|sessionPassword|DB_FIELDS|localStorage\.(?:setItem|getItem)\([^\n]*voyageToken|sessionStorage\.(?:setItem|getItem)\([^\n]*voyageToken/i);
+});
+
+test('primary sidebar owns resources, process logs, and CDR while quick lookup is removed', () => {
+  const html = fs.readFileSync(path.join(__dirname, '../../public/index.html'), 'utf8');
+  const source = fs.readFileSync(path.join(__dirname, '../../public/js/main.js'), 'utf8');
+  const topbar = html.match(/<header class="topbar">[\s\S]*?<\/header>/)?.[0] || '';
+  assert.match(html, /<nav class="primary-sidebar"/);
+  assert.deepEqual([...html.matchAll(/data-primary-page="([^"]+)"/g)].map((match) => match[1]), ['workspace', 'processLogs', 'cdr']);
+  assert.doesNotMatch(topbar, /btnBilling|btnCdr|btnProcessLogs/);
+  assert.doesNotMatch(html, /billingDialog|dcosLogDialog|cdrDialog|billingContent/);
+  assert.match(html, /id="cdrPage"[^>]*data-primary-panel="cdr"/);
+  assert.match(source, /dcosLogs\.deactivate\(\)/);
 });
 
 test('SSH connection status is rendered inside the resource explorer instead of the top bar', () => {
@@ -277,13 +362,34 @@ test('server-generated resource timestamps use an explicit UTC+8 offset', () => 
   assert.match(log.today(new Date('2026-09-15T17:00:00.000Z')), /^2026-09-16$/);
 });
 
-test('resource refresh keeps one visible countdown and ignores duplicate in-flight refreshes', () => {
+test('resource refresh keeps a compact status and ignores duplicate in-flight refreshes', () => {
   const source = fs.readFileSync(path.join(__dirname, '../../public/js/main.js'), 'utf8');
   const loadingFunction = source.match(/function startResourceLoading\(kind\) \{[\s\S]*?\n\}/)?.[0] || '';
-  assert.match(loadingFunction, /status\(`\$\{meta\.label\} · \$\{currentResourcePath\(kind\)\} · \$\{message\}`\)/);
+  assert.match(loadingFunction, /status\('正在刷新'\)/);
+  assert.doesNotMatch(loadingFunction, /currentResourcePath|meta\.label/);
+  assert.doesNotMatch(loadingFunction, /已等待|setInterval/);
   assert.doesNotMatch(loadingFunction, /announce\(resourceStatusNode\(kind\), message/);
-  assert.match(source, /if \(!state\.connected \|\| resourceState\(kind\)\.loading\) return null;/);
+  assert.match(source, /if \(!resourceConnected\(kind\) \|\| resourceState\(kind\)\.loading\)/);
   assert.match(source, /\$\('#hdfsPathInput'\)\.value = state\.hdfsCwd/);
+});
+
+test('resource panels hide source metadata, default item counts, and visible sort labels', () => {
+  const html = fs.readFileSync(path.join(__dirname, '../../public/index.html'), 'utf8');
+  const source = fs.readFileSync(path.join(__dirname, '../../public/js/main.js'), 'utf8');
+  assert.doesNotMatch(html, /hdfsSourceText|hbaseSourceText|hdfsReadMeta|hbaseReadMeta/);
+  assert.doesNotMatch(html, /<span>排序<\/span>/);
+  assert.doesNotMatch(source, /`共 \$\{view\.items\.length\} 项`/);
+  assert.doesNotMatch(source, /已等待/);
+});
+
+test('HDFS resources expose confirmed file and empty-directory deletion and optimized upload copy', () => {
+  const html = fs.readFileSync(path.join(__dirname, '../../public/index.html'), 'utf8');
+  const source = fs.readFileSync(path.join(__dirname, '../../public/js/main.js'), 'utf8');
+  assert.match(html, /复用常驻 FileSystem/);
+  assert.match(source, /kind === 'files' \|\| kind === 'hdfs'/);
+  assert.match(source, /'\/api\/hdfs\/delete'/);
+  assert.match(source, /confirmed: true/);
+  assert.match(source, /仅允许删除空目录/);
 });
 
 test('HDFS quick paths distinguish test and production rating directories', () => {

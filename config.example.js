@@ -17,5 +17,6 @@ module.exports = {
   hdfsTimeoutMs: 90000,
   hbaseTimeoutMs: 120000,
   cdr: { upstream: 'http://127.0.0.1:8000' },
+  dcos: { baseUrl: '', clusters: [{ id: 321, name: 'ccse-xyha-01' }], timeoutMs: 15000 },
   logs: { dir: './logs', maxDays: 30, maxEntries: 10000 },
 };

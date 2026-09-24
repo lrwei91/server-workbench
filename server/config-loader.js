@@ -42,8 +42,15 @@ function normalize(raw) {
   const ssh = value.ssh || {};
   const archive = value.archive || {};
   const voyage = value.voyage || {};
+  const bigdataClient = value.bigdataClient || {};
   const cdr = value.cdr || {};
   const logs = value.logs || {};
+  const dcos = value.dcos || {};
+  const clusterText = envText('DCOS_CLUSTERS', Array.isArray(dcos.clusters) ? dcos.clusters.map((item) => `${item.id}:${item.name}`).join(',') : '321:ccse-xyha-01');
+  const clusters = clusterText.split(',').map((item) => item.trim()).filter(Boolean).map((item) => {
+    const colon = item.indexOf(':');
+    return { id: Number(colon < 0 ? item : item.slice(0, colon)), name: (colon < 0 ? item : item.slice(colon + 1)).trim() };
+  });
   return {
     ...value,
     workbench: { host: envText('WORKBENCH_HOST', workbench.host || '127.0.0.1'), port: envNumber('WORKBENCH_PORT', Number(workbench.port) || 17755) },
@@ -81,14 +88,27 @@ function normalize(raw) {
         CRM3DB: {
           datasourceId: envNumber('VOYAGE_CRM_DATASOURCE_ID', Number(voyage.mappings?.CRM3DB?.datasourceId) || 5),
           database: envText('VOYAGE_CRM_DATABASE', voyage.mappings?.CRM3DB?.database || 'incf_db').trim(),
-          schema: envText('VOYAGE_CRM_SCHEMA', voyage.mappings?.CRM3DB?.schema || 'crmv3').trim(),
+          schema: envText('VOYAGE_CRM_SCHEMA', voyage.mappings?.CRM3DB?.schema || 'bill_inmemory').trim(),
         },
         CONFIGDB_CNOS_JF_TEST: {
           datasourceId: envNumber('VOYAGE_CONFIG_DATASOURCE_ID', Number(voyage.mappings?.CONFIGDB_CNOS_JF_TEST?.datasourceId) || 5),
           database: envText('VOYAGE_CONFIG_DATABASE', voyage.mappings?.CONFIGDB_CNOS_JF_TEST?.database || 'incf_db').trim(),
-          schema: envText('VOYAGE_CONFIG_SCHEMA', voyage.mappings?.CONFIGDB_CNOS_JF_TEST?.schema || 'crmv3').trim(),
+          schema: envText('VOYAGE_CONFIG_SCHEMA', voyage.mappings?.CONFIGDB_CNOS_JF_TEST?.schema || 'bill_inmemory').trim(),
         },
       },
+    },
+    bigdataClient: {
+      remoteHost: envText('BIGDATA_CLIENT_REMOTE_HOST', bigdataClient.remoteHost || '127.0.0.1').trim(),
+      remotePort: envNumber('BIGDATA_CLIENT_REMOTE_PORT', Number(bigdataClient.remotePort) || 17880),
+      token: envText('BIGDATA_CLIENT_TOKEN', bigdataClient.token || ''),
+      defaultMode: envText('BIGDATA_CLIENT_DEFAULT_MODE', bigdataClient.defaultMode || 'ssh').trim().toLowerCase() === 'client' ? 'client' : 'ssh',
+      timeoutMs: envNumber('BIGDATA_CLIENT_TIMEOUT_MS', Number(bigdataClient.timeoutMs) || 30000),
+      listCacheMs: envNumber('BIGDATA_CLIENT_LIST_CACHE_MS', Number(bigdataClient.listCacheMs) || 30000),
+    },
+    dcos: {
+      baseUrl: envText('DCOS_BASE_URL', dcos.baseUrl || '').trim().replace(/\/$/, ''),
+      clusters,
+      timeoutMs: envNumber('DCOS_TIMEOUT_MS', Number(dcos.timeoutMs) || 15000),
     },
     cdr: { upstream: envText('CDR_UPSTREAM', cdr.upstream || `http://${cdr.host || '127.0.0.1'}:${Number(cdr.port) || 8000}`) },
     hdfsTimeoutMs: Number(value.hdfsTimeoutMs) || 90000,
@@ -108,6 +128,9 @@ function validate() {
   const errors = [];
   if (!normalized.ssh.host || !normalized.ssh.username) errors.push('缺少 SSH_HOST 或 SSH_USERNAME，请在项目根目录 .env 中填写');
   for (const [source, item] of Object.entries(normalized.database)) if (!item.host || !item.username) errors.push(`缺少 ${source.toUpperCase()}_HOST 或 ${source.toUpperCase()}_USERNAME，请在项目根目录 .env 中填写`);
+  if (normalized.bigdataClient.defaultMode === 'client' && !normalized.bigdataClient.token) errors.push('BIGDATA_CLIENT_DEFAULT_MODE=client 时必须配置 BIGDATA_CLIENT_TOKEN');
+  if (normalized.dcos.baseUrl && !/^https?:\/\/[^/]+$/i.test(normalized.dcos.baseUrl)) errors.push('DCOS_BASE_URL 必须是 http(s) 站点根地址');
+  if (normalized.dcos.clusters.some((item) => !Number.isInteger(item.id) || item.id < 1 || !item.name)) errors.push('DCOS_CLUSTERS 格式应为 集群ID:集群名，多个集群用逗号分隔');
   if (!Number.isInteger(normalized.workbench.port) || normalized.workbench.port < 1 || normalized.workbench.port > 65535) errors.push('workbench.port 必须是 1-65535 的整数');
   return errors;
 }

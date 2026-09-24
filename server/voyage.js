@@ -3,6 +3,7 @@
 const DEFAULT_TIMEOUT_MS = 15000;
 const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 const LOGICAL_DATABASES = ['CRM3DB', 'CONFIGDB_CNOS_JF_TEST'];
+const QUERY_SCHEMAS = Object.freeze(['bill_inmemory', 'crmv3']);
 
 class VoyageError extends Error {
   constructor(status, code, message, retryable = false, details = null) {
@@ -115,7 +116,12 @@ class VoyageManager {
     }
   }
 
-  async connect() {
+  async connect(options = {}) {
+    if (options.token !== undefined) {
+      const token = String(options.token || '').trim();
+      if (!token) throw new VoyageError(400, 'INVALID_INPUT', 'VOYAGE_TOKEN 不能为空');
+      this.config.token = token;
+    }
     this.validateConfig();
     const generation = ++this.generation;
     await this.abortActive();
@@ -146,6 +152,8 @@ class VoyageManager {
   async execute(logicalDatabase, sql, values = [], options = {}) {
     const mapping = this.defaults().mappings[logicalDatabase];
     if (!mapping) throw new VoyageError(400, 'INVALID_INPUT', `Voyage 不支持逻辑库 ${logicalDatabase}`);
+    const schema = options.schema === undefined ? mapping.schema : String(options.schema || '').trim();
+    if (!QUERY_SCHEMAS.includes(schema)) throw new VoyageError(400, 'INVALID_INPUT', `Voyage schema 必须是 ${QUERY_SCHEMAS.join(' 或 ')}`);
     if (!options.allowDisconnected && !this.connected) throw new VoyageError(409, 'VOYAGE_NOT_CONNECTED', 'Voyage 在线数据库尚未连接');
     const controller = new AbortController(); const abort = () => controller.abort(); let timedOut = false;
     if (options.signal?.aborted) controller.abort(); else options.signal?.addEventListener('abort', abort, { once: true });
@@ -156,11 +164,11 @@ class VoyageManager {
       const response = await this.fetch(this.config.apiUrl, {
         method: 'POST', signal: controller.signal,
         headers: { Accept: 'application/json', 'Content-Type': 'application/json', Authorization: `Bearer ${this.config.token}` },
-        body: JSON.stringify({ datasource_id: mapping.datasourceId, database: mapping.database, schema: mapping.schema, sql: compileSql(sql, values), limit: 1000 }),
+        body: JSON.stringify({ datasource_id: mapping.datasourceId, database: mapping.database, schema, sql: compileSql(sql, values), limit: 1000 }),
       });
       const raw = await response.text();
       if (Buffer.byteLength(raw) > MAX_RESPONSE_BYTES) throw new VoyageError(502, 'VOYAGE_RESPONSE_TOO_LARGE', 'Voyage 查询响应超过 8 MiB', false);
-      if (response.status === 401 || response.status === 403) throw new VoyageError(401, 'VOYAGE_AUTH_FAILED', 'Voyage Token 已失效，请更新本地 .env', false);
+      if (response.status === 401 || response.status === 403) throw new VoyageError(401, 'VOYAGE_AUTH_FAILED', 'Voyage Token 已失效，请在连接设置中输入新的 VOYAGE_TOKEN', false);
       if (!response.ok) throw new VoyageError(502, 'VOYAGE_HTTP_ERROR', `Voyage 请求失败（HTTP ${response.status}）`, response.status >= 500);
       const payload = parseVoyageJson(raw);
       if (payload?.code !== 0 || !Array.isArray(payload?.data)) throw new VoyageError(502, 'VOYAGE_API_ERROR', String(payload?.message || 'Voyage 查询失败'), true);
@@ -181,4 +189,4 @@ class VoyageManager {
   }
 }
 
-module.exports = { DEFAULT_TIMEOUT_MS, MAX_RESPONSE_BYTES, LOGICAL_DATABASES, VoyageError, VoyageManager, compileSql, preserveUnsafeIntegers, parseVoyageJson, normalizeRows, maskConfig };
+module.exports = { DEFAULT_TIMEOUT_MS, MAX_RESPONSE_BYTES, LOGICAL_DATABASES, QUERY_SCHEMAS, VoyageError, VoyageManager, compileSql, preserveUnsafeIntegers, parseVoyageJson, normalizeRows, maskConfig };

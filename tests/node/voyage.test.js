@@ -1,13 +1,13 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { VoyageManager, compileSql, parseVoyageJson } = require('../../server/voyage');
+const { VoyageManager, QUERY_SCHEMAS, compileSql, parseVoyageJson } = require('../../server/voyage');
 
 function config(overrides = {}) {
   return {
     apiUrl: 'http://voyage.example/api/query/execute', token: 'SECRET_TOKEN', timeoutMs: 1000,
     mappings: {
-      CRM3DB: { datasourceId: 5, database: 'incf_db', schema: 'crmv3' },
-      CONFIGDB_CNOS_JF_TEST: { datasourceId: 5, database: 'incf_db', schema: 'crmv3' },
+      CRM3DB: { datasourceId: 5, database: 'incf_db', schema: 'bill_inmemory' },
+      CONFIGDB_CNOS_JF_TEST: { datasourceId: 5, database: 'incf_db', schema: 'bill_inmemory' },
     },
     ...overrides,
   };
@@ -33,9 +33,20 @@ test('Voyage connect probes the service and query normalizes column arrays into 
   const rows = await manager.query('voyage', 'CRM3DB', 'select * from prod_inst where prod_inst_id=?', ['48243980']);
   assert.equal(rows[0].prod_inst_id, '48243980'); assert.equal(rows[0].acc_num, '15305972490');
   const body = JSON.parse(requests.at(-1).options.body);
-  assert.deepEqual({ datasource_id: body.datasource_id, database: body.database, schema: body.schema, limit: body.limit }, { datasource_id: 5, database: 'incf_db', schema: 'crmv3', limit: 1000 });
+  assert.deepEqual({ datasource_id: body.datasource_id, database: body.database, schema: body.schema, limit: body.limit }, { datasource_id: 5, database: 'incf_db', schema: 'bill_inmemory', limit: 1000 });
   assert.match(body.sql, /prod_inst_id='48243980'/); assert.equal(requests.at(-1).options.headers.Authorization, 'Bearer SECRET_TOKEN');
   await manager.disconnect(); assert.equal(manager.status().connected, false);
+});
+
+test('Voyage queries support the configured schema selector and reject unknown schemas', async () => {
+  const requests = [];
+  const manager = new VoyageManager(config(), async (_url, options) => { requests.push(JSON.parse(options.body)); return response(success(['ok'], [[1]])); });
+  await manager.connect();
+  await manager.query('voyage', 'CRM3DB', 'select 1', [], { schema: 'crmv3' });
+  assert.deepEqual(QUERY_SCHEMAS, ['bill_inmemory', 'crmv3']);
+  assert.equal(requests[0].schema, 'bill_inmemory');
+  assert.equal(requests[1].schema, 'crmv3');
+  await assert.rejects(manager.query('voyage', 'CRM3DB', 'select 1', [], { schema: 'other' }), (error) => error.code === 'INVALID_INPUT' && error.status === 400);
 });
 
 test('Voyage preserves unsafe JSON integers and accepts empty row sets', async () => {
@@ -50,6 +61,16 @@ test('Voyage surfaces statement errors and authentication failures with stable c
   await assert.rejects(statementManager.connect(), (error) => error.code === 'VOYAGE_QUERY_FAILED' && /relation/.test(error.message));
   const authManager = new VoyageManager(config(), async () => response({ message: 'unauthorized' }, 401));
   await assert.rejects(authManager.connect(), (error) => error.code === 'VOYAGE_AUTH_FAILED' && error.status === 401);
+});
+
+test('Voyage accepts a replacement token in memory without exposing it', async () => {
+  const requests = [];
+  const manager = new VoyageManager(config({ token: 'OLD_TOKEN' }), async (_url, options) => { requests.push(options); return response(success(['ok'], [[1]])); });
+  await manager.connect({ token: ' NEW_TOKEN ' });
+  assert.equal(requests[0].headers.Authorization, 'Bearer NEW_TOKEN');
+  assert.equal(manager.status().config.hasToken, true);
+  assert.equal(JSON.stringify(manager.status()).includes('NEW_TOKEN'), false);
+  await assert.rejects(manager.connect({ token: '   ' }), (error) => error.code === 'INVALID_INPUT' && error.status === 400);
 });
 
 test('Voyage cancellation aborts the active request', async () => {

@@ -1,6 +1,7 @@
 import { $, $$, announce, createRequestGate, DialogController, el, formatBytes, formatDate, getJson, postJson, setText } from '/shared/ui.js';
 import { formatHbaseScanText, isBatchInfoTable, isMonthlyAccumulatorDetailTable, isTicketDispatchTable } from '/js/hbase-scan-format.js';
 import { generateInsertScript, hasInsertRows, INSERT_TABLES } from '/js/insert-export.js';
+import { initDcosLogs } from '/js/dcos-logs.js';
 
 const HDFS_UPLOAD_TIMEOUT = 200000;
 const DEFAULT_RESOURCE_TIMEOUTS = { filesListMs: 30000, hdfsListMs: 190000, hbaseScanMs: 130000 };
@@ -17,18 +18,19 @@ function makeResourceState() { return { items: [], query: '', sortKey: 'name', s
 const state = {
   connected: false, config: null, home: '~', cwd: '~', hdfsCwd: localStorage.getItem('wb_hdfs_cwd') || '/apps', hbaseCwd: localStorage.getItem('wb_hbase_cwd') || '/',
   pendingConfirm: null, pendingName: null,
-  gates: { files: createRequestGate(), hdfs: createRequestGate(), hbase: createRequestGate(), scan: createRequestGate(), phone: createRequestGate(), productInstance: createRequestGate(), threshold: createRequestGate(), archive: createRequestGate() }, statusTimer: null, statusRunning: false, pendingUpload: null, loaded: { files: false, hdfs: false, hbase: false },
+  gates: { files: createRequestGate(), hdfs: createRequestGate(), hbase: createRequestGate(), scan: createRequestGate(), phone: createRequestGate(), productInstance: createRequestGate(), eventType: createRequestGate(), threshold: createRequestGate(), archive: createRequestGate() }, statusTimer: null, statusRunning: false, pendingUpload: null, loaded: { files: false, hdfs: false, hbase: false },
   annotations: {}, pendingAnnotationPath: '', pendingAnnotationKind: '',
   timeouts: { ...DEFAULT_RESOURCE_TIMEOUTS },
   resources: { files: makeResourceState(), hdfs: makeResourceState(), hbase: makeResourceState() },
   favorites: [],
   pendingFavorite: null,
-  hbaseScan: { tablePath: '', limit: 20, rawText: '', displayText: '', structured: false, parsedCount: 0, skippedCount: 0, truncated: false, loading: false, startedAt: 0, progressTimer: null, error: '', matchIndex: 0 },
+  hbaseScan: { tablePath: '', limit: 20, queryKind: 'scan', rowKey: '', rawText: '', displayText: '', structured: false, parsedCount: 0, skippedCount: 0, truncated: false, loading: false, startedAt: 0, progressTimer: null, error: '', matchIndex: 0 },
   databases: { udal: { connected: false, config: null, password: '' }, doris: { connected: false, config: null, password: '' } },
   voyage: { connected: false, config: null },
   archive: { connected: false, config: null },
-  connectionProfiles: { ssh: null, udal: null, doris: null, voyage: null, archive: null }, connectionErrors: { ssh: '', udal: '', doris: '', voyage: '', archive: '' },
-  activeQuery: 'phone', phoneQuery: { running: false, result: null, message: '', tone: '' }, productInstanceQuery: { running: false, result: null, message: '', tone: '' }, thresholdQuery: { running: false, result: null, message: '', tone: '' }, archiveQuery: { running: false, result: null, message: '', tone: '' },
+  bigdata: { connected: false, mode: 'ssh', config: null },
+  connectionProfiles: { ssh: null, bigdata: null, udal: null, doris: null, voyage: null, archive: null }, connectionErrors: { ssh: '', bigdata: '', udal: '', doris: '', voyage: '', archive: '' },
+  activeQuery: 'phone', phoneQuery: { running: false, result: null, message: '', tone: '' }, productInstanceQuery: { running: false, result: null, message: '', tone: '' }, eventTypeQuery: { running: false, result: null, message: '', tone: '' }, thresholdQuery: { running: false, result: null, message: '', tone: '' }, archiveQuery: { running: false, result: null, message: '', tone: '' },
 };
 const ANNOTATIONS_KEY = 'wb_annotations';
 // 业务侧默认备注字典：本地未自定义时展示；用户手动保存即覆盖（清空可置空字符串表示不使用默认）
@@ -179,24 +181,7 @@ function rowAlias(item, kind, fullPath) {
   return aliasTextFor(fullPath, kind === 'hbase' && !item.isDir ? String(item.name || '') : '');
 }
 
-const BILLING = [
-  { title: '常用 HDFS 目录', rows: [['计费根目录', '/apps'], ['采预 prep（测试）', '/apps/bill_cnos_jf_test/prep'], ['批价 cal（测试）', '/apps/bill_cnos_jf_test/cal'], ['批价 cal（生产）', '/apps/bill_cnos_jf/cal']] },
-  { title: '话单表映射', rows: [['语音话单', 'TICKET_CDMA_VOICE'], ['数据业务', 'TICKET_DATA'], ['异常单', 'TICKET_ABNORMAL'], ['不计费话单', 'TICKET_OTHER']] },
-  { title: 'HBase 速查', rows: [['分发表', '{ns}:TICKET_DISPATCH_FILE'], ['量本主表', '{ns}:ACCUMULATION_{month}'], ['排重表', '{ns}:source_file_index_{month}']] },
-  { title: '排障提示', rows: [['分发', 'STRA / MR'], ['处理批次', 'pro_ 前缀表示在途'], ['命名空间', '按当前环境填写并复制']] },
-  { title: '服务清单（Kubernetes）', rows: [
-    ['量本初始化', 'idis-rating-accuminit-process-prod'],
-    ['采预程序（话单增强）', 'idis-prep-prep-normal-process-prod'],
-    ['批价程序（算费）', 'idis-rating-cal-process-prod'],
-    ['入库进程（话单→Doris）', 'idis-rating-ticket2pg-process-prod'],
-    ['消息发送（→策略中心）', 'idis-rating-msgsend-process-prod'],
-    ['达量降速', 'idis-plca-usage-notification-dljs-cmp-prod'],
-    ['大流量提醒', 'idis-plca-usage-notification-dljs-cmp-prod'],
-    ['阈值提醒', 'idis-plca-usage-notification-process-prod'],
-  ] },
-];
-
-const dialogs = new Map(['connectionDialog', 'billingDialog', 'confirmDialog', 'nameDialog', 'uploadDialog', 'annotationDialog', 'previewDialog', 'hbaseScanDialog', 'insertDialog', 'favoriteDialog', 'cdrDialog'].map((id) => [id, new DialogController(document.getElementById(id))]));
+const dialogs = new Map(['connectionDialog', 'confirmDialog', 'nameDialog', 'uploadDialog', 'annotationDialog', 'previewDialog', 'hbaseScanDialog', 'insertDialog', 'favoriteDialog'].map((id) => [id, new DialogController(document.getElementById(id))]));
 function openDialog(id, focus) {
   // 单 modal 约束：开新弹窗前先收起其它已打开的弹窗。否则两层 modal 叠加时，
   // 下层弹窗的「关闭」按钮点击会被上层 backdrop 截获，表现为「点击完全无反应」。
@@ -214,11 +199,21 @@ document.addEventListener('click', (event) => {
   const id = button.dataset.dialogClose;
   if (id && dialogs.has(id)) closeDialog(id);
 });
-// 暴露到 window：便于同源 iframe（话单工具）与调试台通过 parent.closeDialog('cdrDialog') 联动关闭宿主弹窗
-window.openDialog = openDialog;
-window.closeDialog = closeDialog;
-
 document.getElementById('hbaseScanDialog')?.addEventListener('close', () => cancelHbaseScan());
+const dcosLogs = initDcosLogs();
+function switchPrimaryPage(page) {
+  if (!['workspace', 'processLogs', 'cdr'].includes(page)) return;
+  for (const [id, controller] of dialogs) if (controller.isOpen) closeDialog(id);
+  document.querySelectorAll('[data-primary-page]').forEach((button) => {
+    const active = button.dataset.primaryPage === page;
+    button.classList.toggle('active', active);
+    if (active) button.setAttribute('aria-current', 'page'); else button.removeAttribute('aria-current');
+  });
+  document.querySelectorAll('[data-primary-panel]').forEach((panel) => panel.classList.toggle('hidden', panel.dataset.primaryPanel !== page));
+  if (page === 'processLogs') dcosLogs.activate(); else dcosLogs.deactivate();
+  if (page === 'cdr' && !$('#cdrFrame').getAttribute('src')) $('#cdrFrame').src = '/cdr/';
+}
+document.querySelectorAll('[data-primary-page]').forEach((button) => button.addEventListener('click', () => switchPrimaryPage(button.dataset.primaryPage)));
 
 function icon(name, label = '') {
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -381,17 +376,10 @@ function openFavorite(favorite) {
 }
 function startResourceLoading(kind) {
   const view = resourceState(kind);
-  const meta = RESOURCE_META[kind];
   clearResourceTimer(view);
   view.loading = true; view.error = ''; view.startedAt = Date.now();
   resourceNode(kind)?.setAttribute('aria-busy', 'true');
-  const update = () => {
-    const seconds = Math.max(0, Math.floor((Date.now() - view.startedAt) / 1000));
-    const message = `正在刷新 · 已等待 ${seconds} 秒`;
-    status(`${meta.label} · ${currentResourcePath(kind)} · ${message}`);
-  };
-  update();
-  view.progressTimer = setInterval(update, 1000);
+  status('正在刷新');
   if (!view.items.length) renderResourceView(kind);
 }
 function finishResourceLoading(kind, error = null) {
@@ -435,7 +423,7 @@ function renderResourceView(kind) {
   if (!list) return;
   const query = view.query.trim().toLocaleLowerCase('zh-CN');
   const filtered = view.items.filter((item) => !query || resourceSearchText(item, kind).includes(query));
-  setText($(`#${RESOURCE_META[kind].matchId}`), query ? `匹配 ${filtered.length} / ${view.items.length} 项` : `共 ${view.items.length} 项`);
+  setText($(`#${RESOURCE_META[kind].matchId}`), query ? `匹配 ${filtered.length} / ${view.items.length} 项` : '');
   if (view.loading && !view.items.length) { list.replaceChildren(el('div', { class: 'empty-tip', text: '正在读取目录…' })); return; }
   if (view.error && !view.items.length) { list.replaceChildren(el('div', { class: 'empty-tip', text: view.error })); return; }
   if (!view.items.length) { list.replaceChildren(el('div', { class: 'empty-tip', text: '该目录为空' })); return; }
@@ -479,6 +467,12 @@ function setConnected(connected, cfg = null) {
   renderFavorites(); updateFavoriteButtons();
 }
 
+function resourceConnected(kind) {
+  if (kind === 'files') return state.connected;
+  return state.bigdata.mode === 'client' ? state.bigdata.connected : state.connected;
+}
+function renderBigdataSource() {}
+
 function renderBreadcrumbs(container, current, rootLabel, navigate) {
   container.replaceChildren(); const root = rootLabel === '~' ? '~' : '/'; container.append(el('button', { type: 'button', text: root, on: { click: () => navigate(rootLabel) } }));
   const parts = current === rootLabel || current === '/' ? [] : current.replace(/^\//, '').split('/').filter(Boolean); let built = rootLabel === '~' ? '~' : '';
@@ -501,12 +495,12 @@ function resourceRow(item, kind) {
     nameButton.addEventListener('dblclick', () => item.isDir ? navigateResource('hbase', fullPath) : scanHbase(fullPath));
     return row;
   }
-  if (item.isDir) { const enter = el('button', { class: 'fact', type: 'button', text: '进入' }); enter.addEventListener('click', () => navigateResource(kind, fullPath)); const note = el('button', { class: 'fact', type: 'button', text: '备注' }); note.addEventListener('click', () => openAnnotationDialog(fullPath, getAlias(fullPath), kind)); actions.append(enter); actions.append(note); if (kind === 'files') { const remove = el('button', { class: 'fact danger', type: 'button', text: '删除' }); remove.addEventListener('click', () => confirmDelete(fullPath, 'dir')); actions.append(remove); } }
-  else { const view = el('button', { class: 'fact', type: 'button', text: '查看' }); view.addEventListener('click', () => previewRemote(fullPath, kind)); const download = el('button', { class: 'fact', type: 'button', text: '下载' }); download.addEventListener('click', () => downloadRemote(fullPath, kind)); actions.append(view, download); if (kind === 'files') { const remove = el('button', { class: 'fact danger', type: 'button', text: '删除' }); remove.addEventListener('click', () => confirmDelete(fullPath, 'file')); const upload = el('button', { class: 'fact', type: 'button', text: '上传到 HDFS' }); upload.addEventListener('click', () => openUploadDialog(fullPath)); actions.append(remove, upload); } }
+  if (item.isDir) { const enter = el('button', { class: 'fact', type: 'button', text: '进入' }); enter.addEventListener('click', () => navigateResource(kind, fullPath)); const note = el('button', { class: 'fact', type: 'button', text: '备注' }); note.addEventListener('click', () => openAnnotationDialog(fullPath, getAlias(fullPath), kind)); actions.append(enter); actions.append(note); if (kind === 'files' || kind === 'hdfs') { const remove = el('button', { class: 'fact danger', type: 'button', text: '删除' }); remove.addEventListener('click', () => confirmDelete(fullPath, 'dir', kind)); actions.append(remove); } }
+  else { const view = el('button', { class: 'fact', type: 'button', text: '查看' }); view.addEventListener('click', () => previewRemote(fullPath, kind)); const download = el('button', { class: 'fact', type: 'button', text: '下载' }); download.addEventListener('click', () => downloadRemote(fullPath, kind)); actions.append(view, download); if (kind === 'files' || kind === 'hdfs') { const remove = el('button', { class: 'fact danger', type: 'button', text: '删除' }); remove.addEventListener('click', () => confirmDelete(fullPath, 'file', kind)); actions.append(remove); if (kind === 'files') { const upload = el('button', { class: 'fact', type: 'button', text: '上传到 HDFS' }); upload.addEventListener('click', () => openUploadDialog(fullPath)); actions.append(upload); } } }
   nameButton.addEventListener('dblclick', () => item.isDir ? navigateResource(kind, fullPath) : previewRemote(fullPath, kind)); return row;
 }
-async function refreshResource(kind) {
-  if (!state.connected || resourceState(kind).loading) return null;
+async function refreshResource(kind, { refresh = false } = {}) {
+  if (!resourceConnected(kind) || resourceState(kind).loading) { if (!resourceConnected(kind)) toast(kind === 'files' || state.bigdata.mode === 'ssh' ? '请先连接 SSH' : '请先连接 HDFS/HBase 客户端服务', 'err'); return null; }
   const request = state.gates[kind].next();
   const path = currentResourcePath(kind);
   const meta = RESOURCE_META[kind];
@@ -516,7 +510,7 @@ async function refreshResource(kind) {
       ? await postJson('/api/sftp/list', { path }, { signal: request.signal, timeout: state.timeouts.filesListMs })
       : kind === 'hdfs'
         ? await postJson('/api/hdfs/list', { path }, { signal: request.signal, timeout: state.timeouts.hdfsListMs })
-        : await postJson('/api/hbase/list', { path }, { signal: request.signal, timeout: state.timeouts.hbaseScanMs });
+        : await postJson('/api/hbase/list', { path, refresh }, { signal: request.signal, timeout: state.timeouts.hbaseScanMs });
     if (!request.isCurrent()) return result;
     const current = result.path || path;
     setCurrentResourcePath(kind, current);
@@ -534,9 +528,9 @@ async function refreshResource(kind) {
     return null;
   }
 }
-function refreshFiles() { return refreshResource('files'); }
-function refreshHdfs() { return refreshResource('hdfs'); }
-function refreshHbase() { return refreshResource('hbase'); }
+function refreshFiles(options) { return refreshResource('files', options); }
+function refreshHdfs(options) { return refreshResource('hdfs', options); }
+function refreshHbase(options) { return refreshResource('hbase', options); }
 
 function findTextMatches(text, query) {
   const value = String(text || ''); const needle = String(query || '').trim().toLocaleLowerCase('zh-CN');
@@ -567,21 +561,20 @@ function renderHbaseScan() {
   const formatSource = isBatchInfoTable(scan.tablePath) ? 'RowKey 与列族 batch_info' : isMonthlyAccumulatorDetailTable(scan.tablePath) || isTicketDispatchTable(scan.tablePath) ? 'RowKey' : '列族 f 的 Qualifier';
   const formatNote = scan.structured ? `已从 ${formatSource} 解析 ${scan.parsedCount} 条${scan.skippedCount ? `，${scan.skippedCount} 条格式不匹配` : ''}。` : '';
   setText($('#hbaseScanNotice'), `${formatNote}${scan.truncated ? '输出已截断；当前内容仅代表已加载样本，复制仍会保留原始输出。' : '仅查找当前样本；匹配数量按文字出现次数计算，复制按钮会保留原始输出。'}`);
-  const stateText = scan.loading ? `正在读取 · 已等待 ${Math.floor(Math.max(0, Date.now() - scan.startedAt) / 1000)} 秒` : scan.error || (scan.tablePath ? `已加载，最多 ${scan.limit} 行` : '');
+  const stateText = scan.loading ? '正在读取' : scan.error || (scan.tablePath ? `已加载，最多 ${scan.limit} 行` : '');
   setText($('#hbaseScanState'), stateText);
-  $('#hbaseScanReload').disabled = scan.loading || !scan.tablePath; $('#hbaseScanLimit').disabled = scan.loading;
+  $('#hbaseScanReload').disabled = scan.loading || !scan.tablePath; $('#hbaseScanLimit').disabled = scan.loading; $('#hbaseRowKeyQuery').disabled = scan.loading || state.bigdata.mode !== 'client' || !state.bigdata.connected;
   $('#hbaseScanRetry').classList.toggle('hidden', !scan.error || scan.loading);
-  setText($('#hbaseScanMeta'), scan.tablePath ? `${scan.tablePath.replace(/^\/+/, '')} · 最多 ${scan.limit} 行` : '');
+  setText($('#hbaseScanMeta'), scan.tablePath ? `${scan.tablePath.replace(/^\/+/, '')} · ${scan.queryKind === 'get' ? `RowKey ${scan.rowKey}` : `最多 ${scan.limit} 行`}` : '');
 }
 function clearHbaseScanTimer() { if (state.hbaseScan.progressTimer) { clearInterval(state.hbaseScan.progressTimer); state.hbaseScan.progressTimer = null; } }
 function cancelHbaseScan() { clearHbaseScanTimer(); state.hbaseScan.loading = false; state.hbaseScan.startedAt = 0; state.gates.scan.cancel(); }
 function startHbaseScanLoading(tablePath, limit) {
   const scan = state.hbaseScan; const sameTable = scan.tablePath === tablePath;
-  clearHbaseScanTimer(); scan.tablePath = tablePath; scan.limit = limit; scan.loading = true; scan.startedAt = Date.now(); scan.error = ''; scan.matchIndex = 0;
+  clearHbaseScanTimer(); scan.tablePath = tablePath; scan.limit = limit; scan.queryKind = 'scan'; scan.rowKey = ''; scan.loading = true; scan.startedAt = Date.now(); scan.error = ''; scan.matchIndex = 0;
   if (!sameTable) { scan.rawText = ''; scan.displayText = ''; scan.structured = false; scan.parsedCount = 0; scan.skippedCount = 0; scan.truncated = false; $('#hbaseScanSearch').value = ''; }
   $('#hbaseScanLimit').value = String(limit); renderHbaseScan();
-  const update = () => { renderHbaseScan(); status(`HBase · ${tablePath} · 正在读取 · 已等待 ${Math.floor(Math.max(0, Date.now() - scan.startedAt) / 1000)} 秒`); };
-  update(); scan.progressTimer = setInterval(update, 1000);
+  renderHbaseScan(); status(`HBase · ${tablePath} · 正在读取`);
 }
 function finishHbaseScan(error = null) { const scan = state.hbaseScan; clearHbaseScanTimer(); scan.loading = false; scan.startedAt = 0; scan.error = error?.message || ''; renderHbaseScan(); }
 async function loadHbaseSample(tablePath, limit) {
@@ -617,7 +610,7 @@ async function previewRemote(remotePath, kind) {
   try { const endpoint = kind === 'files' ? '/api/sftp/preview' : '/api/hdfs/preview'; const timeout = kind === 'files' ? 30000 : state.timeouts.hdfsListMs; const result = await postJson(endpoint, { path: remotePath, maxBytes: 262144 }, { timeout }); setText($('#previewText'), prettifyJson(result.text) || '（空文件）'); if (result.truncated) setText($('#previewMeta'), `${remotePath} · 已显示前 256 KiB，内容已截断`); status(`${kind === 'hdfs' ? 'HDFS' : '服务器文件'} · 已预览 ${remotePath}`, 'success'); } catch (error) { setText($('#previewText'), error.message); status(error.message, 'error'); }
 }
 function downloadRemote(remotePath, kind) { const a = document.createElement('a'); a.href = `${kind === 'hdfs' ? '/api/hdfs/download' : '/api/sftp/download'}?path=${encodeURIComponent(remotePath)}`; a.download = ''; document.body.append(a); a.click(); a.remove(); toast(`开始下载：${remotePath.split('/').pop()}`, 'ok'); }
-async function uploadLocalFile(file) {
+async function uploadLocalFile(file, { thenHdfs = false } = {}) {
   if (!state.connected) { toast('请先连接服务器', 'err'); return; }
   const targetDir = state.cwd;
   status(`正在上传 ${file.name}…`);
@@ -629,6 +622,7 @@ async function uploadLocalFile(file) {
     toast(`已上传到 ${json.remotePath}`, 'ok');
     status(`已上传 ${file.name} · ${formatBytes(json.size)}`, 'success');
     refreshFiles();
+    if (thenHdfs) openUploadDialog(json.remotePath);
   } catch (error) {
     status(`上传失败 · ${error.message}`, 'error');
     toast(error.message, 'err');
@@ -661,66 +655,102 @@ $('#btnUploadSubmit').addEventListener('click', async () => {
   submit.disabled = true;
   setText(submit, '上传中…');
   try {
-    // Hadoop 冷启动、后台预热和大文件传输可能超过通用 30 秒请求上限。
+    // 常驻客户端直接复用 FileSystem；SSH 命令模式仍需兼容冷启动和大文件传输。
     const result = await postJson('/api/hdfs/upload', { localPath, hdfsDir }, { timeout: HDFS_UPLOAD_TIMEOUT });
     closeDialog('uploadDialog'); toast(`已上传到 ${result.hdfsPath}`, 'ok');
     if (state.hdfsCwd.replace(/\/+$/, '') === hdfsDir.replace(/\/+$/, '')) refreshHdfs();
   } catch (error) { setText($('#uploadError'), error.message); }
   finally { submit.disabled = false; setText(submit, '上传'); }
 });
-function confirmDelete(remotePath, kind) { state.pendingConfirm = { action: async () => { await postJson('/api/sftp/delete', { path: remotePath, kind, confirmed: true }); toast('删除成功', 'ok'); refreshFiles(); } }; setText($('#confirmTitle'), `确认删除${kind === 'dir' ? '空目录' : '文件'}`); setText($('#confirmMessage'), '删除不可恢复，请确认目标路径正确。'); setText($('#confirmTarget'), remotePath); openDialog('confirmDialog', $('#btnConfirmAction')); }
+function confirmDelete(remotePath, kind, resource = 'files') { const isHdfs = resource === 'hdfs'; state.pendingConfirm = { action: async () => { await postJson(isHdfs ? '/api/hdfs/delete' : '/api/sftp/delete', { path: remotePath, kind, confirmed: true }, { timeout: isHdfs ? state.timeouts.hdfsListMs : 30000 }); toast('删除成功', 'ok'); if (isHdfs) refreshHdfs(); else refreshFiles(); } }; setText($('#confirmTitle'), `确认删除${isHdfs ? ' HDFS ' : ''}${kind === 'dir' ? '空目录' : '文件'}`); setText($('#confirmMessage'), kind === 'dir' ? '仅允许删除空目录，操作不可恢复，请确认目标路径正确。' : '删除不可恢复，请确认目标路径正确。'); setText($('#confirmTarget'), remotePath); openDialog('confirmDialog', $('#btnConfirmAction')); }
 $('#btnConfirmAction').addEventListener('click', async () => { const pending = state.pendingConfirm; state.pendingConfirm = null; closeDialog('confirmDialog'); if (!pending) return; try { await pending.action(); } catch (error) { toast(error.message, 'err'); } });
 
-function openNameDialog(kind) { state.pendingName = kind; setText($('#nameTitle'), kind === 'mkdir' ? '新建目录' : '新建文件'); setText($('#nameLabel'), `${kind === 'mkdir' ? '目录' : '文件'}名称（当前目录：${state.cwd}）`); $('#nameInput').value = ''; setText($('#nameError'), ''); openDialog('nameDialog', $('#nameInput')); }
-$('#btnNameSubmit').addEventListener('click', async () => { const name = $('#nameInput').value.trim(); const invalid = !name || /[\\/]/.test(name) || name === '.' || name === '..'; $('#nameInput').toggleAttribute('aria-invalid', invalid); if (invalid) { setText($('#nameError'), '请输入不含路径分隔符的名称'); return; } const kind = state.pendingName; try { await postJson(`/api/sftp/${kind}`, { path: pathJoin(state.cwd, name) }); closeDialog('nameDialog'); toast(kind === 'mkdir' ? '目录已创建' : '文件已创建', 'ok'); refreshFiles(); } catch (error) { setText($('#nameError'), error.message); } });
-
-function renderBilling() { const root = $('#billingContent'); root.replaceChildren(); const search = $('#billSearch').value.trim().toLowerCase(); const suffix = $('#billSuffix').value.trim() || '597_2606'; const month = $('#billMonth').value.trim() || '202410'; const ns = $('#billNs').value.trim() || 'ns_aibcp_dev'; BILLING.forEach((card) => { const rows = card.rows.map(([label, value]) => [label, value.replace('{ns}', ns).replace('{month}', month)]).filter(([label, value]) => !search || `${label}${value}`.toLowerCase().includes(search)); if (!rows.length) return; const section = el('section', { class: 'billing-card' }, el('h3', { text: card.title })); rows.forEach(([label, value]) => { const code = el('code', { text: value, title: value }); const copy = el('button', { class: 'fact', type: 'button', text: '复制' }); copy.addEventListener('click', async () => { try { await navigator.clipboard.writeText(value); toast('已复制', 'ok'); } catch (_) { toast('复制失败', 'err'); } }); section.append(el('div', { class: 'billing-row' }, el('span', { text: label }), code, copy)); }); root.append(section); }); }
+function openNameDialog(kind, resource = 'files') {
+  state.pendingName = { kind, resource };
+  const cwd = resource === 'hdfs' ? state.hdfsCwd : state.cwd;
+  setText($('#nameTitle'), kind === 'mkdir' ? '新建目录' : '新建文件');
+  setText($('#nameLabel'), `${kind === 'mkdir' ? '目录' : '文件'}名称（当前${resource === 'hdfs' ? ' HDFS ' : ''}目录：${cwd}）`);
+  $('#nameInput').value = ''; setText($('#nameError'), '');
+  openDialog('nameDialog', $('#nameInput'));
+}
+$('#btnNameSubmit').addEventListener('click', async () => { const name = $('#nameInput').value.trim(); const invalid = !name || /[\\/]/.test(name) || name === '.' || name === '..'; $('#nameInput').toggleAttribute('aria-invalid', invalid); if (invalid) { setText($('#nameError'), '请输入不含路径分隔符的名称'); return; } const pending = state.pendingName; const kind = pending.kind; const isHdfs = pending.resource === 'hdfs'; try { const result = isHdfs ? await postJson(`/api/hdfs/${kind}`, { dir: state.hdfsCwd, name }) : await postJson(`/api/sftp/${kind}`, { path: pathJoin(state.cwd, name) }); closeDialog('nameDialog'); toast(kind === 'mkdir' ? '目录已创建' : '文件已创建', 'ok'); status(`${kind === 'mkdir' ? '目录' : '文件'}已创建：${isHdfs ? result.path : pathJoin(state.cwd, name)}`, 'success'); if (isHdfs) void refreshHdfs({ refresh: true }); else refreshFiles(); } catch (error) { setText($('#nameError'), error.message); } });
 
 $('#btnConnect').addEventListener('click', () => { renderConnectionList(); openDialog('connectionDialog', $('#connectionEnvironmentTestSummary')); });
-$('#btnBilling').addEventListener('click', () => { renderBilling(); openDialog('billingDialog', $('#billSearch')); });
-$('#btnCdr').addEventListener('click', () => { if (!$('#cdrFrame').getAttribute('src')) $('#cdrFrame').src = '/cdr/'; openDialog('cdrDialog'); });
-$('#billSearch').addEventListener('input', renderBilling); ['billSuffix', 'billMonth', 'billNs'].forEach((id) => $( `#${id}`).addEventListener('input', renderBilling));
 
 Object.keys(RESOURCE_META).forEach((kind) => {
   const meta = RESOURCE_META[kind]; const view = resourceState(kind); const search = $(`#${meta.searchId}`); const sort = $(`#${meta.sortId}`);
   search?.addEventListener('input', () => { view.query = search.value; renderResourceView(kind); });
   sort?.addEventListener('change', () => { const [sortKey, sortDirection] = sort.value.split('-'); view.sortKey = sortKey; view.sortDirection = sortDirection; renderResourceView(kind); });
-  $(`#${meta.retryId}`)?.addEventListener('click', () => { void refreshResource(kind); });
+  $(`#${meta.retryId}`)?.addEventListener('click', () => { void refreshResource(kind, { refresh: true }); });
   $(`#${meta.favoriteButtonId}`)?.addEventListener('click', () => openFavoriteDialog(kind));
 });
-function switchTab(tab, { load = true } = {}) { $$('.tabs .tab').forEach((button) => { const active = button.dataset.tab === tab; button.classList.toggle('active', active); button.setAttribute('aria-selected', String(active)); }); $('#filesPane').classList.toggle('hidden', tab !== 'files'); $('#hdfsPane').classList.toggle('hidden', tab !== 'hdfs'); $('#hbasePane').classList.toggle('hidden', tab !== 'hbase'); if (load && tab === 'hdfs' && state.connected && !state.loaded.hdfs) void refreshHdfs(); if (load && tab === 'hbase' && state.connected && !state.loaded.hbase) void refreshHbase(); }
+function switchTab(tab, { load = true } = {}) { $$('.tabs .tab').forEach((button) => { const active = button.dataset.tab === tab; button.classList.toggle('active', active); button.setAttribute('aria-selected', String(active)); }); $('#filesPane').classList.toggle('hidden', tab !== 'files'); $('#hdfsPane').classList.toggle('hidden', tab !== 'hdfs'); $('#hbasePane').classList.toggle('hidden', tab !== 'hbase'); if (load && tab === 'hdfs' && resourceConnected('hdfs') && !state.loaded.hdfs) void refreshHdfs(); if (load && tab === 'hbase' && resourceConnected('hbase') && !state.loaded.hbase) void refreshHbase(); }
 $$('.tabs .tab').forEach((button) => button.addEventListener('click', () => switchTab(button.dataset.tab)));
-$('#btnRefresh').addEventListener('click', () => { void refreshFiles(); }); $('#btnHdfsRefresh').addEventListener('click', () => { void refreshHdfs(); }); $('#btnMkdir').addEventListener('click', () => state.connected ? openNameDialog('mkdir') : toast('请先连接服务器', 'err')); $('#btnTouch').addEventListener('click', () => state.connected ? openNameDialog('touch') : toast('请先连接服务器', 'err'));
+$('#btnRefresh').addEventListener('click', () => { void refreshFiles({ refresh: true }); }); $('#btnHdfsRefresh').addEventListener('click', () => { void refreshHdfs({ refresh: true }); }); $('#btnMkdir').addEventListener('click', () => state.connected ? openNameDialog('mkdir') : toast('请先连接服务器', 'err')); $('#btnTouch').addEventListener('click', () => state.connected ? openNameDialog('touch') : toast('请先连接服务器', 'err'));
 $('#btnUploadLocal').addEventListener('click', () => { if (!state.connected) { toast('请先连接服务器', 'err'); return; } const input = $('#localFileInput'); input.value = ''; input.click(); });
 $('#localFileInput').addEventListener('change', () => { const file = $('#localFileInput').files && $('#localFileInput').files[0]; if (!file) return; void uploadLocalFile(file); });
+$('#btnHdfsMkdir').addEventListener('click', () => state.connected ? openNameDialog('mkdir', 'hdfs') : toast('请先连接服务器', 'err'));
+$('#btnHdfsTouch').addEventListener('click', () => state.connected ? openNameDialog('touch', 'hdfs') : toast('请先连接服务器', 'err'));
+// HDFS 上传：本机文件先落到服务器当前目录，再弹出 HDFS 上传框确认目标目录
+$('#btnHdfsUploadLocal').addEventListener('click', () => { if (!state.connected) { toast('请先连接服务器', 'err'); return; } const input = $('#hdfsLocalFileInput'); input.value = ''; input.click(); });
+$('#hdfsLocalFileInput').addEventListener('change', () => { const file = $('#hdfsLocalFileInput').files && $('#hdfsLocalFileInput').files[0]; if (!file) return; void uploadLocalFile(file, { thenHdfs: true }); });
 $('#btnUp').addEventListener('click', () => { if (state.cwd === '~' || state.cwd === state.home) return; void navigateResource('files', state.cwd.replace(/\/[^/]+\/?$/, '') || '/'); }); $('#btnHdfsUp').addEventListener('click', () => { if (state.hdfsCwd !== '/') void navigateResource('hdfs', state.hdfsCwd.replace(/\/[^/]+\/?$/, '') || '/'); });
-$('#btnHbaseRefresh').addEventListener('click', () => { void refreshHbase(); }); $('#btnHbaseUp').addEventListener('click', () => { if (state.hbaseCwd !== '/') void navigateResource('hbase', '/'); }); $('#btnHbaseGoto').addEventListener('click', () => { const value = $('#hbasePathInput').value.trim(); if (!value) return; if (value !== '/' && !/^\/[^/]+$/.test(value)) return toast('HBase 路径只能为 / 或 /namespace', 'err'); void navigateResource('hbase', value); }); $('#hbasePathInput').addEventListener('keydown', (event) => { if (event.key === 'Enter') $('#btnHbaseGoto').click(); });
+$('#btnHbaseRefresh').addEventListener('click', () => { void refreshHbase({ refresh: true }); }); $('#btnHbaseUp').addEventListener('click', () => { if (state.hbaseCwd !== '/') void navigateResource('hbase', '/'); }); $('#btnHbaseGoto').addEventListener('click', () => { const value = $('#hbasePathInput').value.trim(); if (!value) return; if (value !== '/' && !/^\/[^/]+$/.test(value)) return toast('HBase 路径只能为 / 或 /namespace', 'err'); void navigateResource('hbase', value); }); $('#hbasePathInput').addEventListener('keydown', (event) => { if (event.key === 'Enter') $('#btnHbaseGoto').click(); });
 $('#btnGoto').addEventListener('click', () => { const value = $('#pathInput').value.trim(); if (value) void navigateResource('files', value); }); $('#pathInput').addEventListener('keydown', (event) => { if (event.key === 'Enter') $('#btnGoto').click(); }); $('#btnHdfsGoto').addEventListener('click', () => { const value = $('#hdfsPathInput').value.trim(); if (!value.startsWith('/')) return toast('HDFS 路径必须以 / 开头', 'err'); void navigateResource('hdfs', value); }); $('#hdfsPathInput').addEventListener('keydown', (event) => { if (event.key === 'Enter') $('#btnHdfsGoto').click(); }); $$('[data-hdfs-path]').forEach((button) => button.addEventListener('click', () => { switchTab('hdfs', { load: false }); void navigateResource('hdfs', button.dataset.hdfsPath); }));
 $('#hbaseScanSearch').addEventListener('input', () => { state.hbaseScan.matchIndex = 0; renderHbaseScan(); });
 $('#hbaseScanPrev').addEventListener('click', () => moveHbaseScanMatch(-1)); $('#hbaseScanNext').addEventListener('click', () => moveHbaseScanMatch(1));
 $('#hbaseScanReload').addEventListener('click', () => { if (state.hbaseScan.tablePath) void loadHbaseSample(state.hbaseScan.tablePath, Number($('#hbaseScanLimit').value) || 20); });
 $('#hbaseScanRetry').addEventListener('click', () => { if (state.hbaseScan.tablePath) void loadHbaseSample(state.hbaseScan.tablePath, Number($('#hbaseScanLimit').value) || state.hbaseScan.limit); });
+$('#hbaseRowKeyQuery').addEventListener('click', () => { const rowKey = $('#hbaseRowKeyInput').value; if (!rowKey) return toast('请输入完整 RowKey', 'err'); if (!state.hbaseScan.tablePath) return; void loadHbaseRowKey(state.hbaseScan.tablePath, rowKey); });
+$('#hbaseRowKeyInput').addEventListener('keydown', (event) => { if (event.key === 'Enter') { event.preventDefault(); $('#hbaseRowKeyQuery').click(); } });
 $('#hbaseScanCopy').addEventListener('click', async () => { try { await navigator.clipboard.writeText(state.hbaseScan.rawText || ''); toast('已复制原始结果', 'ok'); } catch (_) { toast('复制失败，请手动选择文本', 'err'); } });
 $('#insertSqlCopy').addEventListener('click', async () => { try { const sql = $('#insertSqlText').textContent || ''; await navigator.clipboard.writeText(sql); setText($('#insertSqlCopyState'), `已复制 ${sql.length.toLocaleString('zh-CN')} 个字符`); toast('INSERT 语句已复制', 'ok'); } catch (_) { setText($('#insertSqlCopyState'), '复制失败，请手动选择文本'); toast('复制失败，请手动选择文本', 'err'); } });
 
 const DB_SOURCE_LABEL = { udal: '测试环境 · MySQL / UDAL', doris: 'Doris', voyage: '工程环境 · Voyage', archive: '工程环境 · 内存档案' };
 function connectionConfig(source) {
   if (source === 'ssh') return state.config || state.connectionProfiles.ssh || {};
+  if (source === 'bigdata') return state.bigdata.config || state.connectionProfiles.bigdata || {};
   if (source === 'voyage') return state.voyage.config || state.connectionProfiles.voyage || {};
   if (source === 'archive') return state.archive.config || state.connectionProfiles.archive || {};
   return state.databases[source].config || state.connectionProfiles[source] || {};
 }
+async function loadHbaseRowKey(tablePath, rowKey) {
+  const request = state.gates.scan.next(); const scan = state.hbaseScan;
+  clearHbaseScanTimer(); scan.tablePath = tablePath; scan.queryKind = 'get'; scan.rowKey = rowKey; scan.loading = true; scan.startedAt = Date.now(); scan.error = ''; scan.matchIndex = 0; renderHbaseScan();
+  const update = () => { renderHbaseScan(); status(`HBase · ${tablePath} · 正在精确查询 RowKey`); }; update(); scan.progressTimer = setInterval(update, 1000);
+  try {
+    const result = await postJson('/api/hbase/get', { path: tablePath, rowKey }, { signal: request.signal, timeout: 60000 });
+    if (!request.isCurrent()) return null;
+    scan.rawText = String(result.text || ''); scan.truncated = Boolean(result.truncated); scan.structured = false; scan.parsedCount = Number(result.rowCount) || 0; scan.skippedCount = 0;
+    const formatted = formatHbaseScanText(tablePath, scan.rawText); scan.structured = formatted.structured; scan.parsedCount = formatted.parsedCount || scan.parsedCount; scan.skippedCount = formatted.skippedCount; scan.displayText = formatted.structured ? formatted.text : (scan.rawText || '（未找到该 RowKey）');
+    finishHbaseScan(); status(`HBase · ${tablePath} · RowKey 查询完成`, 'success'); return result;
+  } catch (error) { if (!request.isCurrent() || error.code === 'REQUEST_ABORTED') return null; finishHbaseScan(error); status(error.message, 'error'); return null; }
+}
 function renderConnectionList() {
-  for (const source of ['ssh', 'udal', 'doris', 'voyage', 'archive']) {
-    const config = connectionConfig(source); const connected = source === 'ssh' ? state.connected : source === 'voyage' ? state.voyage.connected : source === 'archive' ? state.archive.connected : state.databases[source].connected;
+  for (const source of ['ssh', 'bigdata', 'udal', 'doris', 'voyage', 'archive']) {
+    const config = connectionConfig(source); const connected = source === 'ssh' ? state.connected : source === 'bigdata' ? state.bigdata.connected : source === 'voyage' ? state.voyage.connected : source === 'archive' ? state.archive.connected : state.databases[source].connected;
+    if (source === 'bigdata') {
+      const configured = Boolean(config.configured); const clientMode = state.bigdata.mode === 'client';
+      const values = { endpoint: `${config.remoteHost || '127.0.0.1'}:${config.remotePort || '—'}`, token: config.hasToken ? '已配置' : '未配置', defaultMode: config.defaultMode === 'client' ? '常驻客户端' : 'SSH 命令', cache: `${Math.round((Number(config.listCacheMs) || 30000) / 1000)} 秒`, timeout: `${Math.round((Number(config.timeoutMs) || 30000) / 1000)} 秒` };
+      for (const [field, value] of Object.entries(values)) setText(document.querySelector(`[data-connection-field="bigdata.${field}"]`), value);
+      document.querySelector('[data-connection-dot="bigdata"]')?.classList.toggle('on', connected);
+      setText(document.querySelector('[data-connection-status="bigdata"]'), connected ? '已连接' : clientMode ? (configured ? '未连接' : '待配置') : 'SSH 命令模式');
+      setText(document.querySelector('[data-connection-error="bigdata"]'), state.connectionErrors.bigdata || (configured ? 'HDFS 内容与 HBase 扫描实时读取；命名空间和表列表缓存 30 秒。' : '请在本机 .env 配置 BIGDATA_CLIENT_TOKEN。'));
+      const button = document.querySelector('[data-connection-connect="bigdata"]'); if (button) { button.disabled = !configured || !state.connected; setText(button, configured ? (connected ? '重新连接' : '连接客户端') : '待配置'); }
+      document.querySelector('[data-connection-use-ssh]')?.classList.toggle('primary', !clientMode);
+      continue;
+    }
     if (source === 'voyage') {
-      const mapping = config.mappings?.CRM3DB || {}; const configured = Boolean(config.configured);
+      const mapping = config.mappings?.CRM3DB || {}; const tokenInput = $('#voyageTokenInput');
+      const validMapping = (item = {}) => Number.isInteger(Number(item.datasourceId)) && Number(item.datasourceId) > 0 && Boolean(item.database && item.schema);
+      const baseConfigured = Boolean(config.apiUrl && validMapping(config.mappings?.CRM3DB) && validMapping(config.mappings?.CONFIGDB_CNOS_JF_TEST));
+      const hasUsableToken = Boolean(config.hasToken || tokenInput?.value.trim()); const configured = baseConfigured && hasUsableToken;
       const values = { apiUrl: config.apiUrl || '—', datasource: mapping.datasourceId || '—', database: mapping.database && mapping.schema ? `${mapping.database} / ${mapping.schema}` : '—', token: config.hasToken ? '已配置' : '未配置', timeoutMs: `${Math.round((Number(config.timeoutMs) || 15000) / 1000)} 秒` };
       for (const [field, value] of Object.entries(values)) { const node = document.querySelector(`[data-connection-field="voyage.${field}"]`); setText(node, value); if (field === 'apiUrl') node?.setAttribute('title', value); }
       document.querySelector('[data-connection-dot="voyage"]')?.classList.toggle('on', connected);
-      setText(document.querySelector('[data-connection-status="voyage"]'), connected ? '已连接' : configured ? '未连接' : '待配置');
-      setText(document.querySelector('[data-connection-error="voyage"]'), state.connectionErrors.voyage || (configured ? '使用固定只读 SQL 模板查询工程环境。' : '请在本机 .env 填写 VOYAGE_TOKEN。'));
-      const button = document.querySelector('[data-connection-connect="voyage"]'); if (button) { button.disabled = !configured; setText(button, configured ? (connected ? '重新连接' : '连接') : '待配置'); }
+      setText(document.querySelector('[data-connection-status="voyage"]'), connected ? '已连接' : !baseConfigured ? '待配置' : '未连接');
+      setText(document.querySelector('[data-connection-error="voyage"]'), state.connectionErrors.voyage || (!baseConfigured ? '请在本机 .env 补充 Voyage 接口与数据源映射。' : config.hasToken ? '使用固定只读 SQL 模板查询工程环境。' : '请输入 VOYAGE_TOKEN，或在本机 .env 配置。'));
+      const button = document.querySelector('[data-connection-connect="voyage"]'); if (button) { button.disabled = !configured; setText(button, !baseConfigured ? '待配置' : !hasUsableToken ? '请输入 Token' : connected ? '重新连接' : '连接'); }
       continue;
     }
     if (source === 'archive') {
@@ -743,7 +773,7 @@ function renderConnectionList() {
   }
 }
 async function connectSource(source) {
-  if (!['ssh', 'udal', 'doris', 'voyage', 'archive'].includes(source)) return;
+  if (!['ssh', 'bigdata', 'udal', 'doris', 'voyage', 'archive'].includes(source)) return;
   const button = document.querySelector(`[data-connection-connect="${source}"]`);
   button.disabled = true; setText(button, '连接中…'); state.connectionErrors[source] = '';
   setText(document.querySelector(`[data-connection-error="${source}"]`), '正在连接…');
@@ -751,10 +781,15 @@ async function connectSource(source) {
     if (source === 'ssh') {
       const response = await postJson('/api/connect', {}, { timeout: 30000 });
       setConnected(true, response.config || state.connectionProfiles.ssh); state.home = response.home || '~'; state.cwd = state.home;
-      renderConnectionList(); toast('SSH / SFTP / HDFS 已连接', 'ok'); await refreshFiles();
+      renderConnectionList(); toast('SSH / SFTP 已连接', 'ok'); await refreshFiles();
+    } else if (source === 'bigdata') {
+      const response = await postJson('/api/bigdata/connect', {}, { timeout: 30000 }); state.bigdata = { connected: Boolean(response.connected), mode: response.mode || 'client', config: response.config || state.connectionProfiles.bigdata };
+      ['hdfs', 'hbase'].forEach((kind) => resetResourceState(kind)); renderBigdataSource(); renderConnectionList(); toast('HDFS/HBase 常驻客户端服务已连接', 'ok');
     } else if (source === 'voyage') {
-      clearQueryResult({ all: true }); const response = await postJson('/api/voyage/connect', {}, { timeout: 30000 });
+      const token = $('#voyageTokenInput')?.value.trim() || '';
+      clearQueryResult({ all: true }); const response = await postJson('/api/voyage/connect', token ? { token } : {}, { timeout: 30000 });
       state.voyage = { connected: Boolean(response.connected), config: response.config || state.connectionProfiles.voyage };
+      state.connectionProfiles.voyage = response.config || state.connectionProfiles.voyage;
       renderConnectionList(); renderDbStatus(); toast('工程环境 Voyage 在线数据库已连接', 'ok');
     } else if (source === 'archive') {
       clearQueryResult({ all: true }); const response = await postJson('/api/archive/connect', {}, { timeout: 30000 });
@@ -767,20 +802,27 @@ async function connectSource(source) {
     }
   } catch (error) {
     state.connectionErrors[source] = error.message;
-    if (source === 'ssh') setConnected(false); else if (source === 'voyage') state.voyage = { connected: false, config: state.voyage.config || state.connectionProfiles.voyage }; else if (source === 'archive') state.archive = { connected: false, config: state.archive.config || state.connectionProfiles.archive }; else state.databases[source] = { connected: false, config: state.databases[source].config || state.connectionProfiles[source], password: '' };
+    if (source === 'ssh') setConnected(false); else if (source === 'bigdata') state.bigdata = { connected: false, mode: 'client', config: state.bigdata.config || state.connectionProfiles.bigdata }; else if (source === 'voyage') state.voyage = { connected: false, config: state.voyage.config || state.connectionProfiles.voyage }; else if (source === 'archive') state.archive = { connected: false, config: state.archive.config || state.connectionProfiles.archive }; else state.databases[source] = { connected: false, config: state.databases[source].config || state.connectionProfiles[source], password: '' };
     renderConnectionList(); renderDbStatus(); toast(error.message, 'err');
-  } finally { const connected = source === 'ssh' ? state.connected : source === 'voyage' ? state.voyage.connected : source === 'archive' ? state.archive.connected : state.databases[source].connected; const configured = source === 'voyage' ? Boolean(connectionConfig('voyage').configured) : source !== 'archive' || Boolean(connectionConfig('archive').configured); button.disabled = !configured; setText(button, configured ? (connected ? '重新连接' : '连接') : '待配置'); }
+  } finally { if (source === 'voyage' && $('#voyageTokenInput')) $('#voyageTokenInput').value = ''; renderConnectionList(); }
+}
+async function useSshBigdataMode() {
+  try { const response = await postJson('/api/bigdata/use-ssh', {}); state.bigdata = { connected: false, mode: 'ssh', config: response.config || state.bigdata.config || state.connectionProfiles.bigdata }; state.connectionErrors.bigdata = ''; ['hdfs', 'hbase'].forEach((kind) => resetResourceState(kind)); renderBigdataSource(); renderConnectionList(); toast('HDFS/HBase 已切换为 SSH 命令模式', 'ok'); }
+  catch (error) { state.connectionErrors.bigdata = error.message; renderConnectionList(); toast(error.message, 'err'); }
 }
 function activeDatabaseSource() { return $('#querySourceSelect')?.value === 'voyage' ? 'voyage' : 'udal'; }
+function activeDatabaseSchema(source = activeDatabaseSource()) { return source === 'voyage' ? ($('#querySchemaSelect')?.value || 'bill_inmemory') : undefined; }
+function querySourcePayload(source = activeDatabaseSource(), schema = activeDatabaseSchema(source)) { return { source, ...(source === 'voyage' ? { schema: schema || 'bill_inmemory' } : {}) }; }
+function syncQuerySchemaControl() { if ($('#querySchemaSelect')) $('#querySchemaSelect').disabled = activeDatabaseSource() !== 'voyage'; }
 function isDatabaseSourceConnected(source = activeDatabaseSource()) { return source === 'voyage' ? state.voyage.connected : state.databases.udal.connected; }
 function databaseSourceName(source = activeDatabaseSource()) { return DB_SOURCE_LABEL[source] || source; }
-const QUERY_NAMES = ['phone', 'productInstance', 'threshold', 'archive'];
+const QUERY_NAMES = ['phone', 'productInstance', 'eventType', 'threshold', 'archive'];
 const QUERY_CONTROLS = {
-  phone: ['btnPhoneQuery', 'btnPhoneCancel'], productInstance: ['btnProductInstanceQuery', 'btnProductInstanceCancel'], threshold: ['btnThresholdQuery', 'btnThresholdCancel'], archive: ['btnArchiveQuery', 'btnArchiveCancel'],
+  phone: ['btnPhoneQuery', 'btnPhoneCancel'], productInstance: ['btnProductInstanceQuery', 'btnProductInstanceCancel'], eventType: ['btnEventTypeQuery', 'btnEventTypeCancel'], threshold: ['btnThresholdQuery', 'btnThresholdCancel'], archive: ['btnArchiveQuery', 'btnArchiveCancel'],
 };
 function queryModel(query = state.activeQuery) { return state[`${query}Query`]; }
 function queryResultRoot(query = state.activeQuery) { return document.querySelector(`[data-query-result="${query}"]`); }
-function queryHint(query) { const sourceName = databaseSourceName(); return query === 'threshold' ? `请先连接${sourceName}，再输入 A 端产品实例 ID。` : query === 'productInstance' ? `请先连接${sourceName}，再输入产品实例 ID。` : query === 'archive' ? '请先在工程环境配置并连接内存档案服务。' : `请先连接${sourceName}，再输入号码。`; }
+function queryHint(query) { const sourceName = databaseSourceName(); return query === 'eventType' ? `请先连接${sourceName}，再选择事件类型。` : query === 'threshold' ? `请先连接${sourceName}，再输入 A 端产品实例 ID。` : query === 'productInstance' ? `请先连接${sourceName}，再输入产品实例 ID。` : query === 'archive' ? '请先在工程环境配置并连接内存档案服务。' : `请先连接${sourceName}，再输入号码。`; }
 function renderQueryEmpty(query) {
   queryResultRoot(query).replaceChildren(el('div', { class: 'query-empty' }, el('strong', { text: '等待查询' }), el('span', { text: queryHint(query) }), el('button', { class: 'wb-button primary', type: 'button', text: '打开连接设置', on: { click: () => { renderConnectionList(); openDialog('connectionDialog'); } } })));
 }
@@ -815,27 +857,34 @@ function displayValue(value, column = '') {
   return text;
 }
 function rowField(row, name) { const wanted = String(name).toLowerCase(); const key = Object.keys(row || {}).find((candidate) => candidate.toLowerCase() === wanted); return key === undefined ? undefined : row[key]; }
-function renderTable(rows) {
+function renderTable(rows, { rowAction } = {}) {
   if (!rows?.length) return el('div', { class: 'query-section-empty', text: '无数据或关联缺失' });
   const columns = [...new Set(rows.flatMap((row) => Object.keys(row)))];
-  const head = el('tr'); columns.forEach((column) => head.append(el('th', { text: column })));
-  const body = el('tbody'); rows.forEach((row) => { const tr = el('tr'); columns.forEach((column) => { const text = displayValue(row[column], column); tr.append(el('td', { text, title: text })); }); body.append(tr); });
+  const head = el('tr'); columns.forEach((column) => head.append(el('th', { text: column }))); if (rowAction) head.append(el('th', { text: '操作' }));
+  const body = el('tbody'); rows.forEach((row) => { const tr = el('tr'); columns.forEach((column) => { const text = displayValue(row[column], column); tr.append(el('td', { text, title: text })); }); if (rowAction) tr.append(el('td', { class: 'query-table-action' }, rowAction(row))); body.append(tr); });
   return el('div', { class: 'query-table-wrap' }, el('table', { class: 'query-table' }, el('thead', {}, head), body));
 }
-function resultSection(title, rows, { open = false, actions = [], table = '' } = {}) {
+function resultSection(title, rows, { open = false, actions = [], table = '', rowAction } = {}) {
   if (!rows?.length) {
     const fragment = document.createDocumentFragment(); const availableActions = actions.filter((action) => !action.disabled);
     if (availableActions.length) fragment.append(el('div', { class: 'query-row-actions' }, ...availableActions));
     return fragment;
   }
   const tableSuffix = table ? ` · ${table}` : '';
-  const details = el('details', { class: 'query-section', ...(open ? { open: '' } : {}) }, el('summary', { text: `${title} · ${rows?.length || 0} 条${tableSuffix}` }), renderTable(rows));
+  const details = el('details', { class: 'query-section', ...(open ? { open: '' } : {}) }, el('summary', { text: `${title} · ${rows?.length || 0} 条${tableSuffix}` }), renderTable(rows, { rowAction }));
   if (actions.length) details.append(el('div', { class: 'query-row-actions' }, ...actions));
   return details;
 }
 const RESULT_TABLE_BY_KEY = Object.freeze(Object.fromEntries(INSERT_TABLES.map(({ dataKey, table }) => [dataKey, table])));
 const STEP_TABLE_RULES = Object.freeze([
-  [/定价计划/, 'pricing_plan'], [/销售品定义/, 'offer'], [/销售品实例属性/, 'offer_inst_attr'], [/销售品实例费用/, 'offer_inst_fee_info'],
+  [/源事件类型映射/, 'source_event_type_format'], [/基础事件类型格式/, 'ratable_event_type_format'], [/事件格式定义/, 'ratable_event_format'],
+  [/事件格式字段/, 'ratable_event_format_item'], [/资源属性定义/, 'tpr_resource_attr'], [/详单入库目标表/, 'TPL_INDB_TABLE_PG'],
+  [/事件定价策略/, 'event_pricing_strategy'], [/定价组合/, 'pricing_combine'], [/定价对象/, 'pricing_object'],
+  [/事件关联套餐定义/, 'offer'], [/事件关联套餐实例/, 'offer_inst'], [/套餐实例产品关系/, 'offer_prod_inst_rel'], [/拥有套餐的产品实例/, 'prod_inst'],
+  [/定价计划/, 'pricing_plan'], [/销售品定义/, 'offer'], [/销售品实例关系/, 'offer_inst_rel'], [/关联销售品实例/, 'offer_inst'],
+  [/销售品实例费用属性/, 'offer_inst_fee_attr'], [/销售品实例属性/, 'offer_inst_attr'], [/销售品实例费用/, 'offer_inst_fee_info'],
+  [/销售品关联对象/, 'offer_obj_inst_rel'], [/销售品关联资源/, 'offer_res_inst_rel'], [/销售品实例担保/, 'offer_inst_assure'],
+  [/销售品优惠券关系/, 'offer_coupon_inst_rel'], [/SKU 实例/, 'sku_inst'], [/增值业务订购关系/, 'va_order_rel'],
   [/销售品实例/, 'offer_inst'], [/产品销售品关系/, 'offer_prod_inst_rel'],
   [/产品账户关系/, 'prod_inst_acct_rel'], [/账户|查账户候选/, 'account'], [/产品定义/, 'product'], [/档位提醒配置|产品实例属性/, 'prod_inst_attr'],
   [/A\/Z 产品实例关系|产品实例关系/, 'prod_inst_rel'], [/产品实例状态/, 'prod_inst_state'], [/产品实例扩展/, 'prod_inst_ext'],
@@ -843,13 +892,21 @@ const STEP_TABLE_RULES = Object.freeze([
   [/产品号码关联/, 'prod_inst_acc_nbr_rela'], [/产品实例参与人/, 'prod_inst_party'], [/产品资源实例关系/, 'prod_res_inst_rel'],
   [/关联产品实例|接入产品实例|终端产品实例|号码产品实例|产品实例档案|同客户其他产品/, 'prod_inst'],
 ]);
-function resultTable(dataKey) { return RESULT_TABLE_BY_KEY[dataKey] || ''; }
+function physicalTable(result, logicalTable) {
+  if (!logicalTable) return '';
+  for (const step of result?.steps || []) {
+    const mapped = (step.tableMap || []).find((item) => item.logicalTable === logicalTable);
+    if (mapped) return mapped.physicalTable;
+  }
+  return logicalTable;
+}
+function resultTable(dataKey, result) { return physicalTable(result, RESULT_TABLE_BY_KEY[dataKey] || ''); }
 function tableForStep(name) { return STEP_TABLE_RULES.find(([pattern]) => pattern.test(String(name || '')))?.[1] || '—'; }
-function queryStepRow(step) { return { 步骤: step.name, 数据表: tableForStep(step.name), 状态: step.status, 行数: step.count, 数据源: step.source, 逻辑库: step.database, 读取时间: step.readAt, 错误: step.message || '' }; }
+function queryStepRow(step) { const physicalTables = (step.tableMap || []).map((item) => item.physicalTable).join(', '); const mappedColumns = (step.columnMap || []).map((item) => `${item.logicalColumn}→${item.physicalColumn}`).join(', '); return { 步骤: step.name, 逻辑表: tableForStep(step.name), 实际表: physicalTables || tableForStep(step.name), 字段映射: mappedColumns || '—', 状态: step.status, 行数: step.count, 数据源: step.source, 逻辑库: step.database, Schema: step.schema || '—', 读取时间: step.readAt, 错误: step.message || '' }; }
 function appendFailedSteps(root, steps) {
   const failed = (steps || []).filter((step) => step.status === 'error'); if (!failed.length) return;
   const list = el('ul', { class: 'query-step-list' });
-  failed.forEach((step) => { const table = tableForStep(step.name); list.append(el('li', { class: 'query-step error' }, el('strong', { text: table === '—' ? step.name : `${step.name} · ${table}` }), el('span', { text: `${step.database} · ${step.message}` }))); });
+  failed.forEach((step) => { const table = tableForStep(step.name); const physical = (step.tableMap || []).map((item) => item.physicalTable).join(', '); list.append(el('li', { class: 'query-step error' }, el('strong', { text: table === '—' ? step.name : `${step.name} · ${table}${physical ? ` → ${physical}` : ''}` }), el('span', { text: `${step.database} · ${step.message}` }))); });
   root.append(list);
 }
 function renderStructuredValue(value, label = '档案内容', depth = 0) {
@@ -880,67 +937,129 @@ function renderQueryResult(result) {
   const query = result.productInstanceId ? 'productInstance' : 'phone'; queryModel(query).result = result; const root = queryResultRoot(query); root.replaceChildren(); const data = result.data || {};
   const statusText = { complete: '查询完成', partial: '部分完成', empty: '无匹配', failed: '查询失败' }[result.status] || result.status;
   const identifier = result.productInstanceId ? `产品实例 ${result.productInstanceId}` : `号码 ${result.phone}`;
-  const summary = el('div', { class: 'query-summary' }, el('span', { class: `summary-chip ${result.status === 'partial' ? 'warn' : result.status === 'failed' ? 'err' : ''}`, text: statusText }), el('span', { class: 'summary-chip', text: databaseSourceName(result.source) }), el('span', { class: 'summary-chip', text: identifier }), el('span', { class: 'summary-chip', text: `共 ${result.totalRows || 0} 行` }), el('span', { class: 'summary-chip', text: formatDate(result.queriedAt, { withZone: true, milliseconds: true }) }), ...(result.truncated ? [el('span', { class: 'summary-chip warn', text: '结果已达上限' })] : []));
+  const summary = el('div', { class: 'query-summary' }, el('span', { class: `summary-chip ${result.status === 'partial' ? 'warn' : result.status === 'failed' ? 'err' : ''}`, text: statusText }), el('span', { class: 'summary-chip', text: databaseSourceName(result.source) }), ...(result.schema ? [el('span', { class: 'summary-chip', text: `Schema ${result.schema}` })] : []), el('span', { class: 'summary-chip', text: identifier }), el('span', { class: 'summary-chip', text: `共 ${result.totalRows || 0} 行` }), el('span', { class: 'summary-chip', text: formatDate(result.queriedAt, { withZone: true, milliseconds: true }) }), ...(result.truncated ? [el('span', { class: 'summary-chip warn', text: '结果已达上限' })] : []));
   if (result.source === 'voyage') summary.append(el('button', { class: 'wb-button primary query-export-button', type: 'button', text: '导出 INSERT', disabled: !hasInsertRows(result), title: hasInsertRows(result) ? '生成同步到测试环境的 INSERT 语句' : '当前结果没有可导出的数据', on: { click: () => openInsertExport(result) } }));
   root.append(summary);
   appendFailedSteps(root, result.steps);
   root.append(resultSection('查询步骤与数据来源', (result.steps || []).map(queryStepRow)));
   const customerId = rowField(data.productInstances?.[0], 'OWNER_CUST_ID'); const productInstanceId = rowField(data.productInstances?.[0], 'prod_inst_id');
-  const customerButton = el('button', { class: 'wb-button', type: 'button', text: '查看同客户其他产品', disabled: !customerId, on: { click: () => loadCustomerProducts(customerId, result.source, query) } });
-  const candidateButton = el('button', { class: 'wb-button', type: 'button', text: '辅助定位账户', disabled: !customerId && !productInstanceId, on: { click: () => loadAccountCandidates(productInstanceId, customerId, result.source, query) } });
+  const customerButton = el('button', { class: 'wb-button', type: 'button', text: '查看同客户其他产品', disabled: !customerId, on: { click: () => loadCustomerProducts(customerId, result.source, query, result.schema) } });
+  const candidateButton = el('button', { class: 'wb-button', type: 'button', text: '辅助定位账户', disabled: !customerId && !productInstanceId, on: { click: () => loadAccountCandidates(productInstanceId, customerId, result.source, query, result.schema) } });
   root.append(
-    resultSection('产品实例', data.productInstances, { open: true, actions: [customerButton], table: resultTable('productInstances') }), resultSection('产品定义', data.productDefinitions, { table: resultTable('productDefinitions') }),
-    resultSection('接入产品实例', data.accessProductInstances, { table: resultTable('accessProductInstances') }), resultSection('产品实例关系', data.productRelationships, { open: true, table: resultTable('productRelationships') }),
-    resultSection('关联产品实例', data.relatedProductInstances, { table: resultTable('relatedProductInstances') }), resultSection('产品实例属性', data.productAttributes, { open: true, table: resultTable('productAttributes') }),
-    resultSection('产品实例状态', data.productStates, { table: resultTable('productStates') }), resultSection('产品实例扩展', data.productExtensions, { table: resultTable('productExtensions') }),
-    resultSection('产品实例联系人', data.productContacts, { table: resultTable('productContacts') }), resultSection('产品实例付费方式', data.productPaymodes, { table: resultTable('productPaymodes') }),
-    resultSection('产品实例接入号码', data.productAccessNumbers, { table: resultTable('productAccessNumbers') }), resultSection('产品号码关联', data.productNumberRelations, { table: resultTable('productNumberRelations') }),
-    resultSection('产品实例参与人', data.productParties, { table: resultTable('productParties') }), resultSection('产品资源实例关系', data.productResourceRelations, { table: resultTable('productResourceRelations') }),
-    resultSection('账户付费关系', data.accountRelations, { open: true, actions: data.productInstances?.length && !data.accountRelations?.length ? [candidateButton] : [], table: resultTable('accountRelations') }), resultSection('账户与合同', data.accounts, { open: true, table: resultTable('accounts') }),
-    resultSection('产品与销售品关系', data.offerRelations, { table: resultTable('offerRelations') }), resultSection('销售品实例', data.offerInstances, { table: resultTable('offerInstances') }),
-    resultSection('销售品实例属性', data.offerInstanceAttributes, { table: resultTable('offerInstanceAttributes') }), resultSection('销售品实例费用', data.offerInstanceFees, { table: resultTable('offerInstanceFees') }),
-    resultSection('套餐 / 销售品定义', data.offers, { open: true, table: resultTable('offers') }), resultSection('定价计划', data.pricingPlans, { table: resultTable('pricingPlans') }),
+    resultSection('产品实例', data.productInstances, { open: true, actions: [customerButton], table: resultTable('productInstances', result) }), resultSection('产品定义', data.productDefinitions, { table: resultTable('productDefinitions', result) }),
+    resultSection('接入产品实例', data.accessProductInstances, { table: resultTable('accessProductInstances', result) }), resultSection('产品实例关系', data.productRelationships, { open: true, table: resultTable('productRelationships', result) }),
+    resultSection('关联产品实例', data.relatedProductInstances, { table: resultTable('relatedProductInstances', result) }), resultSection('产品实例属性', data.productAttributes, { open: true, table: resultTable('productAttributes', result) }),
+    resultSection('产品实例状态', data.productStates, { table: resultTable('productStates', result) }), resultSection('产品实例扩展', data.productExtensions, { table: resultTable('productExtensions', result) }),
+    resultSection('产品实例联系人', data.productContacts, { table: resultTable('productContacts', result) }), resultSection('产品实例付费方式', data.productPaymodes, { table: resultTable('productPaymodes', result) }),
+    resultSection('产品实例接入号码', data.productAccessNumbers, { table: resultTable('productAccessNumbers', result) }), resultSection('产品号码关联', data.productNumberRelations, { table: resultTable('productNumberRelations', result) }),
+    resultSection('产品实例参与人', data.productParties, { table: resultTable('productParties', result) }), resultSection('产品资源实例关系', data.productResourceRelations, { table: resultTable('productResourceRelations', result) }),
+    resultSection('账户付费关系', data.accountRelations, { open: true, actions: data.productInstances?.length && !data.accountRelations?.length ? [candidateButton] : [], table: resultTable('accountRelations', result) }), resultSection('账户与合同', data.accounts, { open: true, table: resultTable('accounts', result) }),
+    resultSection('产品与销售品关系', data.offerRelations, { table: resultTable('offerRelations', result) }), resultSection('销售品实例', data.offerInstances, { table: resultTable('offerInstances', result) }),
+    resultSection('销售品实例关系', data.offerInstanceRelationships, { table: resultTable('offerInstanceRelationships', result) }), resultSection('关联销售品实例', data.relatedOfferInstances, { table: resultTable('relatedOfferInstances', result) }),
+    resultSection('销售品实例属性', data.offerInstanceAttributes, { table: resultTable('offerInstanceAttributes', result) }), resultSection('销售品实例费用', data.offerInstanceFees, { table: resultTable('offerInstanceFees', result) }),
+    resultSection('销售品实例费用属性', data.offerInstanceFeeAttributes, { table: resultTable('offerInstanceFeeAttributes', result) }), resultSection('销售品关联对象', data.offerObjectInstanceRelations, { table: resultTable('offerObjectInstanceRelations', result) }),
+    resultSection('销售品关联资源', data.offerResourceInstanceRelations, { table: resultTable('offerResourceInstanceRelations', result) }), resultSection('销售品实例担保', data.offerInstanceAssurances, { table: resultTable('offerInstanceAssurances', result) }),
+    resultSection('销售品优惠券关系', data.offerCouponInstanceRelations, { table: resultTable('offerCouponInstanceRelations', result) }), resultSection('SKU 实例', data.skuInstances, { table: resultTable('skuInstances', result) }),
+    resultSection('增值业务订购关系', data.valueAddedOrderRelations, { table: resultTable('valueAddedOrderRelations', result) }),
+    resultSection('套餐 / 销售品定义', data.offers, { open: true, table: resultTable('offers', result) }), resultSection('定价计划', data.pricingPlans, { table: resultTable('pricingPlans', result) }),
   );
 }
 function renderThresholdResult(result) {
   state.thresholdQuery.result = result; const root = queryResultRoot('threshold'); root.replaceChildren(); const data = result.data || {};
   const statusText = { complete: '查询完成', partial: '部分完成', empty: '无匹配', failed: '查询失败' }[result.status] || result.status;
-  const summary = el('div', { class: 'query-summary' }, el('span', { class: `summary-chip ${result.status === 'partial' ? 'warn' : result.status === 'failed' ? 'err' : ''}`, text: statusText }), el('span', { class: 'summary-chip', text: databaseSourceName(result.source) }), el('span', { class: 'summary-chip', text: `A 端实例 ${result.aProductInstanceId}` }), el('span', { class: 'summary-chip', text: `终端产品规格 ${result.productId}` }), el('span', { class: 'summary-chip', text: `共 ${result.totalRows || 0} 行` }), el('span', { class: 'summary-chip', text: formatDate(result.queriedAt, { withZone: true, milliseconds: true }) }), ...(result.truncated ? [el('span', { class: 'summary-chip warn', text: '结果已达上限' })] : []));
+  const summary = el('div', { class: 'query-summary' }, el('span', { class: `summary-chip ${result.status === 'partial' ? 'warn' : result.status === 'failed' ? 'err' : ''}`, text: statusText }), el('span', { class: 'summary-chip', text: databaseSourceName(result.source) }), ...(result.schema ? [el('span', { class: 'summary-chip', text: `Schema ${result.schema}` })] : []), el('span', { class: 'summary-chip', text: `A 端实例 ${result.aProductInstanceId}` }), el('span', { class: 'summary-chip', text: `终端产品规格 ${result.productId}` }), el('span', { class: 'summary-chip', text: `共 ${result.totalRows || 0} 行` }), el('span', { class: 'summary-chip', text: formatDate(result.queriedAt, { withZone: true, milliseconds: true }) }), ...(result.truncated ? [el('span', { class: 'summary-chip warn', text: '结果已达上限' })] : []));
   if (result.source === 'voyage') summary.append(el('button', { class: 'wb-button primary query-export-button', type: 'button', text: '导出 INSERT', disabled: !hasInsertRows(result), title: hasInsertRows(result) ? '生成同步到测试环境的 INSERT 语句' : '当前结果没有可导出的数据', on: { click: () => openInsertExport(result) } }));
   root.append(summary);
   appendFailedSteps(root, result.steps);
   root.append(
     resultSection('查询步骤与数据来源', (result.steps || []).map(queryStepRow), { open: false }),
-    resultSection('A/Z 产品实例关系', data.relationships, { open: true, table: resultTable('relationships') }),
-    resultSection('符合规格的终端产品实例', data.terminalProducts, { open: true, table: resultTable('terminalProducts') }),
-    resultSection('档位提醒配置', data.thresholdAttributes, { open: true, table: resultTable('thresholdAttributes') }),
+    resultSection('A/Z 产品实例关系', data.relationships, { open: true, table: resultTable('relationships', result) }),
+    resultSection('符合规格的终端产品实例', data.terminalProducts, { open: true, table: resultTable('terminalProducts', result) }),
+    resultSection('档位提醒配置', data.thresholdAttributes, { open: true, table: resultTable('thresholdAttributes', result) }),
   );
 }
-async function loadCustomerProducts(customerId, source = activeDatabaseSource(), query = state.activeQuery) {
-  try { setQueryState('正在查询同客户其他产品…', '', query); const response = await postJson('/api/query/customer-products', { customerId, source }, { timeout: 60000 }); const phones = [...new Set(response.result.rows.map((row) => rowField(row, 'acc_num')).filter(Boolean))]; const actions = phones.map((phone) => el('button', { class: 'wb-button', type: 'button', text: `查询 ${phone}`, on: { click: () => { $('#querySourceSelect').value = source; $('#phoneInput').value = phone; switchQueryTab('phone'); $('#phoneQueryForm').requestSubmit(); } } })); const section = resultSection('同客户其他产品（按需展开）', response.result.rows, { open: true, actions }); queryResultRoot(query).append(section); setQueryState(`同客户产品已加载 · ${response.result.rows.length} 条`, 'success', query); } catch (error) { setQueryState(error.message, 'error', query); }
+function renderEventTypeResult(result) {
+  state.eventTypeQuery.result = result; const root = queryResultRoot('eventType'); root.replaceChildren(); const data = result.data || {}; const definition = result.definition || {};
+  const subscriberCount = new Set((data.subscribers || []).map((row) => String(rowField(row, 'OWNER_CUST_ID') || '')).filter(Boolean)).size;
+  const statusText = { complete: '查询完成', partial: '部分完成', empty: '无匹配', failed: '查询失败', unavailable: '待补充关联' }[result.status] || result.status;
+  root.append(el('div', { class: 'query-summary' },
+    el('span', { class: `summary-chip ${result.status === 'partial' ? 'warn' : result.status === 'failed' ? 'err' : ''}`, text: statusText }),
+    el('span', { class: 'summary-chip', text: databaseSourceName(result.source) }),
+    ...(result.schema ? [el('span', { class: 'summary-chip', text: `Schema ${result.schema}` })] : []),
+    el('span', { class: 'summary-chip', text: `事件类型 ${result.eventTypeId}` }),
+    el('span', { class: 'summary-chip', text: definition.name || '未收录类型' }),
+    ...(result.offerNameQuery ? [el('span', { class: 'summary-chip', text: `套餐名 ${result.offerNameQuery}` })] : []),
+    ...(definition.targetTable ? [el('span', { class: 'summary-chip', text: definition.targetTable })] : []),
+    ...(result.eventTypeFamily ? [el('span', { class: 'summary-chip', text: `定价事件族 ${result.eventTypeFamily.start}–${String(BigInt(result.eventTypeFamily.endExclusive) - 1n)}` })] : []),
+    el('span', { class: 'summary-chip', text: `订购用户 ${subscriberCount} 个` }),
+    el('span', { class: 'summary-chip', text: `产品实例 ${data.productInstances?.length || 0} 个` }),
+    el('span', { class: 'summary-chip', text: `共 ${result.totalRows || 0} 行` }),
+    el('span', { class: 'summary-chip', text: formatDate(result.queriedAt, { withZone: true, milliseconds: true }) }),
+    ...(result.subscriptionSampled ? [el('span', { class: 'summary-chip warn', text: '套餐与订阅实例按上限抽样' })] : []),
+  ));
+  appendFailedSteps(root, result.steps);
+  const archiveAction = (row) => {
+    const id = rowField(row, 'PROD_INST_ID');
+    return el('button', { class: 'wb-button', type: 'button', text: '查看档案', disabled: !id, on: { click: () => {
+      $('#querySourceSelect').value = result.source || 'udal'; if (result.source === 'voyage' && result.schema) $('#querySchemaSelect').value = result.schema;
+      syncQuerySchemaControl(); $('#productInstanceInput').value = String(id || ''); switchQueryTab('productInstance'); $('#productInstanceQueryForm').requestSubmit();
+    } } });
+  };
+  root.append(
+    resultSection('查询步骤与数据来源', (result.steps || []).map(queryStepRow)),
+    resultSection('订购用户汇总', data.subscribers, { open: true, table: '聚合结果', rowAction: archiveAction }),
+    resultSection('关联套餐 / 销售品定义', data.offers, { open: true, table: physicalTable(result, 'offer') }),
+    resultSection('拥有套餐的销售品实例', data.offerInstances, { open: true, table: physicalTable(result, 'offer_inst') }),
+    resultSection('套餐实例与产品实例关系', data.offerRelations, { open: true, table: physicalTable(result, 'offer_prod_inst_rel') }),
+    resultSection('销售品实例属性', data.offerInstanceAttributes, { open: true, table: 'prod_offer_inst_attr' }),
+    resultSection('拥有套餐的产品实例', data.productInstances, { open: true, table: physicalTable(result, 'prod_inst'), rowAction: archiveAction }),
+    resultSection('关联定价计划', data.pricingPlans, { table: physicalTable(result, 'pricing_plan') }),
+    resultSection('事件定价策略族', data.eventPricingStrategies, { table: 'event_pricing_strategy' }),
+    resultSection('事件定价组合', data.pricingCombines, { table: 'pricing_combine' }),
+    resultSection('事件定价对象', data.pricingObjects, { table: 'pricing_object' }),
+    resultSection('源事件类型映射', data.eventTypeMappings, { open: true, table: 'source_event_type_format' }),
+    resultSection('事件类型格式', data.eventTypeFormats, { open: true, table: 'ratable_event_type_format' }),
+    resultSection('事件格式定义', data.eventFormats, { table: 'ratable_event_format' }),
+    resultSection('事件格式字段', data.eventFormatItems, { open: true, table: 'ratable_event_format_item' }),
+    resultSection('资源属性定义', data.resourceAttributes, { table: 'tpr_resource_attr' }),
+    resultSection('详单入库目标表', data.targetTables, { open: true, table: 'TPL_INDB_TABLE_PG' }),
+  );
+  if (result.status !== 'failed' && !data.productInstances?.length) root.append(el('div', { class: 'query-empty' }, el('strong', { text: '未找到拥有该套餐的产品实例' }), el('span', { text: result.source === 'voyage' ? '请核对工程环境套餐名称；可查看销售品定义、实例及关系步骤定位断点。' : data.eventPricingStrategies?.length ? '已查到事件定价配置，但定价计划、套餐定义或实例关系链未返回匹配数据；可查看上方分步结果定位断点。' : '该事件类型暂未返回定价策略关联；事件格式与入库配置仍保留在上方。' })));
+  if (result.status === 'empty') root.append(el('div', { class: 'query-empty' }, el('strong', { text: '没有查到事件类型档案' }), el('span', { text: '请核对查询环境、Schema 和事件类型配置。' })));
 }
-async function loadAccountCandidates(productInstanceId, customerId, source = activeDatabaseSource(), query = state.activeQuery) { try { setQueryState('正在辅助定位账户…', '', query); const response = await postJson('/api/query/account-candidates', { productInstanceId: String(productInstanceId || ''), customerId: String(customerId || ''), source }, { timeout: 60000 }); queryResultRoot(query).append(resultSection('账户候选（非付费关系结论）', response.result.rows, { open: true })); setQueryState(`账户候选已加载 · ${response.result.rows.length} 条`, 'success', query); } catch (error) { setQueryState(error.message, 'error', query); } }
+async function loadCustomerProducts(customerId, source = activeDatabaseSource(), query = state.activeQuery, schema = activeDatabaseSchema(source)) {
+  try { setQueryState('正在查询同客户其他产品…', '', query); const response = await postJson('/api/query/customer-products', { customerId, ...querySourcePayload(source, schema) }, { timeout: 60000 }); const phones = [...new Set(response.result.rows.map((row) => rowField(row, 'acc_num') || rowField(row, 'acc_nbr')).filter(Boolean))]; const actions = phones.map((phone) => el('button', { class: 'wb-button', type: 'button', text: `查询 ${phone}`, on: { click: () => { $('#querySourceSelect').value = source; if (source === 'voyage' && schema) $('#querySchemaSelect').value = schema; syncQuerySchemaControl(); $('#phoneInput').value = phone; switchQueryTab('phone'); $('#phoneQueryForm').requestSubmit(); } } })); const section = resultSection('同客户其他产品（按需展开）', response.result.rows, { open: true, actions }); queryResultRoot(query).append(section); setQueryState(`同客户产品已加载 · ${response.result.rows.length} 条`, 'success', query); } catch (error) { setQueryState(error.message, 'error', query); }
+}
+async function loadAccountCandidates(productInstanceId, customerId, source = activeDatabaseSource(), query = state.activeQuery, schema = activeDatabaseSchema(source)) { try { setQueryState('正在辅助定位账户…', '', query); const response = await postJson('/api/query/account-candidates', { productInstanceId: String(productInstanceId || ''), customerId: String(customerId || ''), ...querySourcePayload(source, schema) }, { timeout: 60000 }); queryResultRoot(query).append(resultSection('账户候选（非付费关系结论）', response.result.rows, { open: true })); setQueryState(`账户候选已加载 · ${response.result.rows.length} 条`, 'success', query); } catch (error) { setQueryState(error.message, 'error', query); } }
 async function restoreDatabaseStatus() { try { const response = await getJson('/api/db/status'); for (const source of ['udal', 'doris']) { const item = response.sources?.[source] || {}; state.connectionProfiles[source] = response.defaults?.[source] || state.connectionProfiles[source]; state.databases[source] = { connected: Boolean(item.connected), config: item.config, password: '' }; } renderDbStatus(); renderConnectionList(); } catch (_) { renderDbStatus(); } }
 async function restoreArchiveStatus() { try { const response = await getJson('/api/archive/status'); state.connectionProfiles.archive = response.config || state.connectionProfiles.archive; state.archive = { connected: Boolean(response.connected), config: response.config || state.connectionProfiles.archive }; renderDbStatus(); renderConnectionList(); } catch (_) { renderDbStatus(); } }
 async function restoreVoyageStatus() { try { const response = await getJson('/api/voyage/status'); state.connectionProfiles.voyage = response.config || state.connectionProfiles.voyage; state.voyage = { connected: Boolean(response.connected), config: response.config || state.connectionProfiles.voyage }; renderDbStatus(); renderConnectionList(); } catch (_) { renderDbStatus(); } }
+async function restoreBigdataStatus() { try { const response = await getJson('/api/bigdata/status'); state.connectionProfiles.bigdata = response.config || state.connectionProfiles.bigdata; state.bigdata = { connected: Boolean(response.connected), mode: response.mode || 'ssh', config: response.config || state.connectionProfiles.bigdata }; renderBigdataSource(); renderConnectionList(); } catch (_) { renderBigdataSource(); } }
 async function submitPhoneQuery(event) {
-  event?.preventDefault(); const phone = $('#phoneInput').value.trim(); const source = activeDatabaseSource(); if (!phone) { setQueryState('请输入手机号或接入号码', 'error', 'phone'); return; } if (!isDatabaseSourceConnected(source)) { setQueryState(`请先连接${databaseSourceName(source)}`, 'error', 'phone'); renderConnectionList(); openDialog('connectionDialog'); return; }
+  event?.preventDefault(); const phone = $('#phoneInput').value.trim(); const source = activeDatabaseSource(); const schema = activeDatabaseSchema(source); if (!phone) { setQueryState('请输入手机号或接入号码', 'error', 'phone'); return; } if (!isDatabaseSourceConnected(source)) { setQueryState(`请先连接${databaseSourceName(source)}`, 'error', 'phone'); renderConnectionList(); openDialog('connectionDialog'); return; }
   const request = state.gates.phone.next(); state.phoneQuery.running = true; state.phoneQuery.result = null; $('#btnPhoneQuery').disabled = true; $('#btnPhoneCancel').classList.remove('hidden'); setQueryState('正在按关联链分步查询…', '', 'phone'); queryResultRoot('phone').replaceChildren(el('div', { class: 'query-empty' }, el('strong', { text: '查询中' }), el('span', { text: `${databaseSourceName(source)} · 正在读取 CRM3DB 与 CONFIGDB_CNOS_JF_TEST` })));
-  try { const response = await postJson('/api/query/phone', { phone, source }, { signal: request.signal, timeout: 60000 }); if (!request.isCurrent()) return; renderQueryResult(response.result); setQueryState(response.result.status === 'partial' ? '查询部分完成，请查看缺失或失败步骤' : response.result.status === 'empty' ? '没有找到匹配号码' : '查询完成', response.result.status === 'complete' ? 'success' : '', 'phone'); }
+  try { const response = await postJson('/api/query/phone', { phone, ...querySourcePayload(source, schema) }, { signal: request.signal, timeout: 60000 }); if (!request.isCurrent()) return; renderQueryResult(response.result); setQueryState(response.result.status === 'partial' ? '查询部分完成，请查看缺失或失败步骤' : response.result.status === 'empty' ? '没有找到匹配号码' : '查询完成', response.result.status === 'complete' ? 'success' : '', 'phone'); }
   catch (error) { if (!request.isCurrent() || error.code === 'REQUEST_ABORTED') return; setQueryState(error.message, 'error', 'phone'); queryResultRoot('phone').replaceChildren(el('div', { class: 'query-empty' }, el('strong', { text: '查询失败' }), el('span', { text: error.message }))); }
   finally { if (request.isCurrent()) { state.phoneQuery.running = false; $('#btnPhoneQuery').disabled = false; $('#btnPhoneCancel').classList.add('hidden'); } }
 }
 async function submitProductInstanceQuery(event) {
-  event?.preventDefault(); const productInstanceId = $('#productInstanceInput').value.trim(); const source = activeDatabaseSource(); if (!/^\d+$/.test(productInstanceId)) { setQueryState('请输入数字格式的产品实例 ID', 'error', 'productInstance'); return; } if (!isDatabaseSourceConnected(source)) { setQueryState(`请先连接${databaseSourceName(source)}`, 'error', 'productInstance'); renderConnectionList(); openDialog('connectionDialog'); return; }
+  event?.preventDefault(); const productInstanceId = $('#productInstanceInput').value.trim(); const source = activeDatabaseSource(); const schema = activeDatabaseSchema(source); if (!/^\d+$/.test(productInstanceId)) { setQueryState('请输入数字格式的产品实例 ID', 'error', 'productInstance'); return; } if (!isDatabaseSourceConnected(source)) { setQueryState(`请先连接${databaseSourceName(source)}`, 'error', 'productInstance'); renderConnectionList(); openDialog('connectionDialog'); return; }
   const request = state.gates.productInstance.next(); state.productInstanceQuery.running = true; state.productInstanceQuery.result = null; $('#btnProductInstanceQuery').disabled = true; $('#btnProductInstanceCancel').classList.remove('hidden'); setQueryState('正在按产品实例关联链查询档案…', '', 'productInstance'); queryResultRoot('productInstance').replaceChildren(el('div', { class: 'query-empty' }, el('strong', { text: '查询中' }), el('span', { text: `${databaseSourceName(source)} · 正在聚合产品、账户与销售品档案` })));
-  try { const response = await postJson('/api/query/product-instance', { productInstanceId, source }, { signal: request.signal, timeout: 60000 }); if (!request.isCurrent()) return; renderQueryResult(response.result); setQueryState(response.result.status === 'partial' ? '查询部分完成，请查看缺失或失败步骤' : response.result.status === 'empty' ? '没有找到该产品实例' : '查询完成', response.result.status === 'complete' ? 'success' : '', 'productInstance'); }
+  try { const response = await postJson('/api/query/product-instance', { productInstanceId, ...querySourcePayload(source, schema) }, { signal: request.signal, timeout: 60000 }); if (!request.isCurrent()) return; renderQueryResult(response.result); setQueryState(response.result.status === 'partial' ? '查询部分完成，请查看缺失或失败步骤' : response.result.status === 'empty' ? '没有找到该产品实例' : '查询完成', response.result.status === 'complete' ? 'success' : '', 'productInstance'); }
   catch (error) { if (!request.isCurrent() || error.code === 'REQUEST_ABORTED') return; setQueryState(error.message, 'error', 'productInstance'); queryResultRoot('productInstance').replaceChildren(el('div', { class: 'query-empty' }, el('strong', { text: '查询失败' }), el('span', { text: error.message })));
   } finally { if (request.isCurrent()) { state.productInstanceQuery.running = false; $('#btnProductInstanceQuery').disabled = false; $('#btnProductInstanceCancel').classList.add('hidden'); } }
 }
+async function submitEventTypeQuery(event) {
+  event?.preventDefault(); const eventTypeId = $('#eventTypeInput').value.trim(); const offerName = $('#eventOfferNameInput').value.trim(); const source = activeDatabaseSource(); const schema = activeDatabaseSchema(source); if (!/^\d+$/.test(eventTypeId)) { setQueryState('请选择正确的事件类型', 'error', 'eventType'); return; } if (!isDatabaseSourceConnected(source)) { setQueryState(`请先连接${databaseSourceName(source)}`, 'error', 'eventType'); renderConnectionList(); openDialog('connectionDialog'); return; }
+  const request = state.gates.eventType.next(); state.eventTypeQuery.running = true; state.eventTypeQuery.result = null; $('#btnEventTypeQuery').disabled = true; $('#btnEventTypeCancel').classList.remove('hidden'); setQueryState('正在查询事件类型档案…', '', 'eventType'); queryResultRoot('eventType').replaceChildren(el('div', { class: 'query-empty' }, el('strong', { text: '查询中' }), el('span', { text: `${databaseSourceName(source)} · 正在读取套餐与实例关联` })));
+  try { const response = await postJson('/api/query/event-type', { eventTypeId, ...(source === 'voyage' && offerName ? { offerName } : {}), ...querySourcePayload(source, schema) }, { signal: request.signal, timeout: 60000 }); if (!request.isCurrent()) return; renderEventTypeResult(response.result); const hasFailedSteps = response.result.steps?.some((step) => step.status === 'error'); setQueryState(response.result.status === 'partial' ? (hasFailedSteps ? '查询部分完成，请查看失败步骤' : '查询完成，结果已按上限抽样') : response.result.status === 'empty' ? '没有找到匹配的套餐或订购实例' : '查询完成', response.result.status === 'complete' || (response.result.status === 'partial' && !hasFailedSteps) ? 'success' : '', 'eventType'); }
+  catch (error) { if (!request.isCurrent() || error.code === 'REQUEST_ABORTED') return; setQueryState(error.message, 'error', 'eventType'); queryResultRoot('eventType').replaceChildren(el('div', { class: 'query-empty' }, el('strong', { text: '查询失败' }), el('span', { text: error.message })));
+  } finally { if (request.isCurrent()) { state.eventTypeQuery.running = false; $('#btnEventTypeQuery').disabled = false; $('#btnEventTypeCancel').classList.add('hidden'); } }
+}
 async function submitThresholdQuery(event) {
-  event?.preventDefault(); const aProductInstanceId = $('#thresholdProductInput').value.trim(); const source = activeDatabaseSource(); if (!aProductInstanceId) { setQueryState('请输入 A 端产品实例 ID', 'error', 'threshold'); return; } if (!isDatabaseSourceConnected(source)) { setQueryState(`请先连接${databaseSourceName(source)}`, 'error', 'threshold'); renderConnectionList(); openDialog('connectionDialog'); return; }
+  event?.preventDefault(); const aProductInstanceId = $('#thresholdProductInput').value.trim(); const source = activeDatabaseSource(); const schema = activeDatabaseSchema(source); if (!aProductInstanceId) { setQueryState('请输入 A 端产品实例 ID', 'error', 'threshold'); return; } if (!isDatabaseSourceConnected(source)) { setQueryState(`请先连接${databaseSourceName(source)}`, 'error', 'threshold'); renderConnectionList(); openDialog('connectionDialog'); return; }
   const request = state.gates.threshold.next(); state.thresholdQuery.running = true; state.thresholdQuery.result = null; $('#btnThresholdQuery').disabled = true; $('#btnThresholdCancel').classList.remove('hidden'); setQueryState('正在查询 A/Z 关系与档位提醒配置…', '', 'threshold'); queryResultRoot('threshold').replaceChildren(el('div', { class: 'query-empty' }, el('strong', { text: '查询中' }), el('span', { text: `${databaseSourceName(source)} · 正在读取 CRM3DB 的产品关系、终端产品与属性配置` })));
-  try { const response = await postJson('/api/query/threshold', { aProductInstanceId, source }, { signal: request.signal, timeout: 60000 }); if (!request.isCurrent()) return; renderThresholdResult(response.result); setQueryState(response.result.status === 'partial' ? '查询部分完成，请查看缺失或失败步骤' : response.result.status === 'empty' ? '没有找到符合条件的终端产品或档位配置' : '查询完成', response.result.status === 'complete' ? 'success' : '', 'threshold'); }
+  try { const response = await postJson('/api/query/threshold', { aProductInstanceId, ...querySourcePayload(source, schema) }, { signal: request.signal, timeout: 60000 }); if (!request.isCurrent()) return; renderThresholdResult(response.result); setQueryState(response.result.status === 'partial' ? '查询部分完成，请查看缺失或失败步骤' : response.result.status === 'empty' ? '没有找到符合条件的终端产品或档位配置' : '查询完成', response.result.status === 'complete' ? 'success' : '', 'threshold'); }
   catch (error) { if (!request.isCurrent() || error.code === 'REQUEST_ABORTED') return; setQueryState(error.message, 'error', 'threshold'); queryResultRoot('threshold').replaceChildren(el('div', { class: 'query-empty' }, el('strong', { text: '查询失败' }), el('span', { text: error.message })));
   } finally { if (request.isCurrent()) { state.thresholdQuery.running = false; $('#btnThresholdQuery').disabled = false; $('#btnThresholdCancel').classList.add('hidden'); } }
 }
@@ -955,15 +1074,20 @@ async function submitArchiveQuery(event) {
 function switchQueryTab(query) { state.activeQuery = QUERY_NAMES.includes(query) ? query : 'phone'; $$('[data-query-tab]').forEach((button) => { const active = button.dataset.queryTab === state.activeQuery; button.classList.toggle('active', active); button.setAttribute('aria-selected', String(active)); }); $$('[data-query-pane]').forEach((pane) => pane.classList.toggle('hidden', pane.dataset.queryPane !== state.activeQuery)); $('#querySourceBar').classList.toggle('hidden', state.activeQuery === 'archive'); syncActiveQueryView(); }
 document.querySelector('[data-open-connection-settings]')?.addEventListener('click', () => { renderConnectionList(); openDialog('connectionDialog'); });
 $$('[data-connection-connect]').forEach((button) => button.addEventListener('click', () => void connectSource(button.dataset.connectionConnect)));
+$('#voyageTokenInput')?.addEventListener('input', () => { state.connectionErrors.voyage = ''; renderConnectionList(); });
+document.querySelector('[data-connection-use-ssh]')?.addEventListener('click', () => void useSshBigdataMode());
 $$('[data-query-tab]').forEach((button) => button.addEventListener('click', () => switchQueryTab(button.dataset.queryTab)));
 $('#phoneQueryForm').addEventListener('submit', submitPhoneQuery); $('#btnPhoneCancel').addEventListener('click', () => { state.gates.phone.cancel(); state.phoneQuery.running = false; $('#btnPhoneQuery').disabled = false; $('#btnPhoneCancel').classList.add('hidden'); setQueryState('查询已取消', '', 'phone'); });
 $('#productInstanceQueryForm').addEventListener('submit', submitProductInstanceQuery); $('#btnProductInstanceCancel').addEventListener('click', () => { state.gates.productInstance.cancel(); state.productInstanceQuery.running = false; $('#btnProductInstanceQuery').disabled = false; $('#btnProductInstanceCancel').classList.add('hidden'); setQueryState('查询已取消', '', 'productInstance'); });
+$('#eventTypeQueryForm').addEventListener('submit', submitEventTypeQuery); $('#btnEventTypeCancel').addEventListener('click', () => { state.gates.eventType.cancel(); state.eventTypeQuery.running = false; $('#btnEventTypeQuery').disabled = false; $('#btnEventTypeCancel').classList.add('hidden'); setQueryState('查询已取消', '', 'eventType'); });
 $('#thresholdQueryForm').addEventListener('submit', submitThresholdQuery); $('#btnThresholdCancel').addEventListener('click', () => { state.gates.threshold.cancel(); state.thresholdQuery.running = false; $('#btnThresholdQuery').disabled = false; $('#btnThresholdCancel').classList.add('hidden'); setQueryState('查询已取消', '', 'threshold'); }); $('#btnQueryReset').addEventListener('click', () => clearQueryResult());
 $('#archiveQueryForm').addEventListener('submit', submitArchiveQuery); $('#btnArchiveCancel').addEventListener('click', () => { state.gates.archive.cancel(); state.archiveQuery.running = false; $('#btnArchiveQuery').disabled = false; $('#btnArchiveCancel').classList.add('hidden'); setQueryState('查询已取消', '', 'archive'); });
-$('#querySourceSelect').addEventListener('change', () => clearQueryResult({ all: true }));
+$('#querySourceSelect').addEventListener('change', () => { syncQuerySchemaControl(); clearQueryResult({ all: true }); });
+$('#querySchemaSelect').addEventListener('change', () => clearQueryResult({ all: true }));
+syncQuerySchemaControl();
 clearQueryResult({ all: true });
 
-async function checkStatus() { if (document.hidden || state.statusRunning) return; state.statusRunning = true; try { const [sshStatus, dbStatus, voyageStatus, archiveStatus] = await Promise.all([getJson('/api/status'), getJson('/api/db/status'), getJson('/api/voyage/status'), getJson('/api/archive/status')]); if (state.connected && !sshStatus.connected) { setConnected(false); toast('远程连接已断开', 'err'); } for (const source of ['udal', 'doris']) { const item = dbStatus.sources?.[source]; if (item) { state.databases[source].connected = Boolean(item.connected); state.databases[source].config = item.config || state.databases[source].config; } } state.voyage = { connected: Boolean(voyageStatus.connected), config: voyageStatus.config || state.voyage.config }; state.archive = { connected: Boolean(archiveStatus.connected), config: archiveStatus.config || state.archive.config }; renderDbStatus(); renderConnectionList(); } catch (error) { if (state.connected) { setConnected(false); toast('本地桥接服务不可用', 'err'); } } finally { state.statusRunning = false; if (!document.hidden) state.statusTimer = setTimeout(checkStatus, 5000); } }
+async function checkStatus() { if (document.hidden || state.statusRunning) return; state.statusRunning = true; try { const [sshStatus, bigdataStatus, dbStatus, voyageStatus, archiveStatus] = await Promise.all([getJson('/api/status'), getJson('/api/bigdata/status'), getJson('/api/db/status'), getJson('/api/voyage/status'), getJson('/api/archive/status')]); if (state.connected && !sshStatus.connected) { setConnected(false); toast('远程连接已断开', 'err'); } state.bigdata = { connected: Boolean(bigdataStatus.connected), mode: bigdataStatus.mode || 'ssh', config: bigdataStatus.config || state.bigdata.config }; for (const source of ['udal', 'doris']) { const item = dbStatus.sources?.[source]; if (item) { state.databases[source].connected = Boolean(item.connected); state.databases[source].config = item.config || state.databases[source].config; } } state.voyage = { connected: Boolean(voyageStatus.connected), config: voyageStatus.config || state.voyage.config }; state.archive = { connected: Boolean(archiveStatus.connected), config: archiveStatus.config || state.archive.config }; renderBigdataSource(); renderDbStatus(); renderConnectionList(); } catch (error) { if (state.connected) { setConnected(false); toast('本地桥接服务不可用', 'err'); } } finally { state.statusRunning = false; if (!document.hidden) state.statusTimer = setTimeout(checkStatus, 5000); } }
 document.addEventListener('visibilitychange', () => { clearTimeout(state.statusTimer); if (!document.hidden) checkStatus(); });
 
 $('#pathInput').value = state.cwd; $('#hdfsPathInput').value = state.hdfsCwd; $('#hbasePathInput').value = state.hbaseCwd;
@@ -974,9 +1098,9 @@ renderBreadcrumbs($('#crumbs'), state.cwd, state.home, (value) => navigateResour
     const cfg = await getJson('/api/config'); state.config = cfg.config || null; state.connectionProfiles = { ...state.connectionProfiles, ...(cfg.connections || {}), ssh: cfg.connections?.ssh || cfg.config || null };
     const configuredTimeouts = cfg.timeouts || {};
     state.timeouts = { filesListMs: DEFAULT_RESOURCE_TIMEOUTS.filesListMs, hdfsListMs: Number(configuredTimeouts.hdfsListMs) || DEFAULT_RESOURCE_TIMEOUTS.hdfsListMs, hbaseScanMs: Number(configuredTimeouts.hbaseScanMs) || DEFAULT_RESOURCE_TIMEOUTS.hbaseScanMs };
-    state.favorites = loadFavoritesForCurrentServer(); renderFavorites(); updateFavoriteButtons(); renderConnectionList();
+    state.favorites = loadFavoritesForCurrentServer(); renderFavorites(); updateFavoriteButtons(); renderBigdataSource(); renderConnectionList();
   } catch (_) {}
-  await Promise.all([restoreDatabaseStatus(), restoreVoyageStatus(), restoreArchiveStatus()]);
+  await Promise.all([restoreDatabaseStatus(), restoreVoyageStatus(), restoreArchiveStatus(), restoreBigdataStatus()]);
   await restoreSession();
   checkStatus();
 })();
@@ -991,6 +1115,7 @@ async function restoreSession() {
       setConnected(true, conn);
       state.home = connectionStatus.home || '~';
       state.cwd = state.home;
+      renderConnectionList(); renderBigdataSource();
       status(`已恢复连接 · ${conn.host || ''}`, 'success');
       toast(`已恢复 ${conn.host || ''} 的连接会话`, 'ok');
       if ($('#filesPane') && !$('#filesPane').classList.contains('hidden')) void refreshFiles();
