@@ -34,18 +34,48 @@ const TABLES = Object.freeze([
   { dataKey: 'terminalProducts', database: 'CRM3DB', table: 'prod_inst' },
   { dataKey: 'thresholdAttributes', database: 'CRM3DB', table: 'prod_inst_attr' },
 ]);
+const POSTGRES_TABLE_MAP = Object.freeze({
+  prod_inst_acct_rel: 'prod_inst_acct',
+  offer_inst: 'prod_offer_inst',
+  offer_inst_attr: 'prod_offer_inst_attr',
+  offer_inst_rel: 'prod_offer_inst_rel',
+  offer: 'offer_ces',
+});
+const POSTGRES_COLUMN_MAP = Object.freeze({
+  prod_inst: { acc_num: 'acc_nbr' },
+  prod_inst_rel: { a_prod_inst_id: 'prod_inst_a_id', z_prod_inst_id: 'prod_inst_z_id' },
+  prod_inst_acct_rel: { prod_inst_acct_rel_id: 'prod_inst_acct_id', acct_id: 'account_id' },
+  offer_inst: { offer_inst_id: 'prod_offer_inst_id', offer_id: 'prod_offer_id' },
+  offer_inst_attr: { offer_inst_attr_id: 'prod_offer_inst_attr_id', offer_inst_id: 'prod_offer_inst_id' },
+  offer_inst_rel: { offer_inst_id: 'prod_offer_inst_id' },
+  offer_prod_inst_rel: { offer_inst_id: 'prod_offer_inst_id' },
+});
 
-function quoteIdentifier(value) { return `\`${String(value).replace(/`/g, '``')}\``; }
+function mapTargetRow(row, table, target) {
+  if (target !== 'postgres') return row;
+  const columns = POSTGRES_COLUMN_MAP[table] || {};
+  return Object.fromEntries(Object.entries(row).map(([key, value]) => [columns[key.toLowerCase()] || key, value]));
+}
 
-export function sqlLiteral(value) {
+function quoteIdentifier(value, target) {
+  return target === 'postgres' ? `"${String(value).replace(/"/g, '""')}"` : `\`${String(value).replace(/`/g, '``')}\``;
+}
+
+export function sqlLiteral(value, target = 'postgres') {
   if (value === null || value === undefined) return 'NULL';
   if (typeof value === 'number') {
     if (!Number.isFinite(value)) return 'NULL';
     return String(value);
   }
   if (typeof value === 'bigint') return value.toString();
-  if (typeof value === 'boolean') return value ? '1' : '0';
+  if (typeof value === 'boolean') return target === 'postgres' ? (value ? 'TRUE' : 'FALSE') : (value ? '1' : '0');
   const source = typeof value === 'object' ? JSON.stringify(value) : String(value);
+  if (target === 'postgres') {
+    const escaped = source.replace(/'/g, "''");
+    return /[\\\0\n\r\x1a]/.test(source)
+      ? `E'${escaped.replace(/\\/g, '\\\\').replace(/\0/g, '\\000').replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\x1a/g, '\\032')}'`
+      : `'${escaped}'`;
+  }
   const escaped = source.replace(/\\/g, '\\\\').replace(/\0/g, '\\0').replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\x1a/g, '\\Z').replace(/'/g, "''");
   return `'${escaped}'`;
 }
@@ -78,17 +108,19 @@ export function hasInsertRows(result) {
 
 function utc8Iso(date = new Date()) { return new Date(date.getTime() + 8 * 60 * 60 * 1000).toISOString().replace('Z', '+08:00'); }
 
-export function generateInsertScript(result, { generatedAt = utc8Iso() } = {}) {
+export function generateInsertScript(result, { generatedAt = utc8Iso(), target = 'postgres' } = {}) {
   if (result?.source !== 'voyage') throw new Error('仅工程环境 Voyage 查询结果支持生成 INSERT');
+  if (!['postgres', 'mysql'].includes(target)) throw new Error('不支持的 INSERT 目标类型');
   const identifier = result.productInstanceId ? `产品实例 ${result.productInstanceId}` : result.aProductInstanceId ? `A 端产品实例 ${result.aProductInstanceId}` : `号码 ${result.phone || '—'}`;
   const lines = [
     '-- Server Workbench 工程环境数据同步脚本',
     '-- 来源：工程环境 Voyage 在线数据库',
-    '-- 目标：测试环境（执行前请再次核对连接环境）',
+    target === 'postgres' ? '-- 目标：PostgreSQL 数据库 bill_cnos_jftest，Schema bill_inmemory（执行前请再次核对连接环境）' : '-- 目标：测试环境 MySQL / UDAL（执行前请再次核对连接环境）',
     `-- 查询：${identifier}`,
     `-- 生成时间：${generatedAt}`,
-    '-- 说明：脚本仅包含当前查询已返回的数据；不同逻辑库需在对应连接中分别执行。',
+    target === 'postgres' ? '-- 说明：脚本仅包含当前查询已返回的数据；执行前请核对 bill_inmemory 中各目标表和字段。' : '-- 说明：脚本仅包含当前查询已返回的数据；不同逻辑库需在对应连接中分别执行。',
   ];
+  if (target === 'postgres') lines.push('', 'BEGIN;');
   let totalRows = 0;
   const grouped = new Map();
   for (const { dataKey, database, table } of TABLES) {
@@ -100,18 +132,21 @@ export function generateInsertScript(result, { generatedAt = utc8Iso() } = {}) {
   }
   for (const { database, table, rows: sourceRows } of grouped.values()) {
     const seen = new Set();
-    const rows = sourceRows.filter((row) => { const key = rowIdentity(row); if (seen.has(key)) return false; seen.add(key); return true; });
+    const rows = sourceRows.map((row) => mapTargetRow(row, table, target)).filter((row) => { const key = rowIdentity(row); if (seen.has(key)) return false; seen.add(key); return true; });
     const columns = exportColumns(rows);
     if (!columns.length) continue;
     totalRows += rows.length;
-    lines.push('', `-- 目标逻辑库：${database} | 表：${table} | ${rows.length} 行`);
-    lines.push(`INSERT INTO ${quoteIdentifier(table)} (${columns.map(quoteIdentifier).join(', ')}) VALUES`);
+    const physicalTable = target === 'postgres' ? (POSTGRES_TABLE_MAP[table] || table) : table;
+    lines.push('', `-- ${target === 'postgres' ? '来源逻辑库' : '目标逻辑库'}：${database} | 表：${physicalTable} | ${rows.length} 行`);
+    const targetTable = target === 'postgres' ? `${quoteIdentifier('bill_inmemory', target)}.${quoteIdentifier(physicalTable, target)}` : quoteIdentifier(table, target);
+    lines.push(`INSERT INTO ${targetTable} (${columns.map((column) => quoteIdentifier(column, target)).join(', ')}) VALUES`);
     rows.forEach((row, index) => {
       const suffix = index === rows.length - 1 ? ';' : ',';
-      lines.push(`  (${columns.map((column) => sqlLiteral(sourceValue(row, column))).join(', ')})${suffix}`);
+      lines.push(`  (${columns.map((column) => sqlLiteral(sourceValue(row, column), target)).join(', ')})${suffix}`);
     });
   }
   if (!totalRows) lines.push('', '-- 当前查询结果没有可导出的数据行。');
+  if (target === 'postgres') lines.push('', 'COMMIT;');
   lines.push('', `-- 合计：${totalRows} 行`);
   return lines.join('\n');
 }

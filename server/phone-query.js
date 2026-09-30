@@ -23,6 +23,10 @@ const VOYAGE_BILL_INMEMORY_COLUMN_MAP = Object.freeze({
   acc_num: 'acc_nbr',
   offer_inst_id: 'prod_offer_inst_id',
 });
+const VOYAGE_PRODUCT_RELATION_COLUMN_MAP = Object.freeze({
+  a_prod_inst_id: 'prod_inst_a_id',
+  z_prod_inst_id: 'prod_inst_z_id',
+});
 const EVENT_TYPE_CATALOG = Object.freeze([
   { sourceTypeSequence: '8', eventTypeId: '206080000', routeEventTypeId: '206080000', name: 'CDMA 集团', targetTable: 'TICKET_CDMA_GROUP' },
   { sourceTypeSequence: '7', eventTypeId: '206070000', routeEventTypeId: '206070000', name: 'CDMA 语音', targetTable: 'TICKET_CDMA_VOICE' },
@@ -105,8 +109,10 @@ const SQL = {
   pricingObject: `SELECT * FROM pricing_object WHERE PRICING_OBJECT_ID = ? LIMIT ${STEP_LIMIT}`,
   offersByPricingPlan: `SELECT * FROM offer WHERE PRICING_PLAN_ID = ? LIMIT ${STEP_LIMIT}`,
   offerInstancesByOffer: 'SELECT * FROM offer_inst WHERE OFFER_ID = ? LIMIT 3',
+  allOfferInstancesByOffer: `SELECT * FROM offer_inst WHERE OFFER_ID = ? LIMIT ${STEP_LIMIT}`,
   offerRelationsByInstance: `SELECT * FROM offer_prod_inst_rel WHERE OFFER_INST_ID = ? LIMIT ${STEP_LIMIT}`,
   voyageOffersByName: 'SELECT * FROM offer_ces WHERE offer_name LIKE ? ORDER BY offer_id LIMIT 50',
+  offerById: 'SELECT * FROM offer WHERE offer_id = ? LIMIT 1',
   voyageOfferInstancesByOffer: `SELECT * FROM prod_offer_inst WHERE offer_id = ? LIMIT ${STEP_LIMIT}`,
   voyageOfferRelationsByInstance: `SELECT * FROM offer_prod_inst_rel WHERE prod_offer_inst_id = ? LIMIT ${STEP_LIMIT}`,
   voyageOfferInstanceAttributes: `SELECT * FROM prod_offer_inst_attr WHERE prod_offer_inst_id = ? LIMIT ${STEP_LIMIT}`,
@@ -142,13 +148,22 @@ function mapQueryTables(sql, source, schema) {
     mappedSql = mappedSql.replace(pattern, (_match, keyword) => `${keyword} ${physicalTable}`);
     tableMap.push({ logicalTable, physicalTable });
   }
-  for (const [logicalColumn, physicalColumn] of Object.entries(VOYAGE_BILL_INMEMORY_COLUMN_MAP)) {
+  const columns = /\b(?:FROM|JOIN)\s+prod_inst_rel\b/i.test(sql)
+    ? { ...VOYAGE_BILL_INMEMORY_COLUMN_MAP, ...VOYAGE_PRODUCT_RELATION_COLUMN_MAP }
+    : VOYAGE_BILL_INMEMORY_COLUMN_MAP;
+  for (const [logicalColumn, physicalColumn] of Object.entries(columns)) {
     const pattern = new RegExp(`\\b${logicalColumn}\\b`, 'gi');
     if (!pattern.test(mappedSql)) continue;
     mappedSql = mappedSql.replace(pattern, physicalColumn);
     columnMap.push({ logicalColumn, physicalColumn });
   }
   return { sql: mappedSql, tableMap, columnMap };
+}
+
+function normalizeQueryRows(rows, source, schema, sql) {
+  if (source !== 'voyage' || schema !== 'bill_inmemory' || !/\b(?:FROM|JOIN)\s+prod_inst_rel\b/i.test(sql)) return rows;
+  const reverse = Object.fromEntries(Object.entries(VOYAGE_PRODUCT_RELATION_COLUMN_MAP).map(([logical, physical]) => [physical, logical]));
+  return rows.map((row) => Object.fromEntries(Object.entries(row).map(([key, value]) => [reverse[key.toLowerCase()] || key, value])));
 }
 
 class QueryContext {
@@ -159,7 +174,7 @@ class QueryContext {
     const effectiveSchema = effectiveSource === 'voyage' ? (schema || this.schema) : undefined;
     const mapped = mapQueryTables(sql, effectiveSource, effectiveSchema);
     try {
-      const rows = repairBusinessText(await this.db.query(effectiveSource, database, mapped.sql, values, { signal: this.signal, timeout: 15000, ...(effectiveSchema ? { schema: effectiveSchema } : {}) }));
+      const rows = normalizeQueryRows(repairBusinessText(await this.db.query(effectiveSource, database, mapped.sql, values, { signal: this.signal, timeout: 15000, ...(effectiveSchema ? { schema: effectiveSchema } : {}) })), effectiveSource, effectiveSchema, mapped.sql);
       const kept = rows.slice(0, Math.max(0, TOTAL_LIMIT - this.count));
       this.count += kept.length;
       if (rows.length >= STEP_LIMIT || kept.length < rows.length) this.truncated = true;
@@ -314,6 +329,49 @@ async function queryAccountCandidates(db, { productInstanceId, customerId }, opt
   return { productInstanceId: productId || null, customerId: custId || null, ...resultSourceMeta(source, options.schema), candidate: true, queriedAt: utc8Iso(), truncated: ctx.truncated, rows: unique, steps: ctx.steps };
 }
 
+async function queryOffer(db, offerId, { signal, source = 'udal', schema } = {}) {
+  const input = String(offerId ?? '').trim();
+  if (!/^\d+$/.test(input)) throw new Error('套餐 offer_id 必须是数字');
+  const ctx = new QueryContext(db, signal, source, schema);
+  const voyage = source === 'voyage' && schema === 'bill_inmemory';
+  const offers = await ctx.step('按 offer_id 查询套餐定义', voyage ? CRM : CONFIG, SQL.offerById, [input]);
+  const offerIds = valuesOf(offers, 'OFFER_ID');
+  const offerInstances = await ctx.each('套餐实例', CRM, voyage ? SQL.voyageOfferInstancesByOffer : SQL.allOfferInstancesByOffer, offerIds);
+  const instanceKey = voyage ? 'PROD_OFFER_INST_ID' : 'OFFER_INST_ID';
+  const instanceIds = valuesOf(offerInstances, instanceKey);
+  const [offerRelations, offerInstanceAttributes] = await Promise.all([
+    ctx.each('套餐实例产品关系', CRM, voyage ? SQL.voyageOfferRelationsByInstance : SQL.offerRelationsByInstance, instanceIds),
+    voyage ? ctx.each('套餐实例属性', CRM, SQL.voyageOfferInstanceAttributes, instanceIds) : Promise.resolve([]),
+  ]);
+  const productIds = valuesOf(offerRelations, 'PROD_INST_ID');
+  if (productIds.length > 100) ctx.truncated = true;
+  const productInstances = await ctx.each('订购套餐的产品实例', CRM, SQL.productsByInstance, productIds.slice(0, 100));
+  const pricingPlans = voyage ? [] : await ctx.each('套餐定价计划', CONFIG, SQL.pricingPlan, valuesOf(offers, 'PRICING_PLAN_ID'));
+  const offer = offers[0] || {};
+  const productsById = new Map(productInstances.map((row) => [String(rowValue(row, 'PROD_INST_ID')), row]));
+  const subscribers = uniqueRows(offerRelations.map((relation) => {
+    const id = String(rowValue(relation, 'PROD_INST_ID') || '');
+    const instanceId = String(rowValue(relation, instanceKey) || '');
+    const instance = offerInstances.find((row) => String(rowValue(row, instanceKey)) === instanceId) || {};
+    const product = productsById.get(id) || {};
+    return {
+      OWNER_CUST_ID: rowValue(product, 'OWNER_CUST_ID') ?? rowValue(instance, 'OWNER_CUST_ID') ?? '',
+      OFFER_ID: input, OFFER_NAME: rowValue(offer, 'OFFER_NAME') ?? '',
+      [instanceKey]: instanceId, OFFER_INST_STATUS: rowValue(instance, 'STATUS_CD') ?? '',
+      PROD_INST_ID: id, ACC_NUM: accessNumber(product), PROD_ID: rowValue(product, 'PROD_ID') ?? '',
+      PROD_INST_STATUS: rowValue(product, 'STATUS_CD') ?? '',
+    };
+  }));
+  const hasErrors = ctx.steps.some((step) => step.status === 'error');
+  const hasRows = [offers, offerInstances, offerRelations, offerInstanceAttributes, productInstances].some((rows) => rows.length);
+  return {
+    offerId: input, ...resultSourceMeta(source, schema),
+    status: hasErrors ? (hasRows ? 'partial' : 'failed') : (hasRows ? (ctx.truncated ? 'partial' : 'complete') : 'empty'),
+    queriedAt: utc8Iso(), truncated: ctx.truncated, totalRows: ctx.count, steps: ctx.steps,
+    data: { offers, offerInstances, offerRelations, offerInstanceAttributes, productInstances, pricingPlans, subscribers },
+  };
+}
+
 async function queryEventType(db, eventTypeId, { signal, source = 'udal', schema, offerName } = {}) {
   const input = String(eventTypeId ?? '').trim();
   if (!/^\d+$/.test(input)) throw new Error('事件类型 ID 必须是数字');
@@ -453,4 +511,4 @@ async function queryThreshold(db, aProductInstanceId, { signal, source = 'udal',
   };
 }
 
-module.exports = { CRM, CONFIG, STEP_LIMIT, TOTAL_LIMIT, THRESHOLD_PRODUCT_ID, THRESHOLD_LEVELS, THRESHOLD_ATTR_IDS, EVENT_TYPE_CATALOG, VOYAGE_BILL_INMEMORY_TABLE_MAP, SQL, QueryContext, aggregateProductArchive, queryPhone, queryProductInstance, queryCustomerProducts, queryAccountCandidates, queryEventType, queryThreshold, rowValue, valuesOf, uniqueRows, mapQueryTables, utc8Iso };
+module.exports = { CRM, CONFIG, STEP_LIMIT, TOTAL_LIMIT, THRESHOLD_PRODUCT_ID, THRESHOLD_LEVELS, THRESHOLD_ATTR_IDS, EVENT_TYPE_CATALOG, VOYAGE_BILL_INMEMORY_TABLE_MAP, SQL, QueryContext, aggregateProductArchive, queryPhone, queryProductInstance, queryCustomerProducts, queryAccountCandidates, queryOffer, queryEventType, queryThreshold, rowValue, valuesOf, uniqueRows, mapQueryTables, utc8Iso };

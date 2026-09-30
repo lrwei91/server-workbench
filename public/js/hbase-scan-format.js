@@ -1,5 +1,5 @@
-const ACCUMULATOR_TABLE_RE = /^ACCUMULATOR_\d{6}$/i;
-const ACCUMULATOR_DETAIL_TABLE_RE = /^ACCUMULATOR_DETAIL_\d{6}$/i;
+const ACCUMULATOR_TABLE_RE = /^(?:TRY_)?ACCUMULATOR_\d{6}(?:_plcatest)?$/i;
+const ACCUMULATOR_DETAIL_TABLE_RE = /^(?:TRY_)?ACCUMULATOR_DETAIL_\d{6}(?:_plcatest)?$/i;
 const DISPATCH_TABLE_RE = /^TICKET_(DISPATCH|DISPATCHED)_FILE$/i;
 const BATCH_INFO_TABLE_RE = /^(pro_)?(preproc|rating)_batch_(major|minor)_info$/i;
 
@@ -38,6 +38,16 @@ function accumMeaning(value) {
 
 function ownerMeaning(value) {
   return value === '24A' ? '独享' : '共享';
+}
+
+export function formatHbaseTimestamp(value) {
+  const raw = String(value ?? '—');
+  if (!/^-?\d+$/.test(raw)) return raw;
+  const milliseconds = Number(raw);
+  if (!Number.isSafeInteger(milliseconds)) return raw;
+  const date = new Date(milliseconds + 8 * 60 * 60 * 1000);
+  if (Number.isNaN(date.getTime())) return raw;
+  return `${raw}（${date.toISOString().replace('T', ' ').replace('Z', ' +08:00')}）`;
 }
 
 function parseHbaseCells(raw) {
@@ -79,13 +89,13 @@ export function parseAccumulatorDetailRowKey(rowKey) {
   return null;
 }
 
-function formatAccumulatorDetailScan(raw) {
+function formatAccumulatorDetailScan(raw, isTrial = false) {
   const cells = parseHbaseCells(raw);
   const records = cells.map((cell) => ({ cell, fields: parseAccumulatorDetailRowKey(cell.rowKey) })).filter((record) => record.fields);
   if (!records.length) return { text: raw, structured: false, parsedCount: 0, skippedCount: cells.length };
 
   const lines = [
-    `量本明细（已解析 ${records.length} 条）`,
+    `${isTrial ? '试算' : ''}量本明细（已解析 ${records.length} 条）`,
     '字段来源：RowKey；Qualifier 为空。复制按钮仍复制原始 scan 输出。',
     '',
   ];
@@ -97,7 +107,7 @@ function formatAccumulatorDetailScan(raw) {
       `    RATABLE_RESOURCE_ID（量本/资源类型）：${fields.ratableResourceId}    RESOURCE_CYCLE_ID（量本账期）：${fields.resourceCycleId}`,
       `    PRICING_PLAN_ID（定价计划）：${fields.pricingPlanId}    PREFER_INST_ID（套餐销售品实例）：${fields.preferInstId}`,
       `    ROW_KEY 附加段：${fields.extraSegments.join(' / ') || '—'}`,
-      `    VALUE：${cell.value}    TIMESTAMP：${cell.timestamp}`,
+      `    VALUE：${cell.value}    TIMESTAMP：${formatHbaseTimestamp(cell.timestamp)}`,
       '',
     );
   });
@@ -156,7 +166,7 @@ function formatTicketDispatchScan(tablePath, raw) {
       );
     }
     lines.push(
-      `    VALUE_RAW（原始值）：${cell.value}    TIMESTAMP：${cell.timestamp}`,
+      `    VALUE_RAW（原始值）：${cell.value}    TIMESTAMP：${formatHbaseTimestamp(cell.timestamp)}`,
       `    ROW_KEY：${cell.rowKey}`,
       '',
     );
@@ -255,7 +265,7 @@ function formatBatchMajorScan(info, cells, raw) {
     const visible = BATCH_MAJOR_FIELDS.filter(([name]) => values.has(name)).map(([name, label]) => `${label}：${formatBatchMajorValue(name, values.get(name))}`);
     for (let offset = 0; offset < visible.length; offset += 2) lines.push(`    ${visible.slice(offset, offset + 2).join('    ')}`);
     rowCells.filter((cell) => !known.has(cell.qualifier)).forEach((cell) => lines.push(`    ${cell.qualifier.toUpperCase()}：${cell.value}`));
-    lines.push(`    TIMESTAMP：${rowCells[0]?.timestamp || '—'}`, '');
+    lines.push(`    TIMESTAMP：${formatHbaseTimestamp(rowCells[0]?.timestamp)}`, '');
   });
   const parsedCells = [...rows.values()].reduce((total, row) => total + row.length, 0);
   return { text: lines.join('\n').trimEnd(), structured: true, parsedCount: rows.size, skippedCount: Math.max(0, cells.length - parsedCells) };
@@ -296,7 +306,7 @@ function formatBatchMinorScan(info, cells, raw) {
       `    ${targetLabel}：${fields.targetPath}`,
       `    RESULT_SEGMENT_1（结果段 1）：${fields.result1}    RESULT_SEGMENT_2（结果段 2）：${fields.result2}`,
       `    RESULT_PATH（结果文件）：${fields.resultPath}`,
-      `    TIMESTAMP：${cell.timestamp}    ROW_KEY：${cell.rowKey}`,
+      `    TIMESTAMP：${formatHbaseTimestamp(cell.timestamp)}    ROW_KEY：${cell.rowKey}`,
       '',
     );
   });
@@ -311,46 +321,36 @@ function formatBatchInfoScan(tablePath, raw) {
 
 export function formatHbaseScanText(tablePath, rawText) {
   const raw = String(rawText || '');
+  const isTrial = /^TRY_/i.test(tableNameFromPath(tablePath));
   if (!raw) {
     return { text: raw, structured: false, parsedCount: 0, skippedCount: 0 };
   }
-  if (isMonthlyAccumulatorDetailTable(tablePath)) return formatAccumulatorDetailScan(raw);
+  if (isMonthlyAccumulatorDetailTable(tablePath)) return formatAccumulatorDetailScan(raw, isTrial);
   if (isTicketDispatchTable(tablePath)) return formatTicketDispatchScan(tablePath, raw);
   if (isBatchInfoTable(tablePath)) return formatBatchInfoScan(tablePath, raw);
   if (!isMonthlyAccumulatorTable(tablePath)) return { text: raw, structured: false, parsedCount: 0, skippedCount: 0 };
 
-  const records = [];
-  let qualifierCount = 0;
-  for (const line of raw.split(/\r?\n/)) {
-    const match = line.match(/column=f:([^,\s]+),\s*timestamp=([^,\s]+)/);
-    if (!match) continue;
-    qualifierCount += 1;
-    const fields = parseAccumulatorQualifier(match[1]);
-    if (!fields) continue;
-    records.push({
-      rowKey: line.slice(0, match.index).trim() || '—',
-      qualifier: match[1],
-      timestamp: match[2],
-      ...fields,
-    });
-  }
+  const cells = parseHbaseCells(raw).filter((cell) => cell.family === 'f' && cell.qualifier && cell.timestamp !== '—');
+  const qualifierCount = cells.length;
+  const records = cells.map((cell) => ({ cell, fields: parseAccumulatorQualifier(cell.qualifier) })).filter((record) => record.fields);
 
   if (!records.length) {
     return { text: raw, structured: false, parsedCount: 0, skippedCount: qualifierCount };
   }
 
   const lines = [
-    `量本初始化 / 结转结果（已解析 ${records.length} 条）`,
+    `${isTrial ? '试算' : ''}量本初始化 / 结转结果（已解析 ${records.length} 条）`,
     '字段来源：列族 f → Qualifier；复制按钮仍复制原始 scan 输出。',
     '',
   ];
-  records.forEach((record, index) => {
+  records.forEach(({ cell, fields }, index) => {
     lines.push(
-      `[${index + 1}] ROW_KEY：${record.rowKey}`,
-      `    ACCUM（结果）：${record.accum}（${accumMeaning(record.accum)}）    OWNER_TYPE（归属）：${record.ownerType}（${ownerMeaning(record.ownerType)}）`,
-      `    RATABLE_RESOURCE_ID（量本/资源类型）：${record.ratableResourceId}    RESOURCE_CYCLE_ID（量本账期）：${record.resourceCycleId}`,
-      `    PRICING_PLAN_ID（定价计划）：${record.pricingPlanId}    PREFER_INST_ID（套餐销售品实例）：${record.preferInstId}`,
-      `    TIMESTAMP：${record.timestamp}    QUALIFIER：f:${record.qualifier}`,
+      `[${index + 1}] ROW_KEY：${cell.rowKey || '—'}`,
+      `    ACCUM（结果）：${fields.accum}（${accumMeaning(fields.accum)}）    OWNER_TYPE（归属）：${fields.ownerType}（${ownerMeaning(fields.ownerType)}）`,
+      `    RATABLE_RESOURCE_ID（量本/资源类型）：${fields.ratableResourceId}    RESOURCE_CYCLE_ID（量本账期）：${fields.resourceCycleId}`,
+      `    PRICING_PLAN_ID（定价计划）：${fields.pricingPlanId}    PREFER_INST_ID（套餐销售品实例）：${fields.preferInstId}`,
+      `    VALUE_RAW（原始值）：${cell.value}`,
+      `    TIMESTAMP：${formatHbaseTimestamp(cell.timestamp)}    QUALIFIER：f:${cell.qualifier}`,
       '',
     );
   });

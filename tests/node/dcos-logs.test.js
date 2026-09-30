@@ -71,6 +71,25 @@ test('空日志、会话过期和非法行数', async () => {
   });
 });
 
+test('命名空间列表兼容平台直接数组、列表包装和空结果', async () => {
+  for (const payload of [
+    [{ namespaceName: 'other' }, { namespaceName: 'bill-cnos-jf', clusterId: 321 }],
+    { records: [{ namespaceName: 'bill-cnos-jf' }, { namespaceName: 'other' }] },
+    { list: [{ name: 'bill-cnos-jf' }] },
+    null,
+  ]) {
+    await fixture((_req, res) => json(res, { code: 0, data: payload }), async (baseUrl) => {
+      const service = new DcosLogs(config(baseUrl)); service.cookie = 'JSESSIONID=test';
+      const result = await service.namespaces(321);
+      assert.deepEqual(result, payload === null ? [] : [{ name: 'bill-cnos-jf', clusterId: 321 }]);
+    });
+  }
+  await fixture((_req, res) => json(res, { code: 0, data: { unexpected: true } }), async (baseUrl) => {
+    const service = new DcosLogs(config(baseUrl)); service.cookie = 'JSESSIONID=test';
+    await assert.rejects(service.namespaces(321), { code: 'DCOS_INVALID_RESPONSE' });
+  });
+});
+
 test('StatefulSet 筛选跨上游分页后再计算搜索结果总数', async () => {
   const pages = [];
   await fixture((req, res) => {

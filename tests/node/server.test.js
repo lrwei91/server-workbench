@@ -168,6 +168,10 @@ test('HTTP errors have real status and normalized shape', async () => {
     assert.equal(disconnectedThreshold.status, 409); assert.equal(disconnectedThreshold.body.error.code, 'DB_NOT_CONNECTED');
     const disconnectedEventType = await request(server, 'POST', '/api/query/event-type', { eventTypeId: '206080000' });
     assert.equal(disconnectedEventType.status, 409); assert.equal(disconnectedEventType.body.error.code, 'DB_NOT_CONNECTED');
+    const disconnectedOffer = await request(server, 'POST', '/api/query/offer', { offerId: '801' });
+    assert.equal(disconnectedOffer.status, 409); assert.equal(disconnectedOffer.body.error.code, 'DB_NOT_CONNECTED');
+    const invalidOffer = await request(server, 'POST', '/api/query/offer', { offerId: '801', eventTypeId: '206080000' });
+    assert.equal(invalidOffer.status, 400); assert.equal(invalidOffer.body.error.code, 'UNKNOWN_FIELD');
     const voyageStatus = await request(server, 'GET', '/api/voyage/status');
     assert.equal(voyageStatus.status, 200); assert.equal(Object.hasOwn(voyageStatus.body.config, 'token'), false);
     const invalidVoyageToken = await request(server, 'POST', '/api/voyage/connect', { token: 123 });
@@ -246,16 +250,18 @@ test('log queue writes asynchronously and paginates newest entries', async () =>
 test('fixed query panel replaces command and log interactions', () => {
   const html = fs.readFileSync(path.join(__dirname, '../../public/index.html'), 'utf8');
   const source = fs.readFileSync(path.join(__dirname, '../../public/js/main.js'), 'utf8');
-  assert.match(html, /<h1>数据库查询<\/h1>/); assert.match(html, /查询手机号/); assert.match(html, /实例查档案/); assert.match(html, /id="productInstanceQueryForm"/); assert.match(html, /查询套餐/); assert.match(html, /id="eventTypeQueryForm"/); assert.match(html, /value="206080000" selected/); assert.match(html, /阈值查询/); assert.match(html, /内存档案查询/); assert.match(html, /Voyage 在线数据库/); assert.match(html, /id="querySourceSelect"/); assert.match(html, /id="querySchemaSelect"[^>]*disabled>[\s\S]*?<option value="bill_inmemory" selected>bill_inmemory<\/option>[\s\S]*?<option value="crmv3">crmv3<\/option>/); assert.match(html, /id="connectionDialog"/);
+  assert.match(html, /<h1>数据库查询<\/h1>/); assert.match(html, /查询手机号/); assert.match(html, /实例查档案/); assert.match(html, /id="productInstanceQueryForm"/); assert.match(html, /查询套餐/); assert.match(html, /查询事件类型/); assert.match(html, /id="offerQueryForm"/); assert.match(html, /<input id="offerInput"[^>]*inputmode="numeric"/); assert.match(html, /id="eventTypeQueryForm"/); assert.match(html, /value="206080000" selected/); assert.match(html, /阈值查询/); assert.match(html, /内存档案查询/); assert.match(html, /Voyage 在线数据库/); assert.match(html, /id="querySourceSelect"/); assert.match(html, /id="querySchemaSelect"[^>]*disabled>[\s\S]*?<option value="bill_inmemory" selected>bill_inmemory<\/option>[\s\S]*?<option value="crmv3">crmv3<\/option>/); assert.match(html, /id="connectionDialog"/);
   assert.match(html, /id="insertDialog"/); assert.match(html, /id="insertSqlCopy"/); assert.match(html, /一键复制/);
-  assert.doesNotMatch(html, /Redis|cacheRedis|data-cache-/);
+  assert.match(html, /data-primary-page="redis">Redis 档案/); assert.match(html, /id="redisPage"[^>]*data-primary-panel="redis"/); assert.match(html, /id="redisQueryForm"/); assert.match(html, /id="btnRedisQuery"/);
+  assert.doesNotMatch(html, /data-query-tab="redis"|data-tab="redis"/);
+  assert.doesNotMatch(html, /cacheRedis|data-cache-/);
   assert.doesNotMatch(html, /id="cmdInput"|id="logFlow"|id="btnCmds"|id="commandsDialog"/);
-  assert.match(source, /postJson\('\/api\/query\/phone'/); assert.match(source, /postJson\('\/api\/query\/product-instance'/); assert.match(source, /postJson\('\/api\/query\/event-type'/); assert.match(source, /postJson\('\/api\/query\/threshold'/); assert.match(source, /postJson\('\/api\/query\/archive'/); assert.match(source, /postJson\('\/api\/voyage\/connect'/); assert.match(source, /generateInsertScript\(result\)/); assert.match(source, /\/api\/hdfs\/preview/);
+  assert.match(source, /postJson\('\/api\/query\/phone'/); assert.match(source, /postJson\('\/api\/query\/product-instance'/); assert.match(source, /postJson\('\/api\/query\/offer'/); assert.match(source, /postJson\('\/api\/query\/event-type'/); assert.match(source, /postJson\('\/api\/query\/threshold'/); assert.match(source, /postJson\('\/api\/query\/archive'/); assert.match(source, /postJson\('\/api\/query\/redis'/); assert.match(source, /postJson\('\/api\/voyage\/connect'/); assert.match(source, /generateInsertScript\(result, \{ target \}\)/); assert.match(html, /id="insertTargetSelect"/); assert.match(source, /\/api\/hdfs\/preview/);
   assert.match(source, /querySourcePayload\(source, schema\)/); assert.match(source, /source === 'voyage' \? \{ schema: schema \|\| 'bill_inmemory' \}/);
   assert.match(source, /resultSection\('销售品实例关系'/); assert.match(source, /resultSection\('关联销售品实例'/); assert.match(source, /resultSection\('销售品实例费用属性'/);
   assert.match(source, /resultSection\('销售品关联对象'/); assert.match(source, /resultSection\('销售品关联资源'/); assert.match(source, /resultSection\('增值业务订购关系'/);
-  assert.match(source, /resultSection\('订购用户汇总'/); assert.match(source, /resultSection\('拥有套餐的产品实例'/); assert.match(source, /text: '查看档案'/); assert.match(html, /反查用户/);
-  assert.match(html, /id="eventOfferNameInput"/); assert.match(source, /offerName/); assert.match(source, /resultSection\('销售品实例属性'/);
+  assert.match(source, /resultSection\('订购用户汇总'/); assert.match(source, /resultSection\('拥有套餐的产品实例'/); assert.match(source, /text: '查看档案'/); assert.match(html, /反查订购用户/);
+  assert.doesNotMatch(html, /id="eventOfferNameInput"/); assert.match(source, /resultSection\('销售品实例属性'/);
   assert.doesNotMatch(source, /\/api\/cache\/|state\.cache|CACHE_FIELDS/);
   assert.doesNotMatch(source, /postJson\('\/api\/exec'|postJson\('\/api\/log\/append'|\/api\/log\/list/);
 });
@@ -285,6 +291,7 @@ test('query tabs preserve independent results until explicitly cleared', () => {
   assert.match(source, /queryResultRoot\('productInstance'\)\.replaceChildren/);
   assert.match(source, /queryResultRoot\('threshold'\)\.replaceChildren/);
   assert.match(source, /queryResultRoot\('archive'\)\.replaceChildren/);
+  assert.match(source, /\$\('#redisResults'\)\.replaceChildren/);
 });
 
 test('query result sections show source tables, hide empty categories, and preserve vertical scrolling', () => {
@@ -318,9 +325,9 @@ test('connection settings use independent source controls and keep credentials o
   assert.match(dialog, /<details class="connection-environment" data-connection-environment="test"><summary[^>]*><span>测试环境<\/span>/);
   assert.match(dialog, /<details class="connection-environment" data-connection-environment="project"><summary><span>工程环境<\/span>/);
   assert.doesNotMatch(dialog, /<details[^>]*\bopen\b/); assert.match(dialog, /data-connection-source="voyage"/); assert.match(dialog, /Voyage 在线数据库/); assert.match(dialog, /data-connection-source="archive"/); assert.match(dialog, /内存档案服务/);
-  assert.match(dialog, /data-connection-source="ssh"/); assert.match(dialog, /data-connection-source="udal"/); assert.match(dialog, /data-connection-source="doris"/);
+  assert.match(dialog, /data-connection-source="ssh"/); assert.match(dialog, /data-connection-source="udal"/); assert.match(dialog, /data-connection-source="doris"/); assert.match(dialog, /data-connection-source="pg"/);
   assert.match(dialog, /data-connection-source="bigdata"/); assert.match(dialog, /HDFS\/HBase 客户端服务/);
-  assert.equal((dialog.match(/data-connection-connect="(?:ssh|bigdata|udal|doris|voyage|archive)"/g) || []).length, 6); assert.equal((dialog.match(/<input\b/g) || []).length, 1); assert.match(dialog, /id="voyageTokenInput"[^>]*type="password"[^>]*autocomplete="off"/); assert.doesNotMatch(dialog, /dcosCookieInput|data-connection-source="dcos"/); assert.doesNotMatch(dialog, /id="btnConnectAll"|data-db-disconnect/);
+  assert.equal((dialog.match(/data-connection-connect="(?:ssh|bigdata|udal|doris|pg|voyage|archive)"/g) || []).length, 7); assert.equal((dialog.match(/<input\b/g) || []).length, 1); assert.match(dialog, /id="voyageTokenInput"[^>]*type="password"[^>]*autocomplete="off"/); assert.doesNotMatch(dialog, /dcosCookieInput|data-connection-source="dcos"/); assert.doesNotMatch(dialog, /id="btnConnectAll"|data-db-disconnect/);
   const processPage = html.match(/<section id="processLogsPage"[\s\S]*?<\/section>\s*<section id="cdrPage"/)?.[0] || '';
   assert.match(processPage, /id="dcosCookieInput"[^>]*type="password"[^>]*autocomplete="off"/);
   assert.match(processPage, /id="dcosStartWorkload"[^>]*disabled/);
@@ -337,7 +344,7 @@ test('primary sidebar owns resources, process logs, and CDR while quick lookup i
   const source = fs.readFileSync(path.join(__dirname, '../../public/js/main.js'), 'utf8');
   const topbar = html.match(/<header class="topbar">[\s\S]*?<\/header>/)?.[0] || '';
   assert.match(html, /<nav class="primary-sidebar"/);
-  assert.deepEqual([...html.matchAll(/data-primary-page="([^"]+)"/g)].map((match) => match[1]), ['workspace', 'processLogs', 'cdr']);
+  assert.deepEqual([...html.matchAll(/data-primary-page="([^"]+)"/g)].map((match) => match[1]), ['workspace', 'redis', 'processLogs', 'cdr']);
   assert.doesNotMatch(topbar, /btnBilling|btnCdr|btnProcessLogs/);
   assert.doesNotMatch(html, /billingDialog|dcosLogDialog|cdrDialog|billingContent/);
   assert.match(html, /id="cdrPage"[^>]*data-primary-panel="cdr"/);

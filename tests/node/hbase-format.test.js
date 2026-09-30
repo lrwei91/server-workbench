@@ -28,6 +28,54 @@ test('monthly ACCUMULATOR scan formats qualifier fields for direct reading', asy
   assert.match(result.text, /PREFER_INST_ID（套餐销售品实例）：7158761731/);
   assert.match(result.text, /ACCUM（结果）：100（结转）/);
   assert.match(result.text, /OWNER_TYPE（归属）：SHARE（共享）/);
+  assert.match(result.text, /VALUE_RAW（原始值）：907003419_7158761731/);
+  assert.match(result.text, /VALUE_RAW（原始值）：other/);
+  assert.match(result.text, /TIMESTAMP：1789034584620（2026-09-10 18:03:04\.620 \+08:00）/);
+});
+
+test('TRY_ACCUMULATOR monthly tables reuse qualifier formatting and identify trial data', async () => {
+  const { formatHbaseScanText, isMonthlyAccumulatorTable } = await import(formatterUrl);
+  const raw = 'row-1 column=f:200_24A_1246_202609_807506_7158761731, timestamp=1789034584620, value=sample';
+  for (const table of ['TRY_ACCUMULATOR_202609', 'TRY_ACCUMULATOR_202609_plcatest']) {
+    const tablePath = `/ns_bill_cnos_jf_test:${table}`;
+    const result = formatHbaseScanText(tablePath, raw);
+    assert.equal(isMonthlyAccumulatorTable(tablePath), true);
+    assert.equal(result.structured, true);
+    assert.equal(result.parsedCount, 1);
+    assert.match(result.text, /试算量本初始化 \/ 结转结果/);
+    assert.match(result.text, /ACCUM（结果）：200（初始化）/);
+    assert.match(result.text, /OWNER_TYPE（归属）：24A（独享）/);
+    assert.match(result.text, /RATABLE_RESOURCE_ID（量本\/资源类型）：1246/);
+    assert.match(result.text, /VALUE_RAW（原始值）：sample/);
+    assert.match(result.text, /TIMESTAMP：1789034584620（2026-09-10 18:03:04\.620 \+08:00）/);
+  }
+});
+
+test('ACCUMULATOR and TRY_ACCUMULATOR retain every raw value in a multi-cell scan', async () => {
+  const { formatHbaseScanText } = await import(formatterUrl);
+  const values = [
+    '907003419_0_0_20260901000000_20261001000000_0$0$0_9223372036854775807_0_20260901000000',
+    '907003419_6527510668_907003419_20260901000000_20261001000000_0$0$0_0_0_20260901000000',
+  ];
+  const raw = [
+    "scan 'ns_bill_cnos_jf_test:TRY_ACCUMULATOR_202609'",
+    'ROW COLUMN+CELL',
+    `031|6527510668 column=f:200_24K_1320_202609_8067454_6527510668, timestamp=1790242766184, value=${values[0]}`,
+    `031|6527510668 column=f:200_24K_1321_202609_8067454_6527510668, timestamp=1790242766482, value=${values[0]}`,
+    '031|6527510668 column=f:200_24K_2002_202609_8067454_6527510668, timestamp=1790242766571,',
+    `             value=${values[0]}`,
+    `031|6527510668 column=f:200_24K_3002_202609_8067454_6527510668, timestamp=1790242766603, value=${values[0]}`,
+    `032|48243980 column=f:200_24A_1246_202609_8067454_6527510668, timestamp=1790242766407, value=${values[1]}`,
+    '2 row(s)',
+  ].join('\n');
+  for (const table of ['ACCUMULATOR_202609', 'TRY_ACCUMULATOR_202609']) {
+    const result = formatHbaseScanText(`/ns_bill_cnos_jf_test:${table}`, raw);
+    assert.equal(result.structured, true);
+    assert.equal(result.parsedCount, 5);
+    assert.equal(result.text.split(`VALUE_RAW（原始值）：${values[0]}`).length - 1, 4);
+    assert.equal(result.text.split(`VALUE_RAW（原始值）：${values[1]}`).length - 1, 1);
+    assert.match(result.text, /TIMESTAMP：1790242766184（2026-09-24 17:39:26\.184 \+08:00）/);
+  }
 });
 
 test('other HBase tables keep their original scan display', async () => {
@@ -63,7 +111,25 @@ test('monthly ACCUMULATOR_DETAIL scan formats MS and SM RowKey fields', async ()
   assert.match(result.text, /PREFER_INST_ID（套餐销售品实例）：6743857310/);
   assert.match(result.text, /ROW_KEY 附加段：6743857310 \/ 907003419 \/ 13932 \/ 0/);
   assert.match(result.text, /VALUE：9070030419_6743857310_907003419_13932/);
+  assert.match(result.text, /TIMESTAMP：1788427117379（2026-09-03 17:18:37\.379 \+08:00）/);
   assert.deepEqual(parseAccumulatorDetailRowKey('bad-row-key'), null);
+});
+
+test('TRY_ACCUMULATOR_DETAIL monthly tables reuse RowKey formatting', async () => {
+  const { formatHbaseScanText, isMonthlyAccumulatorDetailTable } = await import(formatterUrl);
+  const raw = '06|MS_6743857310_200_24K_1321_202606_8067454_6743857310 column=f:, timestamp=1788427117379, value=sample';
+  for (const table of ['TRY_ACCUMULATOR_DETAIL_202606', 'TRY_ACCUMULATOR_DETAIL_202606_plcatest']) {
+    const tablePath = `/ns_bill_cnos_jf_test:${table}`;
+    const result = formatHbaseScanText(tablePath, raw);
+    assert.equal(isMonthlyAccumulatorDetailTable(tablePath), true);
+    assert.equal(result.structured, true);
+    assert.equal(result.parsedCount, 1);
+    assert.match(result.text, /试算量本明细/);
+    assert.match(result.text, /DETAIL_TYPE（明细类型）：MS/);
+    assert.match(result.text, /ACCUM（结果）：200（初始化）/);
+    assert.match(result.text, /VALUE：sample/);
+    assert.match(result.text, /TIMESTAMP：1788427117379（2026-09-03 17:18:37\.379 \+08:00）/);
+  }
 });
 
 test('TICKET dispatch tables format seven-part RowKeys and lifecycle state', async () => {
@@ -87,6 +153,7 @@ test('TICKET dispatch tables format seven-part RowKeys and lifecycle state', asy
   assert.match(done.text, /CODE_6（第 6 段）：590/);
   assert.match(done.text, /SEGMENT_7（第 7 段）：6/);
   assert.match(done.text, /VALUE_RAW（原始值）：0\|-1/);
+  assert.match(done.text, /TIMESTAMP：1788503823660（2026-09-04 14:37:03\.660 \+08:00）/);
 
   const pendingRaw = [
     "scan 'ns_bill_cnos_jf_test:TICKET_DISPATCH_FILE', {LIMIT => 20}",
@@ -129,6 +196,7 @@ test('batch major tables group batch_info qualifiers by batch id', async () => {
   assert.match(result.text, /PRE_STATUS（前序状态）：110（格式异常）/);
   assert.match(result.text, /CREATE_TIME（创建时间）：2026-09-02 11:19:38\.756（原始：20260902111938756）/);
   assert.match(result.text, /OUT_NORMAL_COUNT（正常输出数）：1/);
+  assert.match(result.text, /TIMESTAMP：1788319190731（2026-09-02 11:19:50\.731 \+08:00）/);
 
   const empty = formatHbaseScanText('/ns_bill_cnos_jf_test:pro_rating_batch_major_info', "scan 'ns_bill_cnos_jf_test:pro_rating_batch_major_info', {LIMIT => 20}\nROW  COLUMN+CELL\n0 row(s)");
   assert.equal(empty.structured, true);
@@ -157,6 +225,17 @@ test('batch minor tables split direction, file paths and result segments', async
   assert.match(result.text, /RESULT_PATH（结果文件）：\/apps\/prep\/errstyle\/a\.err/);
   assert.match(result.text, /DIRECTION（方向）：out（输出）/);
   assert.match(result.text, /OUTPUT_TARGET_PATH（输出目标文件）：\/apps\/prep\/output\/a\.normal/);
+  assert.match(result.text, /TIMESTAMP：1788163400298（2026-08-31 16:03:20\.298 \+08:00）/);
+});
+
+test('HBase cell timestamps retain raw values when conversion is invalid or imprecise', async () => {
+  const { formatHbaseTimestamp } = await import(formatterUrl);
+  assert.equal(formatHbaseTimestamp(1790236653475), '1790236653475（2026-09-24 15:57:33.475 +08:00）');
+  assert.equal(formatHbaseTimestamp('0'), '0（1970-01-01 08:00:00.000 +08:00）');
+  assert.equal(formatHbaseTimestamp('-1'), '-1（1970-01-01 07:59:59.999 +08:00）');
+  assert.equal(formatHbaseTimestamp('18446744073709551615'), '18446744073709551615');
+  assert.equal(formatHbaseTimestamp('not-a-timestamp'), 'not-a-timestamp');
+  assert.equal(formatHbaseTimestamp('8640000000000000'), '8640000000000000');
 });
 
 test('malformed ACCUMULATOR qualifier falls back to original output', async () => {
@@ -166,4 +245,15 @@ test('malformed ACCUMULATOR qualifier falls back to original output', async () =
   assert.equal(result.structured, false);
   assert.equal(result.skippedCount, 1);
   assert.equal(result.text, raw);
+});
+
+test('malformed TRY_ACCUMULATOR records retain raw output', async () => {
+  const { formatHbaseScanText } = await import(formatterUrl);
+  const qualifierRaw = 'row-1 column=f:200_24A_too_short, timestamp=1';
+  const qualifierResult = formatHbaseScanText('/ns_cnos:TRY_ACCUMULATOR_202609', qualifierRaw);
+  assert.deepEqual(qualifierResult, { text: qualifierRaw, structured: false, parsedCount: 0, skippedCount: 1 });
+
+  const detailRaw = 'bad-row-key column=f:, timestamp=1, value=sample';
+  const detailResult = formatHbaseScanText('/ns_cnos:TRY_ACCUMULATOR_DETAIL_202609', detailRaw);
+  assert.deepEqual(detailResult, { text: detailRaw, structured: false, parsedCount: 0, skippedCount: 1 });
 });

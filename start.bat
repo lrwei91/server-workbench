@@ -16,7 +16,7 @@ set "NODE_EXE=node"
 rem A copied or partially synchronized node_modules can contain truncated JS files.
 rem Verify the actual runtime imports and rebuild dependencies from package-lock.json
 rem before starting either service when the installation is missing or damaged.
-%NODE_EXE% -e "require('mysql2/promise');require('ssh2');require('iconv-lite');" >nul 2>nul
+%NODE_EXE% -e "require('mysql2/promise');require('pg');require('ssh2');require('iconv-lite');" >nul 2>nul
 if errorlevel 1 (
   echo [WARN] Node dependencies are missing or damaged. Reinstalling from package-lock.json ...
   where npm >nul 2>nul
@@ -31,7 +31,7 @@ if errorlevel 1 (
     pause
     exit /b 1
   )
-  %NODE_EXE% -e "require('mysql2/promise');require('ssh2');require('iconv-lite');"
+  %NODE_EXE% -e "require('mysql2/promise');require('pg');require('ssh2');require('iconv-lite');"
   if errorlevel 1 (
     echo [ERROR] Dependencies are still invalid after npm ci.
     pause

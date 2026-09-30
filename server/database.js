@@ -5,11 +5,12 @@ const config = require('./config-loader');
 const SOURCE_DEFAULTS = {
   udal: { label: 'MySQL / UDAL', ...config.database.udal },
   doris: { label: 'Doris', ...config.database.doris },
+  pg: { label: 'PostgreSQL', ...config.database.pg },
 };
 
 function normalizeSource(value) {
   const source = String(value || '').trim().toLowerCase();
-  if (!SOURCE_DEFAULTS[source]) throw new Error('数据源必须是 udal 或 doris');
+  if (!SOURCE_DEFAULTS[source]) throw new Error('数据源必须是 udal、doris 或 pg');
   return source;
 }
 
@@ -18,8 +19,9 @@ function maskConfig(config) {
 }
 
 class DatabaseManager {
-  constructor(mysql) {
+  constructor(mysql, pg) {
     this.mysql = mysql;
+    this.pg = pg;
     this.sources = new Map();
     this.generations = new Map();
   }
@@ -51,20 +53,27 @@ class DatabaseManager {
       database: typeof raw.database === 'string' ? raw.database.trim() : defaults.database || '',
     };
     if (!config.host || !config.username || !Number.isInteger(config.port) || config.port < 1 || config.port > 65535) throw new Error('数据库地址、端口和账号必须填写正确');
+    if (source === 'pg' && !config.database) throw new Error('PostgreSQL 数据库名必须填写');
     const pools = new Map();
     try {
-      for (const database of defaults.databases) {
-        const selectedDb = database || config.database || undefined;
-        const pool = this.mysql.createPool({
-          host: config.host, port: config.port, user: config.username, password: config.password,
-          ...(selectedDb ? { database: selectedDb } : {}),
-          waitForConnections: true, connectionLimit: source === 'udal' ? 4 : 2, queueLimit: 0,
-          multipleStatements: false, connectTimeout: 15000, enableKeepAlive: true,
-          charset: 'utf8mb4',
-          supportBigNumbers: true, bigNumberStrings: true, dateStrings: true,
-        });
-        pools.set(selectedDb || '', pool);
-        await pool.query({ sql: 'SELECT 1 AS ok', timeout: 15000 });
+      if (source === 'pg') {
+        const pool = new this.pg.Pool({ host: config.host, port: config.port, user: config.username, password: config.password, database: config.database, max: 2, connectionTimeoutMillis: 15000, idleTimeoutMillis: 30000 });
+        pools.set(config.database, pool);
+        await pool.query('SELECT 1 AS ok');
+      } else {
+        for (const database of defaults.databases) {
+          const selectedDb = database || config.database || undefined;
+          const pool = this.mysql.createPool({
+            host: config.host, port: config.port, user: config.username, password: config.password,
+            ...(selectedDb ? { database: selectedDb } : {}),
+            waitForConnections: true, connectionLimit: source === 'udal' ? 4 : 2, queueLimit: 0,
+            multipleStatements: false, connectTimeout: 15000, enableKeepAlive: true,
+            charset: 'utf8mb4',
+            supportBigNumbers: true, bigNumberStrings: true, dateStrings: true,
+          });
+          pools.set(selectedDb || '', pool);
+          await pool.query({ sql: 'SELECT 1 AS ok', timeout: 15000 });
+        }
       }
       if (this.generations.get(source) !== generation) throw new Error('数据库连接请求已过期');
       this.sources.set(source, { config, pools });
@@ -90,6 +99,7 @@ class DatabaseManager {
     const source = normalizeSource(sourceValue);
     const entry = this.sources.get(source);
     if (!entry) throw new Error(`${SOURCE_DEFAULTS[source].label} 尚未连接`);
+    if (source === 'pg') throw new Error('PostgreSQL 当前仅用于连接状态检查');
     const pool = entry.pools.get(database || '') || entry.pools.values().next().value;
     if (!pool) throw new Error(`数据源 ${source} 没有可用连接`);
     if (options.signal?.aborted) throw Object.assign(new Error('查询已取消'), { code: 'QUERY_CANCELLED' });
@@ -111,7 +121,7 @@ class DatabaseManager {
   }
 }
 
-function createDatabaseManager(mysql = require('mysql2/promise')) { return new DatabaseManager(mysql); }
+function createDatabaseManager(mysql = require('mysql2/promise'), pg = require('pg')) { return new DatabaseManager(mysql, pg); }
 const manager = createDatabaseManager();
 
 module.exports = { SOURCE_DEFAULTS, DatabaseManager, createDatabaseManager, manager, normalizeSource, maskConfig };

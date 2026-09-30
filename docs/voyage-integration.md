@@ -9,7 +9,7 @@
 | CRM3DB | 5 | incf_db | bill_inmemory |
 | CONFIGDB_CNOS_JF_TEST | 5 | incf_db | bill_inmemory |
 
-查询面板在选择“工程环境 · Voyage”后可进一步选择 `bill_inmemory` 或 `crmv3` Schema，默认为 `bill_inmemory`。后端仅接受这两个白名单值。工程环境始终保持 Voyage 单一来源；“查询套餐”按套餐名读取 `offer_ces`，再查询 `prod_offer_inst`、`offer_prod_inst_rel`、`prod_offer_inst_attr` 和 `prod_inst`，不会读取测试环境 MySQL/UDAL。
+查询面板在选择“工程环境 · Voyage”后可进一步选择 `bill_inmemory` 或 `crmv3` Schema，默认为 `bill_inmemory`。后端仅接受这两个白名单值。工程环境始终保持 Voyage 单一来源；“查询套餐”按 `offer_id` 精确读取 `offer_ces`，再查询 `prod_offer_inst`、`offer_prod_inst_rel`、`prod_offer_inst_attr` 和 `prod_inst`，不会读取测试环境 MySQL/UDAL。独立的“查询事件类型”页面使用测试环境事件配置链。
 
 接口返回的 `columns` 与二维 `rows` 会还原为行对象；超过 JavaScript 安全整数范围的裸整数在解析前转换为字符串。HTTP 鉴权失败、接口失败和单条 SQL 的 `error` 分别保留明确状态。
 

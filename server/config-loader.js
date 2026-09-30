@@ -41,6 +41,7 @@ function normalize(raw) {
   const workbench = value.workbench || {};
   const ssh = value.ssh || {};
   const archive = value.archive || {};
+  const redisArchive = value.redisArchive || {};
   const voyage = value.voyage || {};
   const bigdataClient = value.bigdataClient || {};
   const cdr = value.cdr || {};
@@ -73,12 +74,25 @@ function normalize(raw) {
         host: envText('DORIS_HOST').trim(), port: envNumber('DORIS_PORT', 9030), username: envText('DORIS_USERNAME').trim(), password: envText('DORIS_PASSWORD'),
         database: envText('DORIS_DATABASE').trim(), databases: [null],
       },
+      pg: {
+        host: envText('PG_HOST').trim(), port: envNumber('PG_PORT', 5432), username: envText('PG_USERNAME').trim(), password: envText('PG_PASSWORD'),
+        database: envText('PG_DATABASE').trim(), databases: [null],
+      },
     },
     archive: {
       pageUrl: envText('ARCHIVE_PAGE_URL', archive.pageUrl || 'http://134.155.157.3:30006/inmemory-manager/inmemory-manager-frontend/dataop').trim(),
       apiUrl: envText('ARCHIVE_API_URL', archive.apiUrl || '').trim(),
       authToken: envText('ARCHIVE_AUTH_TOKEN', archive.authToken || ''),
       timeoutMs: envNumber('ARCHIVE_TIMEOUT_MS', Number(archive.timeoutMs) || 60000),
+    },
+    redisArchive: {
+      host: envText('REDIS_ARCHIVE_HOST', redisArchive.host || '').trim(),
+      port: envNumber('REDIS_ARCHIVE_PORT', Number(redisArchive.port) || 16379),
+      db: Math.max(0, Number(envText('REDIS_ARCHIVE_DB', redisArchive.db ?? 0)) || 0),
+      username: envText('REDIS_ARCHIVE_USERNAME', redisArchive.username || '').trim(),
+      password: envText('REDIS_ARCHIVE_PASSWORD', redisArchive.password || ''),
+      timeoutMs: envNumber('REDIS_ARCHIVE_TIMEOUT_MS', Number(redisArchive.timeoutMs) || 15000),
+      maxDecodedBytes: envNumber('REDIS_ARCHIVE_MAX_DECODED_BYTES', Number(redisArchive.maxDecodedBytes) || 16 * 1024 * 1024),
     },
     voyage: {
       apiUrl: envText('VOYAGE_API_URL', voyage.apiUrl || 'http://134.155.157.3:30010/api/query/execute').trim(),

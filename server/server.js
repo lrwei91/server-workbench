@@ -19,9 +19,11 @@ const { ArchiveService } = require('./archive-service');
 const { VoyageManager } = require('./voyage');
 const { manager: bigdata } = require('./bigdata-client');
 const { DcosLogs } = require('./dcos-logs');
+const { RedisArchiveService } = require('./redis-archive');
 const archive = new ArchiveService(config.archive);
 const voyage = new VoyageManager(config.voyage);
 const dcos = new DcosLogs(config.dcos);
+const redisArchive = new RedisArchiveService(config.redisArchive);
 
 const ROOT = path.join(__dirname, '..');
 const PUBLIC_DIR = path.join(ROOT, 'public');
@@ -47,7 +49,7 @@ function asRequestError(error) {
   if (/连接请求已过期/i.test(raw)) return new RequestError(409, 'STALE_CONNECTION_REQUEST', '连接请求已过期，请重试', true);
   if (/认证失败/i.test(raw)) return new RequestError(401, 'AUTH_FAILED', 'SSH 认证失败，请检查用户名和密码', false);
   if (/已拦截|交互式终端/i.test(raw)) return new RequestError(403, 'COMMAND_BLOCKED', raw, false);
-  if (/MySQL \/ UDAL 尚未连接|Doris 尚未连接/i.test(raw)) return new RequestError(409, 'DB_NOT_CONNECTED', raw, false);
+  if (/MySQL \/ UDAL 尚未连接|Doris 尚未连接|PostgreSQL 尚未连接/i.test(raw)) return new RequestError(409, 'DB_NOT_CONNECTED', raw, false);
   if (/尚未连接|NOT_CONNECTED/i.test(raw)) return new RequestError(409, 'NOT_CONNECTED', '尚未连接服务器，请先点击连接');
   if (/连接超时|超时：/i.test(raw)) return new RequestError(504, 'REMOTE_TIMEOUT', raw, true);
   if (/连接被拒绝|网络不可达|无法解析主机/i.test(raw)) return new RequestError(502, 'REMOTE_CONNECTION', raw, true);
@@ -59,7 +61,7 @@ function asRequestError(error) {
   if (/^HDFS (?:上传|删除|列目录)失败：/i.test(raw)) return new RequestError(502, 'HDFS_OPERATION_FAILED', raw, true);
   if (/数据源必须是|数据库地址、端口和账号|手机号或接入号码|客户 ID|产品实例 ID/i.test(raw)) return new RequestError(400, 'INVALID_INPUT', raw, false);
   if (/查询已取消/i.test(raw)) return new RequestError(499, 'QUERY_CANCELLED', '查询已取消', false);
-  if (/Access denied|ER_ACCESS_DENIED_ERROR/i.test(raw)) return new RequestError(401, 'DB_AUTH_FAILED', '数据库认证失败，请检查账号和密码', false);
+  if (error?.code === '28P01' || /Access denied|ER_ACCESS_DENIED_ERROR/i.test(raw)) return new RequestError(401, 'DB_AUTH_FAILED', '数据库认证失败，请检查账号和密码', false);
   if (/ECONNREFUSED|ENETUNREACH|EHOSTUNREACH|getaddrinfo|connect ETIMEDOUT/i.test(raw)) return new RequestError(502, 'DB_CONNECTION_FAILED', '数据库连接失败，请检查地址、端口和网络', true);
   if (/^(?:HBase .+包含不支持的字符|HBase 路径格式|扫描表路径格式)/i.test(raw)) return new RequestError(400, 'HBASE_INVALID_PATH', raw, false);
   if (/SFTP|SSH|hadoop|hbase|ECONN|EHOST|ENET|channel/i.test(raw)) return new RequestError(502, 'REMOTE_ERROR', '远端服务请求失败，请检查连接后重试', true);
@@ -132,9 +134,9 @@ function requireDate(value, name = 'date') {
   return date;
 }
 function requireConnected() { if (!ssh.conn) throw new RequestError(409, 'NOT_CONNECTED', '尚未连接服务器，请先点击连接'); }
-async function runQueryRequest(req, res, work, { timeoutCode = 'DB_QUERY_TIMEOUT', timeoutMessage = '数据库聚合查询超过 60 秒' } = {}) {
+async function runQueryRequest(req, res, work, { timeoutMs = 60000, timeoutCode = 'DB_QUERY_TIMEOUT', timeoutMessage = '数据库聚合查询超过 60 秒' } = {}) {
   const controller = new AbortController(); let timedOut = false;
-  const timer = setTimeout(() => { timedOut = true; controller.abort(); }, 60000);
+  const timer = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
   const abort = () => controller.abort(); const close = () => { if (!res.writableEnded) controller.abort(); };
   req.once('aborted', abort); res.once('close', close);
   try { return await work(controller.signal); }
@@ -214,7 +216,7 @@ async function handle(req, res) {
     return sendJson(res, 200, {
       ok: true,
       config: ssh.maskConfig(ssh.DEFAULT_CONFIG),
-      connections: { ssh: ssh.maskConfig(ssh.DEFAULT_CONFIG), bigdata: bigdata.defaults(), ...database.defaults(), voyage: voyage.defaults(), archive: archive.defaults() },
+      connections: { ssh: ssh.maskConfig(ssh.DEFAULT_CONFIG), bigdata: bigdata.defaults(), ...database.defaults(), voyage: voyage.defaults(), archive: archive.defaults(), redisArchive: redisArchive.defaults() },
       configured: !config.isExample,
       errors: config.validate(),
       timeouts: { hdfsListMs: hdfsTimeoutMs * 2 + 10000, hbaseScanMs: hbaseTimeoutMs + 10000 },
@@ -291,6 +293,7 @@ async function handle(req, res) {
     const body = await readBody(req); assertObject(body, []); await voyage.disconnect(); return sendJson(res, 200, { ok: true, ...voyage.status() });
   }
   if (req.method === 'GET' && p === '/api/archive/status') return sendJson(res, 200, { ok: true, ...archive.status() });
+  if (req.method === 'GET' && p === '/api/redis/status') return sendJson(res, 200, { ok: true, config: redisArchive.defaults() });
   if (req.method === 'POST' && p === '/api/archive/connect') {
     const body = await readBody(req); assertObject(body, []); const result = await archive.connect(); return sendJson(res, 200, { ok: true, ...result });
   }
@@ -332,9 +335,18 @@ async function handle(req, res) {
     const offerName = body.offerName === undefined ? undefined : requireString(body.offerName, 'offerName');
     const result = await runQueryRequest(req, res, (signal) => phoneQuery.queryEventType(queryManager(source), requireString(body.eventTypeId, 'eventTypeId'), { signal, source, schema, offerName })); return sendJson(res, 200, { ok: true, result });
   }
+  if (req.method === 'POST' && p === '/api/query/offer') {
+    const body = await readBody(req); assertObject(body, ['offerId', 'source', 'schema']); const source = requireQuerySource(body.source); const schema = requireQuerySchema(body.schema, source);
+    const result = await runQueryRequest(req, res, (signal) => phoneQuery.queryOffer(queryManager(source), requireString(body.offerId, 'offerId'), { signal, source, schema })); return sendJson(res, 200, { ok: true, result });
+  }
   if (req.method === 'POST' && p === '/api/query/archive') {
     const body = await readBody(req); assertObject(body, ['key']);
     const result = await runQueryRequest(req, res, (signal) => archive.query(requireString(body.key, 'key'), { signal }), { timeoutCode: 'ARCHIVE_QUERY_TIMEOUT', timeoutMessage: '内存档案查询超过 60 秒' });
+    return sendJson(res, 200, { ok: true, result });
+  }
+  if (req.method === 'POST' && p === '/api/query/redis') {
+    const body = await readBody(req); assertObject(body, ['key']);
+    const result = await runQueryRequest(req, res, (signal) => redisArchive.query(requireString(body.key, 'key'), { signal }), { timeoutMs: config.redisArchive.timeoutMs + 1000, timeoutCode: 'REDIS_QUERY_TIMEOUT', timeoutMessage: 'Redis 档案查询超时' });
     return sendJson(res, 200, { ok: true, result });
   }
   if (req.method === 'POST' && p === '/api/connect') {

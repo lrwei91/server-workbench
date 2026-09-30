@@ -123,8 +123,11 @@ class DcosLogs {
   async namespaces(clusterId, { signal } = {}) {
     const cluster = this.cluster(clusterId);
     const data = await this.request('/dcos/cluster/namespace/list', { query: { clusterId: cluster.id }, signal });
-    if (!Array.isArray(data)) throw new DcosError(502, 'DCOS_INVALID_RESPONSE', '命名空间响应格式错误');
-    return data.map((item) => ({ name: item.namespaceName, clusterId: item.clusterId })).filter((item) => item.name === 'bill-cnos-jf');
+    // 平台不同版本可能直接返回数组，也可能把列表包在分页/列表对象中。
+    const items = Array.isArray(data) ? data : [data?.records, data?.list, data?.namespaces, data?.namespaceList, data?.items, data?.content].find(Array.isArray);
+    if (!items && data != null) throw new DcosError(502, 'DCOS_INVALID_RESPONSE', `命名空间响应格式错误（字段：${Object.keys(data).slice(0, 8).join('、') || '无'}）`);
+    return (items || []).map((item) => ({ name: item?.namespaceName || item?.name, clusterId: item?.clusterId ?? cluster.id }))
+      .filter((item) => item.name === 'bill-cnos-jf');
   }
 
   async workloads(clusterId, namespaceName, { pageNow = 1, pageSize = 50, search = '', signal } = {}) {

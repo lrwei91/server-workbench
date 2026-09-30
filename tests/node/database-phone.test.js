@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const iconv = require('iconv-lite');
 const { createDatabaseManager } = require('../../server/database');
 const { repairBusinessText, repairUtf8AsGbk } = require('../../server/encoding');
-const { queryPhone, queryProductInstance, queryCustomerProducts, queryAccountCandidates, queryEventType, queryThreshold, THRESHOLD_PRODUCT_ID, THRESHOLD_ATTR_IDS, EVENT_TYPE_CATALOG, VOYAGE_BILL_INMEMORY_TABLE_MAP, mapQueryTables, utc8Iso } = require('../../server/phone-query');
+const { queryPhone, queryProductInstance, queryCustomerProducts, queryAccountCandidates, queryOffer, queryEventType, queryThreshold, THRESHOLD_PRODUCT_ID, THRESHOLD_ATTR_IDS, EVENT_TYPE_CATALOG, VOYAGE_BILL_INMEMORY_TABLE_MAP, mapQueryTables, utc8Iso } = require('../../server/phone-query');
 
 test('database manager creates isolated UDAL pools, preserves values as strings, and never exposes passwords', async () => {
   const pools = [];
@@ -16,6 +16,25 @@ test('database manager creates isolated UDAL pools, preserves values as strings,
   const rows = await manager.query('udal', 'CRM3DB', 'SELECT * FROM prod_inst WHERE acc_num = ?', ['13338297988']);
   assert.equal(rows[0].prod_inst_id, '9925377578'); assert.equal(rows[0].amount, '100.00000');
   await manager.disconnect('udal'); assert.equal(pools.every((pool) => pool.ended), true);
+});
+
+test('PostgreSQL connection uses its own driver and masks credentials', async () => {
+  const pools = [];
+  const pg = { Pool: class {
+    constructor(options) { this.options = options; this.ended = false; pools.push(this); }
+    async query(sql) { assert.equal(sql, 'SELECT 1 AS ok'); return { rows: [{ ok: 1 }] }; }
+    async end() { this.ended = true; }
+  } };
+  const mysql = { createPool() { throw new Error('PostgreSQL must not use mysql2'); } };
+  const manager = createDatabaseManager(mysql, pg);
+  const result = await manager.connect('pg', { host: 'HOST', port: 18801, username: 'USER', password: 'SECRET', database: 'DB' });
+  assert.equal(pools[0].options.database, 'DB');
+  assert.equal(pools[0].options.password, 'SECRET');
+  assert.equal(JSON.stringify(result).includes('SECRET'), false);
+  assert.equal(JSON.stringify(manager.status()).includes('SECRET'), false);
+  assert.equal(manager.status().pg.connected, true);
+  await manager.disconnect('pg');
+  assert.equal(pools[0].ended, true);
 });
 
 test('business text repair reverses UTF-8 bytes decoded as GB18030 and preserves the source value', () => {
@@ -159,6 +178,29 @@ test('Voyage bill_inmemory phone lookup uses acc_nbr and preserves it as the acc
   assert.deepEqual(result.steps[0].columnMap, [{ logicalColumn: 'acc_num', physicalColumn: 'acc_nbr' }]);
 });
 
+test('Voyage bill_inmemory product relation uses physical A/Z columns and keeps logical result fields', async () => {
+  const mappedA = mapQueryTables('SELECT * FROM prod_inst_rel WHERE a_prod_inst_id = ? LIMIT 500', 'voyage', 'bill_inmemory');
+  const mappedZ = mapQueryTables('SELECT * FROM prod_inst_rel WHERE z_prod_inst_id = ? LIMIT 500', 'voyage', 'bill_inmemory');
+  assert.match(mappedA.sql, /WHERE prod_inst_a_id = \?/); assert.match(mappedZ.sql, /WHERE prod_inst_z_id = \?/);
+  assert.deepEqual(mappedA.columnMap, [{ logicalColumn: 'a_prod_inst_id', physicalColumn: 'prod_inst_a_id' }]);
+  assert.match(mapQueryTables('SELECT * FROM prod_inst_rel WHERE a_prod_inst_id = ?', 'voyage', 'crmv3').sql, /a_prod_inst_id = \?/);
+  assert.match(mapQueryTables('SELECT * FROM prod_inst_rel WHERE a_prod_inst_id = ?', 'udal').sql, /a_prod_inst_id = \?/);
+  const calls = []; const db = { query: async (_source, _database, sql, values) => {
+    calls.push({ sql, values });
+    if (/FROM prod_inst WHERE prod_inst_id/.test(sql)) return [{ prod_inst_id: values[0] }];
+    if (/FROM prod_inst_rel WHERE prod_inst_a_id/.test(sql)) return [{ prod_inst_a_id: '1254240', prod_inst_z_id: '7001' }];
+    if (/FROM prod_inst_rel WHERE prod_inst_z_id/.test(sql)) return [{ prod_inst_a_id: '7002', prod_inst_z_id: '1254240' }];
+    return [];
+  } };
+  const result = await queryProductInstance(db, '1254240', { source: 'voyage', schema: 'bill_inmemory' });
+  assert.deepEqual(result.data.relatedProductInstances.map((row) => row.prod_inst_id).sort(), ['7001', '7002']);
+  assert.deepEqual(result.data.productRelationships[0], { a_prod_inst_id: '1254240', z_prod_inst_id: '7001' });
+  assert.equal(calls.some((call) => /FROM prod_inst_rel WHERE a_prod_inst_id|FROM prod_inst_rel WHERE z_prod_inst_id/.test(call.sql)), false);
+  const threshold = await queryThreshold(db, '1254240', { source: 'voyage', schema: 'bill_inmemory' });
+  assert.deepEqual(threshold.data.relationships[0], { a_prod_inst_id: '1254240', z_prod_inst_id: '7001' });
+  assert.equal(calls.some((call) => /FROM prod_inst WHERE prod_id = 900178630/.test(call.sql) && call.values[0] === '7001'), true);
+});
+
 test('product instance query reuses the archive chain and preserves a large string id', async () => {
   const db = fixtureDb(); const id = '9007199254740993'; const result = await queryProductInstance(db, id, { source: 'voyage' });
   assert.equal(result.productInstanceId, id); assert.equal(result.source, 'voyage'); assert.equal(result.status, 'complete');
@@ -221,6 +263,33 @@ test('event type query returns format configuration and reverse-finds owning pro
   assert.equal(db.calls.filter((call) => /\bJOIN\b/i.test(call.sql)).length, 1);
   assert.deepEqual(db.calls.find((call) => /source_event_type_format/.test(call.sql)).values, ['8', '206080000', '206080000', '206080000']);
   await assert.rejects(queryEventType(db, 'ABC'), /必须是数字/);
+});
+
+test('offer query uses offer_id directly and follows the UDAL subscription chain', async () => {
+  const db = fixtureDb(); const result = await queryOffer(db, ' 801 ');
+  assert.equal(result.offerId, '801'); assert.equal(result.status, 'complete');
+  assert.equal(result.data.offers[0].offer_id, '801'); assert.equal(result.data.offerInstances[0].offer_inst_id, '701');
+  assert.equal(result.data.subscribers[0].PROD_INST_ID, '11');
+  assert.deepEqual(db.calls[0].values, ['801']); assert.match(db.calls[0].sql, /FROM offer WHERE offer_id = \?/);
+  assert.equal(db.calls.some((call) => /event_pricing_strategy|source_event_type_format/.test(call.sql)), false);
+  await assert.rejects(queryOffer(db, 'abc'), /offer_id 必须是数字/);
+});
+
+test('offer query maps offer_id to Voyage bill_inmemory offer_ces', async () => {
+  const calls = []; const db = { query: async (source, database, sql, values, options) => {
+    calls.push({ source, database, sql, values, options });
+    if (/FROM offer_ces WHERE offer_id/.test(sql)) return [{ offer_id: '801', offer_name: '集团套餐' }];
+    if (/FROM prod_offer_inst WHERE/.test(sql)) return [{ prod_offer_inst_id: '701', offer_id: '801' }];
+    if (/FROM offer_prod_inst_rel/.test(sql)) return [{ prod_offer_inst_id: '701', prod_inst_id: '11' }];
+    if (/FROM prod_offer_inst_attr/.test(sql)) return [{ prod_offer_inst_id: '701', attr_id: 'A1' }];
+    if (/FROM prod_inst WHERE/.test(sql)) return [{ prod_inst_id: '11', owner_cust_id: '900', acc_nbr: '13338297988' }];
+    return [];
+  } };
+  const result = await queryOffer(db, '801', { source: 'voyage', schema: 'bill_inmemory' });
+  assert.equal(result.status, 'complete'); assert.equal(result.data.subscribers[0].ACC_NUM, '13338297988');
+  assert.equal(result.data.offerInstanceAttributes.length, 1);
+  assert.deepEqual(calls[0].values, ['801']); assert.equal(calls.every((call) => call.source === 'voyage' && call.options.schema === 'bill_inmemory'), true);
+  assert.equal(calls.some((call) => /offer_name LIKE/.test(call.sql)), false);
 });
 
 test('engineering event query follows offer name to instance, attributes, relations, and products within Voyage', async () => {
