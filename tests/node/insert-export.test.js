@@ -114,3 +114,19 @@ test('PostgreSQL bill_inmemory export maps the observed subscription tables and 
   assert.match(sql, /"prod_inst_a_id", "prod_inst_z_id"/);
   assert.doesNotMatch(sql, /"dcs"\.|"offer_inst"|"prod_inst_acct_rel"/);
 });
+
+test('INSERT export retains historical versions and maps sale relationship endpoints, with partial-result warning', async () => {
+  const { generateInsertScript } = await import(moduleUrl);
+  const first = { prod_inst_id: '9007199254740993', his_id: '1' };
+  const sql = generateInsertScript({ source: 'voyage', productInstanceId: first.prod_inst_id, status: 'partial',
+    archiveCoverage: { limits: { nodesPerKind: 100, rounds: 8, readRows: 5000 } }, data: {
+      productInstances: [first, { ...first, his_id: '2' }], relatedProductInstances: [first],
+      offerInstanceRelationships: [{ offer_inst_rel_id: '31', a_offer_inst_id: '701', z_offer_inst_id: '702', his_id: '1' }],
+      accounts: [{ acct_id: '501', his_id: '1' }],
+    } }, { generatedAt: 'TIME' });
+  assert.match(sql, /表：prod_inst \| 2 行/);
+  assert.match(sql, /'9007199254740993', '1'/); assert.match(sql, /'9007199254740993', '2'/);
+  assert.match(sql, /"prod_offer_inst_rel_id", "rela_prod_offer_inst_id", "related_prod_offer_inst_id", "his_id"/);
+  assert.match(sql, /"account_id", "his_id"/);
+  assert.match(sql, /保留工程库现存的全部 his_id 版本/); assert.match(sql, /本脚本不代表完整档案/);
+});

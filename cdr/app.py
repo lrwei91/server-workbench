@@ -1,6 +1,9 @@
 # -*- coding: utf-8 -*-
 """CDR FastAPI 服务：输入校验、会话版本和统一错误响应。"""
 import json
+import os
+import secrets
+import sys
 from pathlib import Path
 from typing import Any, List, Optional
 
@@ -12,9 +15,18 @@ from pydantic import BaseModel, ConfigDict, Field
 
 import engine
 
-STATIC_DIR = Path(__file__).resolve().parent / "static"
-SHARED_DIR = Path(__file__).resolve().parent.parent / "shared"
+RESOURCE_ROOT = Path(sys._MEIPASS) if getattr(sys, "frozen", False) else Path(__file__).resolve().parent.parent
+STATIC_DIR = RESOURCE_ROOT / "cdr" / "static"
+SHARED_DIR = RESOURCE_ROOT / "shared"
 app = FastAPI(title="话单文件数据调整工具", docs_url=None, redoc_url=None)
+
+
+@app.middleware("http")
+async def desktop_session(request: Request, call_next):
+    token = os.environ.get("CDR_SESSION_TOKEN", "")
+    if token and not secrets.compare_digest(request.headers.get("x-cdr-token", "").encode(), token.encode()):
+        return JSONResponse(status_code=403, content={"ok": False, "error": {"code": "DESKTOP_SESSION_REQUIRED", "message": "桌面会话验证失败"}})
+    return await call_next(request)
 
 
 class StrictModel(BaseModel):

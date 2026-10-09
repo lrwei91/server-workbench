@@ -33,7 +33,7 @@ for (const protocol of ['http:', 'https:']) {
       const request = new EventEmitter(); request.end = () => {}; return request;
     } });
     const context = { URL, module: { exports: {} }, require(name) {
-      if (name === './config-loader') return { cdr: { upstream: `${protocol}//localhost:9443` } };
+      if (name === './config-loader') return { cdr: { upstream: `${protocol}//localhost:9443`, sessionToken: 'upstream-secret' } };
       return transport(name);
     } };
     vm.runInNewContext(source, context);
@@ -42,6 +42,7 @@ for (const protocol of ['http:', 'https:']) {
     assert.equal(calls[0].name, protocol.slice(0, -1));
     assert.equal(calls[0].options.path, '/api/load?x=1');
     assert.equal(calls[0].options.headers['content-type'], 'application/json');
+    assert.equal(calls[0].options.headers['x-cdr-token'], 'upstream-secret');
     assert.equal(piped, true);
   });
 }

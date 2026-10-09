@@ -20,10 +20,12 @@ const { VoyageManager } = require('./voyage');
 const { manager: bigdata } = require('./bigdata-client');
 const { DcosLogs } = require('./dcos-logs');
 const { RedisArchiveService } = require('./redis-archive');
+const { PgRedisSync, TABLES: SYNC_TABLES } = require('./pg-redis-sync');
 const archive = new ArchiveService(config.archive);
 const voyage = new VoyageManager(config.voyage);
-const dcos = new DcosLogs(config.dcos);
+const dcos = new DcosLogs(config.dcos, { logDir: path.join(config.resolveLogDir(), 'dcos') });
 const redisArchive = new RedisArchiveService(config.redisArchive);
+const redisSync = new PgRedisSync({ database, redis: redisArchive, backupDir: path.join(config.resolveLogDir(), 'pg-redis-sync') });
 
 const ROOT = path.join(__dirname, '..');
 const PUBLIC_DIR = path.join(ROOT, 'public');
@@ -134,6 +136,14 @@ function requireDate(value, name = 'date') {
   return date;
 }
 function requireConnected() { if (!ssh.conn) throw new RequestError(409, 'NOT_CONNECTED', '尚未连接服务器，请先点击连接'); }
+function requireSameOrigin(req) {
+  if (req.headers['sec-fetch-site'] === 'cross-site') throw new RequestError(403, 'CROSS_ORIGIN_WRITE', '跨站同步请求已拦截');
+  if (req.headers.origin) {
+    let origin;
+    try { origin = new URL(req.headers.origin); } catch (_) { throw new RequestError(403, 'CROSS_ORIGIN_WRITE', '请求来源格式错误'); }
+    if (!['http:', 'https:'].includes(origin.protocol) || origin.host !== req.headers.host) throw new RequestError(403, 'CROSS_ORIGIN_WRITE', '请在本地工作台确认同步');
+  }
+}
 async function runQueryRequest(req, res, work, { timeoutMs = 60000, timeoutCode = 'DB_QUERY_TIMEOUT', timeoutMessage = '数据库聚合查询超过 60 秒' } = {}) {
   const controller = new AbortController(); let timedOut = false;
   const timer = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
@@ -186,6 +196,7 @@ async function staticFile(res, base, relative) {
 async function handle(req, res) {
   const url = new URL(req.url, 'http://127.0.0.1');
   const p = url.pathname;
+  if (req.method === 'GET' && p === '/api/health') return sendJson(res, 200, { ok: true });
   if (req.method === 'GET' && (p === '/' || p === '/index.html')) return staticFile(res, PUBLIC_DIR, 'index.html');
   if (req.method === 'GET' && (p === '/style.css' || p === '/app.js')) return staticFile(res, PUBLIC_DIR, p.slice(1));
   if (req.method === 'GET' && p.startsWith('/js/')) return staticFile(res, path.join(PUBLIC_DIR, 'js'), p.slice(4));
@@ -294,6 +305,26 @@ async function handle(req, res) {
   }
   if (req.method === 'GET' && p === '/api/archive/status') return sendJson(res, 200, { ok: true, ...archive.status() });
   if (req.method === 'GET' && p === '/api/redis/status') return sendJson(res, 200, { ok: true, config: redisArchive.defaults() });
+  if (req.method === 'GET' && p === '/api/redis-sync/status') return sendJson(res, 200, { ok: true, tables: SYNC_TABLES.map(({ table, group }) => ({ table, group })), schema: 'bill_inmemory', mode: 'existing-record-fields' });
+  if (req.method === 'POST' && p === '/api/redis-sync/preview') {
+    const body = await readBody(req); assertObject(body, ['key', 'tables', 'timestampZone']);
+    const result = await runQueryRequest(req, res, (signal) => redisSync.preview(requireString(body.key, 'key'), { tables: body.tables, timestampZone: body.timestampZone }, { signal }));
+    return sendJson(res, 200, { ok: true, result });
+  }
+  if (req.method === 'POST' && p === '/api/redis-sync/history') {
+    const body = await readBody(req); assertObject(body, ['key']);
+    return sendJson(res, 200, { ok: true, result: await redisSync.history(requireString(body.key, 'key')) });
+  }
+  if (req.method === 'POST' && p === '/api/redis-sync/apply') {
+    requireSameOrigin(req); const body = await readBody(req); assertObject(body, ['previewId', 'confirmed']);
+    const result = await runQueryRequest(req, res, (signal) => redisSync.apply(requireString(body.previewId, 'previewId'), body.confirmed, { signal }));
+    return sendJson(res, 200, { ok: true, result });
+  }
+  if (req.method === 'POST' && p === '/api/redis-sync/restore') {
+    requireSameOrigin(req); const body = await readBody(req); assertObject(body, ['backupId', 'confirmed']);
+    const result = await runQueryRequest(req, res, (signal) => redisSync.restore(requireString(body.backupId, 'backupId'), body.confirmed, { signal }));
+    return sendJson(res, 200, { ok: true, result });
+  }
   if (req.method === 'POST' && p === '/api/archive/connect') {
     const body = await readBody(req); assertObject(body, []); const result = await archive.connect(); return sendJson(res, 200, { ok: true, ...result });
   }
@@ -480,7 +511,19 @@ async function handle(req, res) {
   return sendError(res, new RequestError(404, 'NOT_FOUND', `接口不存在: ${p}`));
 }
 
-function createServer() { return http.createServer((req, res) => { handle(req, res).catch((error) => sendError(res, error)); }); }
+function createServer({ token = '' } = {}) {
+  return http.createServer((req, res) => {
+    if (token && (req.headers['x-workbench-token'] !== token || (req.headers.origin && req.headers.origin !== `http://${req.headers.host}`))) {
+      return sendError(res, new RequestError(403, 'DESKTOP_SESSION_REQUIRED', '桌面会话验证失败'));
+    }
+    handle(req, res).catch((error) => sendError(res, error));
+  });
+}
+async function shutdownServices() {
+  bigdata.disconnect();
+  ssh.disconnect();
+  await Promise.allSettled([database.closeAll(), voyage.disconnect(), archive.disconnect()]);
+}
 const server = createServer();
 if (require.main === module) {
   const errors = config.validate();
@@ -490,4 +533,4 @@ if (require.main === module) {
   const shutdown = () => { bigdata.disconnect(); void Promise.allSettled([database.closeAll(), voyage.disconnect(), archive.disconnect()]).finally(() => server.close(() => process.exit(0))); };
   process.once('SIGINT', shutdown); process.once('SIGTERM', shutdown);
 }
-module.exports = { createServer, handle, RequestError, asRequestError, MAX_BODY_BYTES, voyage, archive, bigdata };
+module.exports = { createServer, shutdownServices, handle, RequestError, asRequestError, MAX_BODY_BYTES, voyage, archive, bigdata };

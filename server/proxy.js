@@ -17,6 +17,7 @@ function proxyToCdr(req, res, targetPath) {
   const parsed = new URL(req.url, 'http://127.0.0.1');
   const destPath = targetPath + (parsed.search || '');
   const headers = { host: `${CDR_UPSTREAM.host}:${CDR_UPSTREAM.port}`, accept: req.headers.accept || '*/*' };
+  if (config.cdr.sessionToken) headers['x-cdr-token'] = config.cdr.sessionToken;
   for (const key of ['content-type', 'content-length', 'if-none-match', 'if-modified-since']) if (req.headers[key]) headers[key] = req.headers[key];
   const transport = CDR_UPSTREAM.protocol === 'https:' ? https : http;
   const request = transport.request({ host: CDR_UPSTREAM.host, port: CDR_UPSTREAM.port, path: destPath, method: req.method, headers, timeout: 30000 }, (upstreamRes) => {

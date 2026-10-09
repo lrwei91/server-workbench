@@ -4,8 +4,9 @@ const fs = require('fs');
 const path = require('path');
 
 const root = path.join(__dirname, '..');
-const envPath = path.join(root, '.env');
-const localPath = path.join(root, 'config.js');
+const configDir = process.env.WORKBENCH_CONFIG_DIR || root;
+const envPath = path.join(configDir, '.env');
+const localPath = path.join(configDir, 'config.js');
 const examplePath = path.join(root, 'config.example.js');
 let loadedFrom = localPath;
 let config;
@@ -124,11 +125,11 @@ function normalize(raw) {
       clusters,
       timeoutMs: envNumber('DCOS_TIMEOUT_MS', Number(dcos.timeoutMs) || 15000),
     },
-    cdr: { upstream: envText('CDR_UPSTREAM', cdr.upstream || `http://${cdr.host || '127.0.0.1'}:${Number(cdr.port) || 8000}`) },
+    cdr: { upstream: envText('CDR_UPSTREAM', cdr.upstream || `http://${cdr.host || '127.0.0.1'}:${Number(cdr.port) || 8000}`), sessionToken: envText('CDR_SESSION_TOKEN') },
     hdfsTimeoutMs: Number(value.hdfsTimeoutMs) || 90000,
     hbaseTimeoutMs: Number(value.hbaseTimeoutMs) || 120000,
     logs: {
-      dir: logs.dir || './logs',
+      dir: process.env.WORKBENCH_DATA_DIR ? path.join(process.env.WORKBENCH_DATA_DIR, 'logs') : logs.dir || './logs',
       maxDays: Number(logs.maxDays) || 30,
       maxEntries: Number(logs.maxEntries) || 10000,
     },

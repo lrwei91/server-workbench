@@ -43,7 +43,7 @@ function maskRedisArchiveConfig(config = {}) {
 function encodeCommand(parts) {
   const chunks = [Buffer.from(`*${parts.length}\r\n`)];
   for (const part of parts) {
-    const value = Buffer.from(String(part));
+    const value = Buffer.isBuffer(part) ? part : Buffer.from(String(part));
     chunks.push(Buffer.from(`$${value.length}\r\n`), value, Buffer.from('\r\n'));
   }
   return Buffer.concat(chunks);
@@ -126,6 +126,15 @@ function decodeRedisArchiveValue(raw, { maxDecodedBytes = DEFAULT_MAX_DECODED_BY
   const decodedBytes = raw.readUInt32BE(0);
   if (decodedBytes < 5 || decodedBytes > maxDecodedBytes) throw new RedisArchiveError(502, 'REDIS_DECODE_FAILED', `Redis 档案声明的解压长度 ${decodedBytes} 超出限制`);
   const decoded = decompressLz4Block(raw.subarray(4), decodedBytes);
+  // 已核验的 Kryo String 头按字符长度读取，避免头部字节恰好为 { 时误判 JSON 起点。
+  const { decodeArchive } = require('./archive-codec');
+  try {
+    const archive = decodeArchive(raw, maxDecodedBytes);
+    return { data: JSON.parse(JSON.stringify(archive.data, (_, value) => typeof value === 'bigint' ? value.toString() : value)), compressedBytes: raw.length, decodedBytes, prefixHex: archive.prefix.toString('hex') };
+  } catch (error) {
+    if (error.code === 'ARCHIVE_NUMBER_PRECISION') throw error;
+    // 保留既有只读查看器对历史样例头的宽容解析；写入模块使用严格编码校验。
+  }
   const jsonOffset = decoded.indexOf(0x7b);
   if (jsonOffset < 0) throw new RedisArchiveError(502, 'REDIS_DECODE_FAILED', '解压结果中没有找到 JSON');
   let payload = decoded.subarray(jsonOffset);

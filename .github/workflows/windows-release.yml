@@ -1,0 +1,53 @@
+name: Windows desktop release
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: |
+            cdr/requirements.txt
+            desktop/requirements-build.txt
+      - run: npm ci
+      - run: python -m pip install -r desktop/requirements-build.txt -r cdr/requirements-dev.txt
+      - name: Validate tag version
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: test "$GITHUB_REF_NAME" = "v$(node -p 'require("./package.json").version')"
+      - run: npm test
+      - name: Build Windows installer (no upload)
+        run: npm run desktop:dist
+        env:
+          CSC_LINK: ${{ secrets.WINDOWS_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CSC_KEY_PASSWORD }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64
+          path: |
+            dist/*.exe
+            dist/*.blockmap
+            dist/latest.yml
+      - name: Upload draft release
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release create "$GITHUB_REF_NAME" --draft --title "Server Workbench $GITHUB_REF_NAME" --generate-notes
+          fi
+          test "$(gh release view "$GITHUB_REF_NAME" --json isDraft -q .isDraft)" = "true"
+          gh release upload "$GITHUB_REF_NAME" dist/*.exe dist/*.blockmap dist/latest.yml --clobber

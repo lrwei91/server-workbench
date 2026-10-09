@@ -3,6 +3,7 @@ import { formatHbaseScanText, isBatchInfoTable, isMonthlyAccumulatorDetailTable,
 import { generateInsertScript, hasInsertRows, INSERT_TABLES } from '/js/insert-export.js';
 import { redisArchiveLabel, redisTimestampText } from '/js/redis-labels.js';
 import { initDcosLogs } from '/js/dcos-logs.js';
+import { initRedisSync } from '/js/redis-sync.js';
 
 const HDFS_UPLOAD_TIMEOUT = 200000;
 const DEFAULT_RESOURCE_TIMEOUTS = { filesListMs: 30000, hdfsListMs: 190000, hbaseScanMs: 130000 };
@@ -770,7 +771,7 @@ function renderConnectionList() {
     for (const [field, value] of Object.entries(values)) setText(document.querySelector(`[data-connection-field="${source}.${field}"]`), value);
     document.querySelector(`[data-connection-dot="${source}"]`)?.classList.toggle('on', connected);
     setText(document.querySelector(`[data-connection-status="${source}"]`), connected ? '已连接' : '未连接');
-    setText(document.querySelector(`[data-connection-error="${source}"]`), state.connectionErrors[source] || (source === 'pg' ? '当前仅检查连接，不执行 SQL 导出脚本。' : ''));
+    setText(document.querySelector(`[data-connection-error="${source}"]`), state.connectionErrors[source] || (source === 'pg' ? 'Redis 同步从 bill_inmemory 固定档案表只读取源数据；不执行 SQL 导出脚本。' : ''));
     setText(document.querySelector(`[data-connection-connect="${source}"]`), connected ? '重新连接' : '连接');
   }
 }
@@ -874,7 +875,7 @@ function resultSection(title, rows, { open = false, actions = [], table = '', ro
     return fragment;
   }
   const tableSuffix = table ? ` · ${table}` : '';
-  const details = el('details', { class: 'query-section', ...(open ? { open: '' } : {}) }, el('summary', { text: `${title} · ${rows?.length || 0} 条${tableSuffix}` }), renderTable(rows, { rowAction }));
+  const details = el('details', { class: 'query-section', ...(open ? { open: true } : {}) }, el('summary', { text: `${title} · ${rows?.length || 0} 条${tableSuffix}` }), renderTable(rows, { rowAction }));
   if (actions.length) details.append(el('div', { class: 'query-row-actions' }, ...actions));
   return details;
 }
@@ -888,7 +889,7 @@ const STEP_TABLE_RULES = Object.freeze([
   [/销售品实例费用属性/, 'offer_inst_fee_attr'], [/销售品实例属性/, 'offer_inst_attr'], [/销售品实例费用/, 'offer_inst_fee_info'],
   [/销售品关联对象/, 'offer_obj_inst_rel'], [/销售品关联资源/, 'offer_res_inst_rel'], [/销售品实例担保/, 'offer_inst_assure'],
   [/销售品优惠券关系/, 'offer_coupon_inst_rel'], [/SKU 实例/, 'sku_inst'], [/增值业务订购关系/, 'va_order_rel'],
-  [/销售品实例/, 'offer_inst'], [/产品销售品关系/, 'offer_prod_inst_rel'],
+  [/销售品实例/, 'offer_inst'], [/产品销售品关系|销售品关联产品关系/, 'offer_prod_inst_rel'],
   [/产品账户关系/, 'prod_inst_acct_rel'], [/账户|查账户候选/, 'account'], [/产品定义/, 'product'], [/档位提醒配置|产品实例属性/, 'prod_inst_attr'],
   [/A\/Z 产品实例关系|产品实例关系/, 'prod_inst_rel'], [/产品实例状态/, 'prod_inst_state'], [/产品实例扩展/, 'prod_inst_ext'],
   [/产品实例联系人/, 'prod_inst_contact'], [/产品实例付费方式/, 'prod_inst_paymode'], [/产品实例接入号码/, 'prod_inst_acc_num'],
@@ -968,6 +969,18 @@ function renderQueryResult(result) {
   if (result.source === 'voyage') summary.append(el('button', { class: 'wb-button primary query-export-button', type: 'button', text: '导出 INSERT', disabled: !hasInsertRows(result), title: hasInsertRows(result) ? '生成同步到测试环境的 INSERT 语句' : '当前结果没有可导出的数据', on: { click: () => openInsertExport(result) } }));
   root.append(summary);
   appendFailedSteps(root, result.steps);
+  if (result.archiveCoverage) {
+    const coverage = result.archiveCoverage;
+    root.append(resultSection('查询范围与覆盖', [{
+      范围: '根实例及双向产品、销售品实例关系；不按客户或套餐定义扫描其他用户',
+      历史版本: '保留工程库现存的全部 his_id 版本；不代表 Redis 各 Step 的精确快照',
+      产品实例数: coverage.productInstanceCount, 销售品实例数: coverage.offerInstanceCount, 展开轮数: coverage.rounds,
+      上限: `${coverage.limits.nodesPerKind} 个产品与销售品 ID / ${coverage.limits.rounds} 轮 / ${coverage.limits.readRows} 行读取`,
+      截断原因: coverage.limitReasons.join('；') || (result.truncated ? '累计读取达到上限' : '未触达上限'),
+    }]));
+    const labels = { productInstances: '产品实例', offerInstances: '销售品实例', accounts: '账户', offers: '销售品定义' };
+    root.append(resultSection('关联引用未返回', Object.entries(coverage.missingReferences).flatMap(([kind, ids]) => ids.map((id) => ({ 档案类型: labels[kind], 引用ID: id }))), { open: true }));
+  }
   root.append(resultSection('查询步骤与数据来源', (result.steps || []).map(queryStepRow)));
   const customerId = rowField(data.productInstances?.[0], 'OWNER_CUST_ID'); const productInstanceId = rowField(data.productInstances?.[0], 'prod_inst_id');
   const customerButton = el('button', { class: 'wb-button', type: 'button', text: '查看同客户其他产品', disabled: !customerId, on: { click: () => loadCustomerProducts(customerId, result.source, query, result.schema) } });
@@ -1163,6 +1176,14 @@ $('#querySchemaSelect').addEventListener('change', () => clearQueryResult({ all:
 syncQuerySchemaControl();
 clearQueryResult({ all: true });
 renderRedisEmpty();
+initRedisSync({
+  refresh: () => submitRedisQuery(),
+  openConnections: () => { renderConnectionList(); openDialog('connectionDialog'); },
+  confirm: (target, message, action) => {
+    state.pendingConfirm = { action }; setText($('#confirmTitle'), '确认 Redis 档案操作');
+    setText($('#confirmMessage'), message); setText($('#confirmTarget'), target); openDialog('confirmDialog', $('#btnConfirmAction'));
+  },
+});
 
 async function checkStatus() { if (document.hidden || state.statusRunning) return; state.statusRunning = true; try { const [sshStatus, bigdataStatus, dbStatus, voyageStatus, archiveStatus] = await Promise.all([getJson('/api/status'), getJson('/api/bigdata/status'), getJson('/api/db/status'), getJson('/api/voyage/status'), getJson('/api/archive/status')]); if (state.connected && !sshStatus.connected) { setConnected(false); toast('远程连接已断开', 'err'); } state.bigdata = { connected: Boolean(bigdataStatus.connected), mode: bigdataStatus.mode || 'ssh', config: bigdataStatus.config || state.bigdata.config }; for (const source of ['udal', 'doris', 'pg']) { const item = dbStatus.sources?.[source]; if (item) { state.databases[source].connected = Boolean(item.connected); state.databases[source].config = item.config || state.databases[source].config; } } state.voyage = { connected: Boolean(voyageStatus.connected), config: voyageStatus.config || state.voyage.config }; state.archive = { connected: Boolean(archiveStatus.connected), config: archiveStatus.config || state.archive.config }; renderBigdataSource(); renderDbStatus(); renderConnectionList(); } catch (error) { if (state.connected) { setConnected(false); toast('本地桥接服务不可用', 'err'); } } finally { state.statusRunning = false; if (!document.hidden) state.statusTimer = setTimeout(checkStatus, 5000); } }
 document.addEventListener('visibilitychange', () => { clearTimeout(state.statusTimer); if (!document.hidden) checkStatus(); });

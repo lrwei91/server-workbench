@@ -36,3 +36,6 @@ __pycache__/
 test-results/
 playwright-report/
 bigdata-client-service/build/
+dist/
+build/
+.venv-desktop/

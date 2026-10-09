@@ -45,9 +45,10 @@ const POSTGRES_COLUMN_MAP = Object.freeze({
   prod_inst: { acc_num: 'acc_nbr' },
   prod_inst_rel: { a_prod_inst_id: 'prod_inst_a_id', z_prod_inst_id: 'prod_inst_z_id' },
   prod_inst_acct_rel: { prod_inst_acct_rel_id: 'prod_inst_acct_id', acct_id: 'account_id' },
+  account: { acct_id: 'account_id' },
   offer_inst: { offer_inst_id: 'prod_offer_inst_id', offer_id: 'prod_offer_id' },
   offer_inst_attr: { offer_inst_attr_id: 'prod_offer_inst_attr_id', offer_inst_id: 'prod_offer_inst_id' },
-  offer_inst_rel: { offer_inst_id: 'prod_offer_inst_id' },
+  offer_inst_rel: { offer_inst_id: 'prod_offer_inst_id', offer_inst_rel_id: 'prod_offer_inst_rel_id', a_offer_inst_id: 'rela_prod_offer_inst_id', z_offer_inst_id: 'related_prod_offer_inst_id' },
   offer_prod_inst_rel: { offer_inst_id: 'prod_offer_inst_id' },
 });
 
@@ -120,6 +121,8 @@ export function generateInsertScript(result, { generatedAt = utc8Iso(), target =
     `-- 生成时间：${generatedAt}`,
     target === 'postgres' ? '-- 说明：脚本仅包含当前查询已返回的数据；执行前请核对 bill_inmemory 中各目标表和字段。' : '-- 说明：脚本仅包含当前查询已返回的数据；不同逻辑库需在对应连接中分别执行。',
   ];
+  if (result.archiveCoverage) lines.push(`-- 查询范围：根实例及双向产品/销售品关系闭包；保留工程库现存的全部 his_id 版本；最多 ${result.archiveCoverage.limits.nodesPerKind} 个产品与销售品 ID、${result.archiveCoverage.limits.rounds} 轮、${result.archiveCoverage.limits.readRows} 行读取。`);
+  if (result.status === 'partial' || result.truncated) lines.push('-- 警告：本次查询部分完成，请先核对失败步骤、关联引用缺失和查询上限；本脚本不代表完整档案。');
   if (target === 'postgres') lines.push('', 'BEGIN;');
   let totalRows = 0;
   const grouped = new Map();

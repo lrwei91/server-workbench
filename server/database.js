@@ -95,6 +95,34 @@ class DatabaseManager {
     await Promise.allSettled(Object.keys(SOURCE_DEFAULTS).map((source) => this.disconnect(source)));
   }
 
+  // 仅供固定档案同步读取使用，不开放任意 PG SQL 的 HTTP 入口。
+  async withPgSnapshot(work, { signal } = {}) {
+    const entry = this.sources.get('pg');
+    if (!entry) throw Object.assign(new Error('请先连接测试环境 PostgreSQL'), { status: 409, code: 'PG_NOT_CONNECTED' });
+    const pool = entry.pools.values().next().value;
+    const client = await pool.connect();
+    let released = false;
+    const abort = () => { if (!released) { released = true; client.release(true); } };
+    signal?.addEventListener('abort', abort, { once: true });
+    try {
+      if (signal?.aborted) { abort(); throw Object.assign(new Error('查询已取消'), { status: 499, code: 'QUERY_CANCELLED' }); }
+      await client.query('BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');
+      await client.query("SET LOCAL statement_timeout = '15s'");
+      await client.query("SET LOCAL TIME ZONE 'UTC'");
+      const types = { getTypeParser: (oid, format) => [1082, 1114, 1184].includes(oid) ? (value) => value : this.pg.types.getTypeParser(oid, format) };
+      const result = await work({ query: (text, values = []) => client.query({ text, values, types }) });
+      await client.query('COMMIT');
+      return result;
+    } catch (error) {
+      if (!released) await client.query('ROLLBACK').catch(() => {});
+      if (signal?.aborted) throw Object.assign(new Error('查询已取消'), { status: 499, code: 'QUERY_CANCELLED' });
+      throw error;
+    } finally {
+      signal?.removeEventListener('abort', abort);
+      if (!released) { released = true; client.release(); }
+    }
+  }
+
   async query(sourceValue, database, sql, values = [], options = {}) {
     const source = normalizeSource(sourceValue);
     const entry = this.sources.get(source);
