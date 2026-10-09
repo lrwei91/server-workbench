@@ -67,29 +67,46 @@ test('engineering instance archive follows both product and sale graphs, preserv
   const db = fixture(graphTables()); const result = await queryProductInstance(db, ROOT, options);
   assert.equal(result.status, 'complete'); assert.equal(result.truncated, false);
   assert.equal(result.data.productInstances.length, 2);
-  assert.deepEqual(result.data.relatedProductInstances.map((row) => row.prod_inst_id), ['200', '200', '300', '400']);
-  assert.equal(result.data.productRelationships.length, 3); assert.equal(result.data.productAttributes.length, 4);
-  assert.equal(result.data.accountRelations.length, 2); assert.equal(result.data.accounts.length, 3);
-  assert.equal(result.data.offerRelations.length, 3); assert.equal(result.data.offerInstances.length, 2);
+  assert.deepEqual(result.data.relatedProductInstances.map((row) => row.prod_inst_id), ['200', '200', '300']);
+  assert.equal(result.data.productRelationships.length, 2); assert.equal(result.data.productAttributes.length, 3);
+  assert.equal(result.data.accountRelations.length, 1); assert.equal(result.data.accounts.length, 2);
+  assert.equal(result.data.offerRelations.length, 1); assert.equal(result.data.offerInstances.length, 2);
   assert.deepEqual(result.data.relatedOfferInstances.map((row) => row.prod_offer_inst_id).sort(), ['702', '703']);
-  assert.equal(result.data.offerInstanceRelationships.length, 3); assert.equal(result.data.offerInstanceAttributes.length, 3);
-  assert.deepEqual(result.data.offerInstanceRelationships.find((row) => row.prod_offer_inst_rel_id === '52'),
-    { prod_offer_inst_rel_id: '52', rela_prod_offer_inst_id: '702', related_prod_offer_inst_id: '703', his_id: '1' });
+  assert.equal(result.data.offerInstanceRelationships.length, 2); assert.equal(result.data.offerInstanceAttributes.length, 3);
+  assert.equal(result.data.offerInstanceRelationships.some((row) => row.prod_offer_inst_rel_id === '52'), false);
   assert.ok(db.calls.some((call) => /FROM prod_offer_inst_rel WHERE \(rela_prod_offer_inst_id.* OR related_prod_offer_inst_id/.test(call.sql)));
   assert.deepEqual(result.data.offers.map((row) => row.offer_id), ['801', '802']);
-  assert.equal(result.archiveCoverage.productInstanceCount, 4); assert.equal(result.archiveCoverage.offerInstanceCount, 3);
+  assert.equal(result.archiveCoverage.productInstanceCount, 3); assert.equal(result.archiveCoverage.offerInstanceCount, 3);
+  assert.equal(result.archiveCoverage.mode, 'direct-instance-relations');
   assert.equal(Object.values(result.archiveCoverage.missingReferences).flat().length, 0);
   for (const [logicalTable, physicalTable] of [['prod_inst_acct_rel', 'prod_inst_acct'], ['offer_inst', 'prod_offer_inst'], ['offer_inst_rel', 'prod_offer_inst_rel']]) {
     assert.ok(result.steps.some((step) => step.tableMap?.some((mapping) => mapping.logicalTable === logicalTable && mapping.physicalTable === physicalTable)));
   }
   assert.equal(db.calls.some((call) => call.values.includes('999')), false);
-  assert.equal(db.calls.filter((call) => call.sql.startsWith('SELECT * FROM prod_inst WHERE')).length, 3);
+  assert.equal(db.calls.filter((call) => call.sql.startsWith('SELECT * FROM prod_inst WHERE')).length, 2);
+  assert.ok(db.calls.filter((call) => /FROM prod_inst_rel WHERE/.test(call.sql)).every((call) => call.values.every((id) => id === ROOT)));
+  assert.equal(db.calls.some((call) => /FROM offer_prod_inst_rel WHERE \(prod_offer_inst_id/.test(call.sql)), false);
   assert.equal(result.totalRows, Object.values(result.data).flat().length);
   const source = fs.readFileSync(path.resolve(__dirname, '../../public/js/insert-export.js'), 'utf8');
   const { generateInsertScript } = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
   const exportSql = generateInsertScript(result, { generatedAt: 'TIME' });
-  for (const [table, count] of [['prod_inst', 6], ['prod_offer_inst', 4], ['prod_offer_inst_rel', 3], ['account', 3]]) assert.ok(exportSql.includes(`表：${table} | ${count} 行`));
+  for (const [table, count] of [['prod_inst', 5], ['prod_offer_inst', 4], ['prod_offer_inst_rel', 2], ['account', 2]]) assert.ok(exportSql.includes(`表：${table} | ${count} 行`));
   assert.match(exportSql, /"prod_offer_inst_rel_id", "rela_prod_offer_inst_id", "related_prod_offer_inst_id", "his_id"/);
+});
+
+test('shared parent with thousands of sibling products does not expand the root archive', async () => {
+  const tables = graphTables();
+  for (let index = 0; index < 2862; index++) {
+    tables.prod_inst_rel.push({ prod_inst_rel_id: String(1000 + index), prod_inst_a_id: '300', prod_inst_z_id: String(10000 + index), his_id: '1' });
+    tables.prod_inst.push({ prod_inst_id: String(10000 + index), his_id: '1' });
+  }
+  const db = fixture(tables); const result = await queryProductInstance(db, ROOT, options);
+  assert.equal(result.status, 'complete'); assert.equal(result.truncated, false);
+  assert.equal(result.data.productRelationships.length, 2);
+  assert.equal(result.archiveCoverage.productInstanceCount, 3);
+  assert.equal(result.archiveCoverage.rounds, 2);
+  assert.ok(result.archiveCoverage.readRows < 50);
+  assert.equal(db.calls.some((call) => call.values.includes('10000')), false);
 });
 
 test('engineering archive paginates beyond 500 rows by ID and his_id, including null history', async () => {
@@ -115,15 +132,15 @@ test('engineering archive paginates null histories and reports a depth boundary'
     tables.prod_inst_rel.push({ prod_inst_rel_id: String(index), prod_inst_a_id: index === 1 ? ROOT : String(index - 1), prod_inst_z_id: String(index), his_id: '1' });
   }
   const capped = await queryProductInstance(fixture(tables), ROOT, options);
-  assert.equal(capped.status, 'partial'); assert.equal(capped.archiveCoverage.rounds, 8);
-  assert.ok(capped.archiveCoverage.limitReasons.includes('关联展开达到 8 轮'));
+  assert.equal(capped.status, 'complete'); assert.equal(capped.archiveCoverage.rounds, 2);
+  assert.deepEqual(capped.data.relatedProductInstances.map((row) => row.prod_inst_id), ['1']);
 });
 
 test('engineering archive surfaces unresolved references and retains healthy branches after errors', async () => {
   const tables = graphTables(); tables.account = []; tables.offer_ces = [{ offer_id: '801' }];
   const result = await queryProductInstance(fixture(tables, { failTable: 'prod_inst_attr' }), ROOT, options);
-  assert.equal(result.status, 'partial'); assert.equal(result.data.offerInstanceRelationships.length, 3);
-  assert.deepEqual(result.archiveCoverage.missingReferences.accounts, ['501', '502']);
+  assert.equal(result.status, 'partial'); assert.equal(result.data.offerInstanceRelationships.length, 2);
+  assert.deepEqual(result.archiveCoverage.missingReferences.accounts, ['501']);
   assert.deepEqual(result.archiveCoverage.missingReferences.offers, ['802']);
   assert.ok(result.steps.some((step) => step.status === 'error' && step.message === '模拟档案分支失败'));
 });

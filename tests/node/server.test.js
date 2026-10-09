@@ -22,6 +22,19 @@ function request(server, method, path, body) {
   });
 }
 
+test('removed engineering archive configuration is excluded even from legacy local config', () => {
+  const directory = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'workbench-config-'));
+  try {
+    fs.writeFileSync(path.join(directory, 'config.js'), "module.exports = { archive: { authToken: 'obsolete-token' }, voyage: { apiUrl: 'http://HOST/query' }, redisArchive: { host: 'HOST' } };\n");
+    const result = require('node:child_process').spawnSync(process.execPath, ['-e', `const c=require(${JSON.stringify(require.resolve('../../server/config-loader'))}); console.log(JSON.stringify({archive:Object.hasOwn(c,'archive'),voyage:!!c.voyage,redis:!!c.redisArchive}));`], { env: { ...process.env, WORKBENCH_CONFIG_DIR: directory, ARCHIVE_AUTH_TOKEN: 'obsolete-env-token' }, encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), { archive: false, voyage: true, redis: true });
+  } finally {
+    fs.unlinkSync(path.join(directory, 'config.js'));
+    fs.rmdirSync(directory);
+  }
+});
+
 test('shell quoting protects single quotes and command danger detection is broad', () => {
   assert.equal(ssh.shellQuote("a'b"), "'a'\\''b'");
   assert.equal(ssh.isDangerousCommand('rmdir /tmp/a'), true);
@@ -182,10 +195,13 @@ test('HTTP errors have real status and normalized shape', async () => {
     assert.equal(disconnectedVoyage.status, 409); assert.equal(disconnectedVoyage.body.error.code, 'VOYAGE_NOT_CONNECTED');
     const disconnectedVoyageInstance = await request(server, 'POST', '/api/query/product-instance', { productInstanceId: '48243980', source: 'voyage' });
     assert.equal(disconnectedVoyageInstance.status, 409); assert.equal(disconnectedVoyageInstance.body.error.code, 'VOYAGE_NOT_CONNECTED');
-    const archiveStatus = await request(server, 'GET', '/api/archive/status');
-    assert.equal(archiveStatus.status, 200); assert.equal(Object.hasOwn(archiveStatus.body.config, 'authToken'), false);
-    const disconnectedArchive = await request(server, 'POST', '/api/query/archive', { key: '35772967' });
-    assert.equal(disconnectedArchive.status, 409); assert.equal(disconnectedArchive.body.error.code, 'ARCHIVE_NOT_CONNECTED');
+    for (const [method, endpoint] of [['GET', '/api/archive/status'], ['POST', '/api/archive/connect'], ['POST', '/api/archive/disconnect'], ['POST', '/api/query/archive']]) {
+      assert.equal((await request(server, method, endpoint, method === 'POST' ? {} : undefined)).status, 404);
+    }
+    const configuration = await request(server, 'GET', '/api/config');
+    assert.equal(Object.hasOwn(configuration.body.connections, 'archive'), false);
+    assert.ok(configuration.body.connections.voyage);
+    assert.ok(configuration.body.connections.redisArchive);
     const bigdataStatus = await request(server, 'GET', '/api/bigdata/status');
     assert.equal(bigdataStatus.status, 200); assert.equal(Object.hasOwn(bigdataStatus.body.config, 'token'), false);
     bigdataClient.useSshMode();
@@ -250,13 +266,13 @@ test('log queue writes asynchronously and paginates newest entries', async () =>
 test('fixed query panel replaces command and log interactions', () => {
   const html = fs.readFileSync(path.join(__dirname, '../../public/index.html'), 'utf8');
   const source = fs.readFileSync(path.join(__dirname, '../../public/js/main.js'), 'utf8');
-  assert.match(html, /<h1>数据库查询<\/h1>/); assert.match(html, /查询手机号/); assert.match(html, /实例查档案/); assert.match(html, /id="productInstanceQueryForm"/); assert.match(html, /查询套餐/); assert.match(html, /查询事件类型/); assert.match(html, /id="offerQueryForm"/); assert.match(html, /<input id="offerInput"[^>]*inputmode="numeric"/); assert.match(html, /id="eventTypeQueryForm"/); assert.match(html, /value="206080000" selected/); assert.match(html, /阈值查询/); assert.match(html, /内存档案查询/); assert.match(html, /Voyage 在线数据库/); assert.match(html, /id="querySourceSelect"/); assert.match(html, /id="querySchemaSelect"[^>]*disabled>[\s\S]*?<option value="bill_inmemory" selected>bill_inmemory<\/option>[\s\S]*?<option value="crmv3">crmv3<\/option>/); assert.match(html, /id="connectionDialog"/);
+  assert.match(html, /<h1>数据库查询<\/h1>/); assert.match(html, /查询手机号/); assert.match(html, /实例查档案/); assert.match(html, /id="productInstanceQueryForm"/); assert.match(html, /查询套餐/); assert.match(html, /查询事件类型/); assert.match(html, /id="offerQueryForm"/); assert.match(html, /<input id="offerInput"[^>]*inputmode="numeric"/); assert.match(html, /id="eventTypeQueryForm"/); assert.match(html, /value="206080000" selected/); assert.match(html, /阈值查询/); assert.match(html, /Voyage 在线数据库/); assert.match(html, /id="querySourceSelect"/); assert.match(html, /id="querySchemaSelect"[^>]*disabled>[\s\S]*?<option value="bill_inmemory" selected>bill_inmemory<\/option>[\s\S]*?<option value="crmv3">crmv3<\/option>/); assert.match(html, /id="connectionDialog"/);
   assert.match(html, /id="insertDialog"/); assert.match(html, /id="insertSqlCopy"/); assert.match(html, /一键复制/);
   assert.match(html, /data-primary-page="redis">Redis 档案/); assert.match(html, /id="redisPage"[^>]*data-primary-panel="redis"/); assert.match(html, /id="redisQueryForm"/); assert.match(html, /id="btnRedisQuery"/);
   assert.doesNotMatch(html, /data-query-tab="redis"|data-tab="redis"/);
   assert.doesNotMatch(html, /cacheRedis|data-cache-/);
   assert.doesNotMatch(html, /id="cmdInput"|id="logFlow"|id="btnCmds"|id="commandsDialog"/);
-  assert.match(source, /postJson\('\/api\/query\/phone'/); assert.match(source, /postJson\('\/api\/query\/product-instance'/); assert.match(source, /postJson\('\/api\/query\/offer'/); assert.match(source, /postJson\('\/api\/query\/event-type'/); assert.match(source, /postJson\('\/api\/query\/threshold'/); assert.match(source, /postJson\('\/api\/query\/archive'/); assert.match(source, /postJson\('\/api\/query\/redis'/); assert.match(source, /postJson\('\/api\/voyage\/connect'/); assert.match(source, /generateInsertScript\(result, \{ target \}\)/); assert.match(html, /id="insertTargetSelect"/); assert.match(source, /\/api\/hdfs\/preview/);
+  assert.match(source, /postJson\('\/api\/query\/phone'/); assert.match(source, /postJson\('\/api\/query\/product-instance'/); assert.match(source, /postJson\('\/api\/query\/offer'/); assert.match(source, /postJson\('\/api\/query\/event-type'/); assert.match(source, /postJson\('\/api\/query\/threshold'/); assert.match(source, /postJson\('\/api\/query\/redis'/); assert.match(source, /postJson\('\/api\/voyage\/connect'/); assert.match(source, /generateInsertScript\(result, \{ target \}\)/); assert.match(html, /id="insertTargetSelect"/); assert.match(source, /\/api\/hdfs\/preview/);
   assert.match(source, /querySourcePayload\(source, schema\)/); assert.match(source, /source === 'voyage' \? \{ schema: schema \|\| 'bill_inmemory' \}/);
   assert.match(source, /resultSection\('销售品实例关系'/); assert.match(source, /resultSection\('关联销售品实例'/); assert.match(source, /resultSection\('销售品实例费用属性'/);
   assert.match(source, /resultSection\('销售品关联对象'/); assert.match(source, /resultSection\('销售品关联资源'/); assert.match(source, /resultSection\('增值业务订购关系'/);
@@ -281,7 +297,9 @@ test('HDFS deletion is non-recursive, distinguishes files and directories, and b
 test('query tabs preserve independent results until explicitly cleared', () => {
   const html = fs.readFileSync(path.join(__dirname, '../../public/index.html'), 'utf8');
   const source = fs.readFileSync(path.join(__dirname, '../../public/js/main.js'), 'utf8');
-  assert.equal((html.match(/data-query-result="(?:phone|productInstance|threshold|archive)"/g) || []).length, 4);
+  assert.equal((html.match(/data-query-result="(?:phone|productInstance|offer|eventType|threshold)"/g) || []).length, 5);
+  assert.doesNotMatch(html, /data-query-tab="archive"|archiveQueryForm|data-query-result="archive"/);
+  assert.doesNotMatch(source, /state\.archive\b|archiveQuery|\/api\/(?:archive\/|query\/archive)/);
   assert.match(source, /function queryResultRoot\(query = state\.activeQuery\)/);
   assert.match(source, /function syncActiveQueryView\(\)/);
   const switchFunction = source.match(/function switchQueryTab\(query\) \{[^\n]+\}/)?.[0] || '';
@@ -290,7 +308,6 @@ test('query tabs preserve independent results until explicitly cleared', () => {
   assert.match(source, /queryResultRoot\('phone'\)\.replaceChildren/);
   assert.match(source, /queryResultRoot\('productInstance'\)\.replaceChildren/);
   assert.match(source, /queryResultRoot\('threshold'\)\.replaceChildren/);
-  assert.match(source, /queryResultRoot\('archive'\)\.replaceChildren/);
   assert.match(source, /\$\('#redisResults'\)\.replaceChildren/);
 });
 
@@ -324,10 +341,11 @@ test('connection settings use independent source controls and keep credentials o
   const dialog = html.match(/<dialog id="connectionDialog"[\s\S]*?<\/dialog>/)?.[0] || '';
   assert.match(dialog, /<details class="connection-environment" data-connection-environment="test"><summary[^>]*><span>测试环境<\/span>/);
   assert.match(dialog, /<details class="connection-environment" data-connection-environment="project"><summary><span>工程环境<\/span>/);
-  assert.doesNotMatch(dialog, /<details[^>]*\bopen\b/); assert.match(dialog, /data-connection-source="voyage"/); assert.match(dialog, /Voyage 在线数据库/); assert.match(dialog, /data-connection-source="archive"/); assert.match(dialog, /内存档案服务/);
+  assert.doesNotMatch(dialog, /<details[^>]*\bopen\b/); assert.match(dialog, /data-connection-source="voyage"/); assert.match(dialog, /Voyage 在线数据库/);
   assert.match(dialog, /data-connection-source="ssh"/); assert.match(dialog, /data-connection-source="udal"/); assert.match(dialog, /data-connection-source="doris"/); assert.match(dialog, /data-connection-source="pg"/);
   assert.match(dialog, /data-connection-source="bigdata"/); assert.match(dialog, /HDFS\/HBase 客户端服务/);
-  assert.equal((dialog.match(/data-connection-connect="(?:ssh|bigdata|udal|doris|pg|voyage|archive)"/g) || []).length, 7); assert.equal((dialog.match(/<input\b/g) || []).length, 1); assert.match(dialog, /id="voyageTokenInput"[^>]*type="password"[^>]*autocomplete="off"/); assert.doesNotMatch(dialog, /dcosCookieInput|data-connection-source="dcos"/); assert.doesNotMatch(dialog, /id="btnConnectAll"|data-db-disconnect/);
+  assert.equal((dialog.match(/data-connection-connect="(?:ssh|bigdata|udal|doris|pg|voyage)"/g) || []).length, 6); assert.equal((dialog.match(/<input\b/g) || []).length, 1); assert.match(dialog, /id="voyageTokenInput"[^>]*type="password"[^>]*autocomplete="off"/); assert.doesNotMatch(dialog, /dcosCookieInput|data-connection-source="(?:dcos|archive)"/); assert.doesNotMatch(dialog, /id="btnConnectAll"|data-db-disconnect/);
+  assert.match(dialog, /<span>工程环境<\/span><small>1 个数据源<\/small>/);
   const processPage = html.match(/<section id="processLogsPage"[\s\S]*?<\/section>\s*<section id="cdrPage"/)?.[0] || '';
   assert.match(processPage, /id="dcosCookieInput"[^>]*type="password"[^>]*autocomplete="off"/);
   assert.match(processPage, /id="dcosStartWorkload"[^>]*disabled/);
@@ -336,7 +354,7 @@ test('connection settings use independent source controls and keep credentials o
   assert.doesNotMatch(dcosSource, /localStorage|sessionStorage/);
   assert.match(dcosSource, /\/api\/dcos\/workload\/\$\{action\}/);
   assert.doesNotMatch(html, /id="settingsDialog"|id="dbSettingsDialog"|id="btnSettings"|id="btnDbSettings"/);
-  assert.match(source, /postJson\('\/api\/connect', \{\}/); assert.match(source, /postJson\('\/api\/bigdata\/connect', \{\}/); assert.match(source, /postJson\('\/api\/db\/connect', \{ source \}/); assert.match(source, /postJson\('\/api\/voyage\/connect', token \? \{ token \} : \{\}/); assert.match(source, /postJson\('\/api\/archive\/connect', \{\}/); assert.doesNotMatch(source, /\/api\/connections\/connect|wb_conn_cfg|wb_db_cfg|sessionPassword|DB_FIELDS|localStorage\.(?:setItem|getItem)\([^\n]*voyageToken|sessionStorage\.(?:setItem|getItem)\([^\n]*voyageToken/i);
+  assert.match(source, /postJson\('\/api\/connect', \{\}/); assert.match(source, /postJson\('\/api\/bigdata\/connect', \{\}/); assert.match(source, /postJson\('\/api\/db\/connect', \{ source \}/); assert.match(source, /postJson\('\/api\/voyage\/connect', token \? \{ token \} : \{\}/); assert.doesNotMatch(source, /\/api\/connections\/connect|wb_conn_cfg|wb_db_cfg|sessionPassword|DB_FIELDS|localStorage\.(?:setItem|getItem)\([^\n]*voyageToken|sessionStorage\.(?:setItem|getItem)\([^\n]*voyageToken/i);
 });
 
 test('primary sidebar owns resources, process logs, and CDR while quick lookup is removed', () => {

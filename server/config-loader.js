@@ -38,10 +38,10 @@ function envText(name, fallback = '') { return env[name] === undefined ? fallbac
 function envNumber(name, fallback) { const value = Number(env[name]); return Number.isFinite(value) && value > 0 ? value : fallback; }
 
 function normalize(raw) {
-  const value = raw || {};
+  const value = { ...raw };
+  delete value.archive;
   const workbench = value.workbench || {};
   const ssh = value.ssh || {};
-  const archive = value.archive || {};
   const redisArchive = value.redisArchive || {};
   const voyage = value.voyage || {};
   const bigdataClient = value.bigdataClient || {};
@@ -79,12 +79,6 @@ function normalize(raw) {
         host: envText('PG_HOST').trim(), port: envNumber('PG_PORT', 5432), username: envText('PG_USERNAME').trim(), password: envText('PG_PASSWORD'),
         database: envText('PG_DATABASE').trim(), databases: [null],
       },
-    },
-    archive: {
-      pageUrl: envText('ARCHIVE_PAGE_URL', archive.pageUrl || 'http://134.155.157.3:30006/inmemory-manager/inmemory-manager-frontend/dataop').trim(),
-      apiUrl: envText('ARCHIVE_API_URL', archive.apiUrl || '').trim(),
-      authToken: envText('ARCHIVE_AUTH_TOKEN', archive.authToken || ''),
-      timeoutMs: envNumber('ARCHIVE_TIMEOUT_MS', Number(archive.timeoutMs) || 60000),
     },
     redisArchive: {
       host: envText('REDIS_ARCHIVE_HOST', redisArchive.host || '').trim(),

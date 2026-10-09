@@ -15,13 +15,11 @@ const proxy = require('./proxy');
 const log = require('./log');
 const { manager: database } = require('./database');
 const phoneQuery = require('./phone-query');
-const { ArchiveService } = require('./archive-service');
 const { VoyageManager } = require('./voyage');
 const { manager: bigdata } = require('./bigdata-client');
 const { DcosLogs } = require('./dcos-logs');
 const { RedisArchiveService } = require('./redis-archive');
 const { PgRedisSync, TABLES: SYNC_TABLES } = require('./pg-redis-sync');
-const archive = new ArchiveService(config.archive);
 const voyage = new VoyageManager(config.voyage);
 const dcos = new DcosLogs(config.dcos, { logDir: path.join(config.resolveLogDir(), 'dcos') });
 const redisArchive = new RedisArchiveService(config.redisArchive);
@@ -227,7 +225,7 @@ async function handle(req, res) {
     return sendJson(res, 200, {
       ok: true,
       config: ssh.maskConfig(ssh.DEFAULT_CONFIG),
-      connections: { ssh: ssh.maskConfig(ssh.DEFAULT_CONFIG), bigdata: bigdata.defaults(), ...database.defaults(), voyage: voyage.defaults(), archive: archive.defaults(), redisArchive: redisArchive.defaults() },
+      connections: { ssh: ssh.maskConfig(ssh.DEFAULT_CONFIG), bigdata: bigdata.defaults(), ...database.defaults(), voyage: voyage.defaults(), redisArchive: redisArchive.defaults() },
       configured: !config.isExample,
       errors: config.validate(),
       timeouts: { hdfsListMs: hdfsTimeoutMs * 2 + 10000, hbaseScanMs: hbaseTimeoutMs + 10000 },
@@ -303,7 +301,6 @@ async function handle(req, res) {
   if (req.method === 'POST' && p === '/api/voyage/disconnect') {
     const body = await readBody(req); assertObject(body, []); await voyage.disconnect(); return sendJson(res, 200, { ok: true, ...voyage.status() });
   }
-  if (req.method === 'GET' && p === '/api/archive/status') return sendJson(res, 200, { ok: true, ...archive.status() });
   if (req.method === 'GET' && p === '/api/redis/status') return sendJson(res, 200, { ok: true, config: redisArchive.defaults() });
   if (req.method === 'GET' && p === '/api/redis-sync/status') return sendJson(res, 200, { ok: true, tables: SYNC_TABLES.map(({ table, group }) => ({ table, group })), schema: 'bill_inmemory', mode: 'existing-record-fields' });
   if (req.method === 'POST' && p === '/api/redis-sync/preview') {
@@ -324,12 +321,6 @@ async function handle(req, res) {
     requireSameOrigin(req); const body = await readBody(req); assertObject(body, ['backupId', 'confirmed']);
     const result = await runQueryRequest(req, res, (signal) => redisSync.restore(requireString(body.backupId, 'backupId'), body.confirmed, { signal }));
     return sendJson(res, 200, { ok: true, result });
-  }
-  if (req.method === 'POST' && p === '/api/archive/connect') {
-    const body = await readBody(req); assertObject(body, []); const result = await archive.connect(); return sendJson(res, 200, { ok: true, ...result });
-  }
-  if (req.method === 'POST' && p === '/api/archive/disconnect') {
-    const body = await readBody(req); assertObject(body, []); await archive.disconnect(); return sendJson(res, 200, { ok: true, ...archive.status() });
   }
   if (req.method === 'POST' && p === '/api/db/connect') {
     const body = await readBody(req); assertObject(body, ['source', 'host', 'port', 'username', 'password', 'database']);
@@ -369,11 +360,6 @@ async function handle(req, res) {
   if (req.method === 'POST' && p === '/api/query/offer') {
     const body = await readBody(req); assertObject(body, ['offerId', 'source', 'schema']); const source = requireQuerySource(body.source); const schema = requireQuerySchema(body.schema, source);
     const result = await runQueryRequest(req, res, (signal) => phoneQuery.queryOffer(queryManager(source), requireString(body.offerId, 'offerId'), { signal, source, schema })); return sendJson(res, 200, { ok: true, result });
-  }
-  if (req.method === 'POST' && p === '/api/query/archive') {
-    const body = await readBody(req); assertObject(body, ['key']);
-    const result = await runQueryRequest(req, res, (signal) => archive.query(requireString(body.key, 'key'), { signal }), { timeoutCode: 'ARCHIVE_QUERY_TIMEOUT', timeoutMessage: '内存档案查询超过 60 秒' });
-    return sendJson(res, 200, { ok: true, result });
   }
   if (req.method === 'POST' && p === '/api/query/redis') {
     const body = await readBody(req); assertObject(body, ['key']);
@@ -522,7 +508,7 @@ function createServer({ token = '' } = {}) {
 async function shutdownServices() {
   bigdata.disconnect();
   ssh.disconnect();
-  await Promise.allSettled([database.closeAll(), voyage.disconnect(), archive.disconnect()]);
+  await Promise.allSettled([database.closeAll(), voyage.disconnect()]);
 }
 const server = createServer();
 if (require.main === module) {
@@ -530,7 +516,7 @@ if (require.main === module) {
   if (errors.length) console.warn('[配置提示]', errors.join('；'));
   server.listen(config.workbench.port, config.workbench.host, () => console.log(`远程服务器管理工作台已启动: http://${config.workbench.host}:${config.workbench.port}`));
   server.on('error', (error) => { console.error('[服务错误]', error); process.exitCode = 1; });
-  const shutdown = () => { bigdata.disconnect(); void Promise.allSettled([database.closeAll(), voyage.disconnect(), archive.disconnect()]).finally(() => server.close(() => process.exit(0))); };
+  const shutdown = () => { bigdata.disconnect(); void Promise.allSettled([database.closeAll(), voyage.disconnect()]).finally(() => server.close(() => process.exit(0))); };
   process.once('SIGINT', shutdown); process.once('SIGTERM', shutdown);
 }
-module.exports = { createServer, shutdownServices, handle, RequestError, asRequestError, MAX_BODY_BYTES, voyage, archive, bigdata };
+module.exports = { createServer, shutdownServices, handle, RequestError, asRequestError, MAX_BODY_BYTES, voyage, bigdata };

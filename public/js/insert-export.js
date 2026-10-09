@@ -121,7 +121,7 @@ export function generateInsertScript(result, { generatedAt = utc8Iso(), target =
     `-- 生成时间：${generatedAt}`,
     target === 'postgres' ? '-- 说明：脚本仅包含当前查询已返回的数据；执行前请核对 bill_inmemory 中各目标表和字段。' : '-- 说明：脚本仅包含当前查询已返回的数据；不同逻辑库需在对应连接中分别执行。',
   ];
-  if (result.archiveCoverage) lines.push(`-- 查询范围：根实例及双向产品/销售品关系闭包；保留工程库现存的全部 his_id 版本；最多 ${result.archiveCoverage.limits.nodesPerKind} 个产品与销售品 ID、${result.archiveCoverage.limits.rounds} 轮、${result.archiveCoverage.limits.readRows} 行读取。`);
+  if (result.archiveCoverage) lines.push(`-- 查询范围：根实例及一跳直接产品关系、根销售品的一跳关系（关联节点不展开兄弟实例）；保留工程库现存的全部 his_id 版本；最多 ${result.archiveCoverage.limits.nodesPerKind} 个产品与销售品 ID、${result.archiveCoverage.limits.rounds} 轮、${result.archiveCoverage.limits.readRows} 行读取。`);
   if (result.status === 'partial' || result.truncated) lines.push('-- 警告：本次查询部分完成，请先核对失败步骤、关联引用缺失和查询上限；本脚本不代表完整档案。');
   if (target === 'postgres') lines.push('', 'BEGIN;');
   let totalRows = 0;

@@ -268,7 +268,7 @@ async function queryBillProductArchive(ctx, input) {
       target.add(id);
     }
   };
-  // 仅沿实例关系扩展，不按客户、号码或销售品定义扫描其他订购用户。
+  // 根实例的一跳关系：关联节点只读档案，不再展开其兄弟节点。
   if (data.productInstances.length) {
     while (rounds < ARCHIVE_ROUND_LIMIT && ctx.count < TOTAL_LIMIT) {
       const productFrontier = [...products].filter((id) => !processedProducts.has(id));
@@ -278,11 +278,13 @@ async function queryBillProductArchive(ctx, input) {
       if (productFrontier.length) {
         productFrontier.forEach((id) => processedProducts.add(id));
         data.relatedProductInstances.push(...await readBillArchive(ctx, '关联产品实例（含历史版本）', 'prod_inst', ['prod_inst_id'], productFrontier.filter((id) => id !== input)));
-        const relations = await readBillArchive(ctx, '产品实例关系（双向）', 'prod_inst_rel', ['prod_inst_a_id', 'prod_inst_z_id'], productFrontier);
+        const relations = productFrontier.includes(input)
+          ? await readBillArchive(ctx, '产品实例关系（根实例双向直接关联）', 'prod_inst_rel', ['prod_inst_a_id', 'prod_inst_z_id'], [input]) : [];
         data.productRelationships.push(...relations);
         data.productAttributes.push(...await readBillArchive(ctx, '产品实例属性（含关联产品）', 'prod_inst_attr', ['prod_inst_id'], productFrontier));
         data.accountRelations.push(...await readBillArchive(ctx, '产品账户关系（含关联产品）', 'prod_inst_acct', ['prod_inst_id'], productFrontier));
-        const offerRelations = await readBillArchive(ctx, '产品销售品关系（含关联产品）', 'offer_prod_inst_rel', ['prod_inst_id'], productFrontier);
+        const offerRelations = productFrontier.includes(input)
+          ? await readBillArchive(ctx, '产品销售品关系（根实例）', 'offer_prod_inst_rel', ['prod_inst_id'], [input]) : [];
         data.offerRelations.push(...offerRelations);
         for (const row of offerRelations) {
           if (String(rowValue(row, 'prod_inst_id')) === input) valuesOfAny([row], ['prod_offer_inst_id', 'offer_inst_id']).forEach((id) => directOffers.add(String(id)));
@@ -295,11 +297,9 @@ async function queryBillProductArchive(ctx, input) {
         offerFrontier.forEach((id) => processedOffers.add(id));
         allOfferInstances.push(...await readBillArchive(ctx, '销售品实例（含历史版本）', 'prod_offer_inst', ['prod_offer_inst_id'], offerFrontier));
         data.offerInstanceAttributes.push(...await readBillArchive(ctx, '销售品实例属性（含关联销售品）', 'prod_offer_inst_attr', ['prod_offer_inst_id'], offerFrontier));
-        const relations = await readBillArchive(ctx, '销售品实例关系（双向）', 'prod_offer_inst_rel', ['rela_prod_offer_inst_id', 'related_prod_offer_inst_id'], offerFrontier);
+        const directFrontier = offerFrontier.filter((id) => directOffers.has(id));
+        const relations = await readBillArchive(ctx, '销售品实例关系（直接销售品双向一跳）', 'prod_offer_inst_rel', ['rela_prod_offer_inst_id', 'related_prod_offer_inst_id'], directFrontier);
         data.offerInstanceRelationships.push(...relations);
-        const productRelations = await readBillArchive(ctx, '销售品关联产品关系', 'offer_prod_inst_rel', ['prod_offer_inst_id'], offerFrontier);
-        data.offerRelations.push(...productRelations);
-        addIds(products, valuesOf(productRelations, 'prod_inst_id'), '关联产品');
         addIds(offers, [...valuesOf(relations, 'rela_prod_offer_inst_id'), ...valuesOf(relations, 'related_prod_offer_inst_id')], '关联销售品');
       }
     }
@@ -333,7 +333,7 @@ async function queryBillProductArchive(ctx, input) {
   const missing = Object.values(missingReferences).some((ids) => ids.length);
   return { status: !data.productInstances.length ? (hasErrors ? 'failed' : 'empty') : (hasErrors || missing || ctx.truncated ? 'partial' : 'complete'),
     queriedAt: utc8Iso(), truncated: ctx.truncated, totalRows: Object.values(data).reduce((sum, rows) => sum + rows.length, 0), steps: ctx.steps, data,
-    archiveCoverage: { mode: 'related-instance-graph', history: 'all-available-versions', tables: Object.keys(BILL_ARCHIVE_TABLES),
+    archiveCoverage: { mode: 'direct-instance-relations', history: 'all-available-versions', tables: Object.keys(BILL_ARCHIVE_TABLES),
       productInstanceCount: products.size, offerInstanceCount: offers.size, rounds, readRows: ctx.count,
       limits: { nodesPerKind: ARCHIVE_NODE_LIMIT, rounds: ARCHIVE_ROUND_LIMIT, readRows: TOTAL_LIMIT }, limitReasons: [...limitReasons], missingReferences } };
 }
