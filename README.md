@@ -2,6 +2,8 @@
 
 面向测试人员的 Windows 优先本地工具工作台，集中处理 SSH/SFTP 文件、HDFS、HBase、数据库档案查询和 CDR 话单。当前交付重点是 PC 端；移动端专用布局、深色模式和运行时迁移不在范围内。
 
+Windows x64 安装包与自动更新分发仓库。测试安装包未进行代码签名。
+
 ## 快速开始
 
 Windows App 构建、内置 CDR 与 GitHub 自动更新见 [Windows 桌面版](./docs/windows-desktop.md)。原有浏览器启动方式保留。
