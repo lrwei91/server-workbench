@@ -61,8 +61,8 @@ Python 依赖按现有 CDR requirements 安装；构建工具版本固定，CDR 
 `.github/workflows/windows-release.yml`：
 
 1. 手动运行：测试、构建、上传 Actions artifact，不创建 Release。
-2. 推送 `v<package.json版本>` tag：同样构建，创建/更新 draft Release，上传 exe、blockmap、latest.yml。
-3. 下载 draft 安装包验收后，人工将 draft 发布。draft 不作为客户端可用更新。
+2. 推送 `v<package.json版本>` tag：同样构建，先创建/更新 draft Release，上传同次构建的 exe、blockmap、latest.yml，再发布为公开稳定版本并标记 latest。
+3. 已公开的同版本 Release 不覆盖资产。用户要求打包并推送时，需完成标签和公开 Release；只推 main 或保留 draft 不算完成。发布后验证 latest.yml 及安装包下载；旧版发现、下载、安装重启与配置保留需分别记录实际验证结果。
 
 版本和 tag 必须一致；更新文件必须出自同一次构建。不要覆盖已经公开的同版本资产。发布 Token 仅由 CI 注入，安装包不携带 Token。
 
