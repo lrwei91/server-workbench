@@ -176,9 +176,9 @@ test('HTTP errors have real status and normalized shape', async () => {
     const invalidDb = await request(server, 'POST', '/api/db/connect', { source: 'oracle', host: 'HOST', port: 1, username: 'USER', password: '' });
     assert.equal(invalidDb.status, 400); assert.equal(invalidDb.body.error.code, 'INVALID_INPUT');
     const disconnectedQuery = await request(server, 'POST', '/api/query/phone', { phone: '13338297988' });
-    assert.equal(disconnectedQuery.status, 409); assert.equal(disconnectedQuery.body.error.code, 'DB_NOT_CONNECTED');
+    assert.equal(disconnectedQuery.status, 409); assert.equal(disconnectedQuery.body.error.code, 'PG_NOT_CONNECTED');
     const disconnectedThreshold = await request(server, 'POST', '/api/query/threshold', { aProductInstanceId: '48243980' });
-    assert.equal(disconnectedThreshold.status, 409); assert.equal(disconnectedThreshold.body.error.code, 'DB_NOT_CONNECTED');
+    assert.equal(disconnectedThreshold.status, 409); assert.equal(disconnectedThreshold.body.error.code, 'PG_NOT_CONNECTED');
     const disconnectedEventType = await request(server, 'POST', '/api/query/event-type', { eventTypeId: '206080000' });
     assert.equal(disconnectedEventType.status, 409); assert.equal(disconnectedEventType.body.error.code, 'DB_NOT_CONNECTED');
     const disconnectedOffer = await request(server, 'POST', '/api/query/offer', { offerId: '801' });
@@ -192,9 +192,9 @@ test('HTTP errors have real status and normalized shape', async () => {
     const invalidVoyageSchema = await request(server, 'POST', '/api/query/phone', { phone: '13338297988', source: 'voyage', schema: 'other' });
     assert.equal(invalidVoyageSchema.status, 400); assert.equal(invalidVoyageSchema.body.error.code, 'INVALID_INPUT');
     const disconnectedVoyage = await request(server, 'POST', '/api/query/phone', { phone: '13338297988', source: 'voyage' });
-    assert.equal(disconnectedVoyage.status, 409); assert.equal(disconnectedVoyage.body.error.code, 'VOYAGE_NOT_CONNECTED');
+    assert.equal(disconnectedVoyage.status, 409); assert.equal(disconnectedVoyage.body.error.code, 'PG_NOT_CONNECTED');
     const disconnectedVoyageInstance = await request(server, 'POST', '/api/query/product-instance', { productInstanceId: '48243980', source: 'voyage' });
-    assert.equal(disconnectedVoyageInstance.status, 409); assert.equal(disconnectedVoyageInstance.body.error.code, 'VOYAGE_NOT_CONNECTED');
+    assert.equal(disconnectedVoyageInstance.status, 409); assert.equal(disconnectedVoyageInstance.body.error.code, 'PG_NOT_CONNECTED');
     for (const [method, endpoint] of [['GET', '/api/archive/status'], ['POST', '/api/archive/connect'], ['POST', '/api/archive/disconnect'], ['POST', '/api/query/archive']]) {
       assert.equal((await request(server, method, endpoint, method === 'POST' ? {} : undefined)).status, 404);
     }
@@ -266,20 +266,48 @@ test('log queue writes asynchronously and paginates newest entries', async () =>
 test('fixed query panel replaces command and log interactions', () => {
   const html = fs.readFileSync(path.join(__dirname, '../../public/index.html'), 'utf8');
   const source = fs.readFileSync(path.join(__dirname, '../../public/js/main.js'), 'utf8');
-  assert.match(html, /<h1>数据库查询<\/h1>/); assert.match(html, /查询手机号/); assert.match(html, /实例查档案/); assert.match(html, /id="productInstanceQueryForm"/); assert.match(html, /查询套餐/); assert.match(html, /查询事件类型/); assert.match(html, /id="offerQueryForm"/); assert.match(html, /<input id="offerInput"[^>]*inputmode="numeric"/); assert.match(html, /id="eventTypeQueryForm"/); assert.match(html, /value="206080000" selected/); assert.match(html, /阈值查询/); assert.match(html, /Voyage 在线数据库/); assert.match(html, /id="querySourceSelect"/); assert.match(html, /id="querySchemaSelect"[^>]*disabled>[\s\S]*?<option value="bill_inmemory" selected>bill_inmemory<\/option>[\s\S]*?<option value="crmv3">crmv3<\/option>/); assert.match(html, /id="connectionDialog"/);
+  assert.match(html, /<h1>数据库查询<\/h1>/); assert.match(html, /号码查产品/); assert.match(html, /实例查档案/); assert.match(html, /id="productInstanceQueryForm"/); assert.match(html, /查询套餐/); assert.match(html, /查询事件类型/); assert.match(html, /id="offerQueryForm"/); assert.match(html, /<input id="offerInput"[^>]*inputmode="numeric"/); assert.match(html, /id="eventTypeQueryForm"/); assert.match(html, /value="206080000" selected/); assert.match(html, /阈值查询/); assert.match(html, /Voyage 在线数据库/); assert.match(html, /档案：PostgreSQL · bill_inmemory/); assert.match(html, /配置：MySQL/); assert.doesNotMatch(html, /id="querySourceSelect"|id="querySchemaSelect"/); assert.match(html, /id="relationsQueryForm"/); assert.match(html, /id="connectionDialog"/);
   assert.match(html, /id="insertDialog"/); assert.match(html, /id="insertSqlCopy"/); assert.match(html, /一键复制/);
   assert.match(html, /data-primary-page="redis">Redis 档案/); assert.match(html, /id="redisPage"[^>]*data-primary-panel="redis"/); assert.match(html, /id="redisQueryForm"/); assert.match(html, /id="btnRedisQuery"/);
   assert.doesNotMatch(html, /data-query-tab="redis"|data-tab="redis"/);
   assert.doesNotMatch(html, /cacheRedis|data-cache-/);
   assert.doesNotMatch(html, /id="cmdInput"|id="logFlow"|id="btnCmds"|id="commandsDialog"/);
   assert.match(source, /postJson\('\/api\/query\/phone'/); assert.match(source, /postJson\('\/api\/query\/product-instance'/); assert.match(source, /postJson\('\/api\/query\/offer'/); assert.match(source, /postJson\('\/api\/query\/event-type'/); assert.match(source, /postJson\('\/api\/query\/threshold'/); assert.match(source, /postJson\('\/api\/query\/redis'/); assert.match(source, /postJson\('\/api\/voyage\/connect'/); assert.match(source, /generateInsertScript\(result, \{ target \}\)/); assert.match(html, /id="insertTargetSelect"/); assert.match(source, /\/api\/hdfs\/preview/);
-  assert.match(source, /querySourcePayload\(source, schema\)/); assert.match(source, /source === 'voyage' \? \{ schema: schema \|\| 'bill_inmemory' \}/);
+  assert.match(source, /querySourcePayload\(source, schema\)/); assert.match(source, /function querySourcePayload\(\) \{ return \{ source: 'pg', schema: 'bill_inmemory' \}/);
   assert.match(source, /resultSection\('销售品实例关系'/); assert.match(source, /resultSection\('关联销售品实例'/); assert.match(source, /resultSection\('销售品实例费用属性'/);
   assert.match(source, /resultSection\('销售品关联对象'/); assert.match(source, /resultSection\('销售品关联资源'/); assert.match(source, /resultSection\('增值业务订购关系'/);
   assert.match(source, /resultSection\('订购用户汇总'/); assert.match(source, /resultSection\('拥有套餐的产品实例'/); assert.match(source, /text: '查看档案'/); assert.match(html, /反查订购用户/);
   assert.doesNotMatch(html, /id="eventOfferNameInput"/); assert.match(source, /resultSection\('销售品实例属性'/);
   assert.doesNotMatch(source, /\/api\/cache\/|state\.cache|CACHE_FIELDS/);
   assert.doesNotMatch(source, /postJson\('\/api\/exec'|postJson\('\/api\/log\/append'|\/api\/log\/list/);
+});
+
+test('phone query loading describes PG archives and MySQL configuration, not obsolete CRM routing', async () => {
+  const source = fs.readFileSync(path.join(__dirname, '../../public/js/main.js'), 'utf8');
+  const submit = source.slice(source.indexOf('async function submitPhoneQuery('), source.indexOf('async function submitProductInstanceQuery('));
+  for (const [environment, schema, expected] of [
+    ['pg', 'bill_inmemory', 'PostgreSQL · Schema bill_inmemory · 正在读取档案；配置由 MySQL 补充'],
+  ]) {
+    let loading; let payload;
+    const controls = { '#phoneInput': { value: '13800000000' }, '#btnPhoneQuery': {}, '#btnPhoneCancel': { classList: { remove() {}, add() {} } } };
+    const context = {
+      $: (selector) => controls[selector],
+      activeDatabaseSource: () => environment, activeDatabaseSchema: () => schema,
+      isDatabaseSourceConnected: () => true,
+      databaseSourceName: () => '测试环境 · PostgreSQL',
+      state: { gates: { phone: { next: () => ({ isCurrent: () => true }) } }, phoneQuery: {} },
+      setQueryState() {}, renderQueryResult() {},
+      queryResultRoot: () => ({ replaceChildren: (node) => { loading = node; } }),
+      el: (tag, attrs, ...children) => ({ tag, ...attrs, children }),
+      querySourcePayload: () => ({ source: 'pg', schema: 'bill_inmemory' }),
+      postJson: async (_url, body) => { payload = body; return { result: { status: 'complete' } }; },
+    };
+    await require('node:vm').runInNewContext(`${submit}\nsubmitPhoneQuery();`, context);
+    assert.equal(loading.children[1].text, expected);
+    assert.equal(payload.source, environment);
+    assert.equal(payload.schema, schema);
+    assert.doesNotMatch(loading.children[1].text, /CRM3DB/);
+  }
 });
 
 test('HDFS deletion is non-recursive, distinguishes files and directories, and blocks root', async () => {
@@ -322,7 +350,7 @@ test('query result sections show source tables, hide empty categories, and prese
   assert.match(source, /resultSection\('产品实例属性',[^\n]+table: resultTable\('productAttributes', result\)/);
   assert.match(source, /resultSection\('销售品实例费用',[^\n]+table: resultTable\('offerInstanceFees', result\)/);
   assert.match(source, /`\$\{title\} · \$\{rows\?\.length \|\| 0\} 条\$\{tableSuffix\}`/);
-  assert.match(source, /逻辑表: tableForStep\(step\.name\)/); assert.match(source, /实际表: physicalTables/);
+  assert.match(source, /逻辑表: tableForStep\(step\.name\)/); assert.match(source, /实际表: step\.table \|\| physicalTables/);
   assert.match(css, /\.query-results \{[^}]*overflow-x:\s*hidden;[^}]*overflow-y:\s*auto;/);
   assert.match(css, /\.query-table-wrap \{[^}]*overflow-x:\s*auto;[^}]*overflow-y:\s*hidden;/);
   assert.match(css, /\.query-step span \{[^}]*overflow-wrap:\s*anywhere;[^}]*word-break:\s*break-word;/);

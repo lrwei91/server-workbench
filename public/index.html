@@ -63,40 +63,63 @@
       <section class="query-panel" aria-label="数据库数据查询">
         <div class="query-heading"><div><h1>数据库查询</h1><p>固定只读查询 · 多库分步读取并聚合展示</p></div><button id="btnQueryReset" class="wb-button ghost" type="button">清空结果</button></div>
         <div id="dbStatusCards" class="db-status-cards" aria-live="polite"></div>
-        <div class="query-tabs" role="tablist" aria-label="查询功能"><button class="tab active" type="button" role="tab" data-query-tab="phone" aria-selected="true" aria-controls="phoneQueryForm">查询手机号</button><button class="tab" type="button" role="tab" data-query-tab="productInstance" aria-selected="false" aria-controls="productInstanceQueryForm">实例查档案</button><button class="tab" type="button" role="tab" data-query-tab="offer" aria-selected="false" aria-controls="offerQueryForm">查询套餐</button><button class="tab" type="button" role="tab" data-query-tab="eventType" aria-selected="false" aria-controls="eventTypeQueryForm">查询事件类型</button><button class="tab" type="button" role="tab" data-query-tab="threshold" aria-selected="false" aria-controls="thresholdQueryForm">阈值查询</button></div>
-        <div id="querySourceBar" class="query-source-bar"><label for="querySourceSelect">查询环境</label><select id="querySourceSelect" class="wb-field"><option value="udal">测试环境 · MySQL / UDAL</option><option value="voyage">工程环境 · Voyage 在线数据库</option></select><label for="querySchemaSelect">Schema</label><select id="querySchemaSelect" class="wb-field" disabled><option value="bill_inmemory" selected>bill_inmemory</option><option value="crmv3">crmv3</option></select><span>Voyage 查询可选择 Schema，默认 bill_inmemory</span></div>
+        <div class="query-tabs" role="tablist" aria-label="查询功能"><button class="tab active" type="button" role="tab" data-query-tab="phone" aria-selected="true" aria-controls="phoneQueryForm">号码查产品</button><button class="tab" type="button" role="tab" data-query-tab="productInstance" aria-selected="false" aria-controls="productInstanceQueryForm">实例查档案</button><button class="tab" type="button" role="tab" data-query-tab="offer" aria-selected="false" aria-controls="offerQueryForm">查询套餐</button><button class="tab" type="button" role="tab" data-query-tab="eventType" aria-selected="false" aria-controls="eventTypeQueryForm">查询事件类型</button><button class="tab" type="button" role="tab" data-query-tab="threshold" aria-selected="false" aria-controls="thresholdQueryForm">阈值查询</button><button class="tab" type="button" role="tab" data-query-tab="relations" aria-selected="false" aria-controls="relationsQueryForm">关系链查询</button></div>
+        <div id="querySourceBar" class="query-source-bar"><span><strong>档案：PostgreSQL · bill_inmemory</strong></span><span>配置：MySQL / UDAL · CONFIGDB_CNOS_JF_TEST</span><span>按表固定来源，不随入口切换数据库。</span></div>
         <form id="phoneQueryForm" class="phone-query-form query-form" data-query-pane="phone">
-          <label for="phoneInput">手机号或接入号码</label>
+          <label for="phoneInput">业务号码（手机号、固话或宽带接入号码）</label>
           <div class="query-input-row"><input id="phoneInput" class="wb-field" autocomplete="off" placeholder="输入后精确查询" required><button id="btnPhoneQuery" class="wb-button primary" type="submit">查询</button><button id="btnPhoneCancel" class="wb-button hidden" type="button">取消</button></div>
-          <p class="query-help">返回产品、套餐/销售品、账户合同与定价计划；状态与有效期保留原始值。</p>
+          <p class="query-help">手机号是产品实例的业务号码，不是产品实例 ID。按 acc_nbr 定位产品实例，再查账户、销售品和定价；同一号码可能返回多个实例或历史版本。</p>
         </form>
         <form id="productInstanceQueryForm" class="phone-query-form query-form hidden" data-query-pane="productInstance">
           <label for="productInstanceInput">产品实例 ID</label>
           <div class="query-input-row"><input id="productInstanceInput" class="wb-field" autocomplete="off" inputmode="numeric" placeholder="输入产品实例 ID 后精确查询" required><button id="btnProductInstanceQuery" class="wb-button primary" type="submit">查询</button><button id="btnProductInstanceCancel" class="wb-button hidden" type="button">取消</button></div>
-          <p class="query-help">工程 bill_inmemory 保留历史版本、直接产品/销售品关系、属性和账户；关联节点不展开兄弟实例；测试环境保留原完整档案链。</p>
+          <p class="query-help">按 prod_inst_id 查询 PG 档案，保留历史版本、直接产品/销售品关系、属性和账户；关联节点不展开兄弟实例。销售品定义与定价计划查 MySQL。</p>
         </form>
         <form id="offerQueryForm" class="phone-query-form query-form hidden" data-query-pane="offer">
           <label for="offerInput">套餐 ID（offer_id）</label>
           <div class="query-input-row"><input id="offerInput" class="wb-field" autocomplete="off" inputmode="numeric" placeholder="输入 offer_id 后精确查询" required><button id="btnOfferQuery" class="wb-button primary" type="submit">查询</button><button id="btnOfferCancel" class="wb-button hidden" type="button">取消</button></div>
-          <p class="query-help">按 offer_id 精确查询套餐定义，并沿套餐实例、产品实例关系反查订购用户。</p>
+          <p class="query-help">按 offer_id 查 MySQL 套餐定义与定价计划，再经 PG 销售品实例、产品关系反查订购用户；规格 ID 与销售品实例 ID 分开使用。</p>
         </form>
         <form id="eventTypeQueryForm" class="phone-query-form query-form hidden" data-query-pane="eventType">
           <label for="eventTypeInput">事件类型</label>
           <div class="query-input-row"><select id="eventTypeInput" class="wb-field"><option value="206080000" selected>206080000 · CDMA 集团</option><option value="206070000">206070000 · CDMA 语音</option><option value="206110000">206110000 · CDMA 短信</option><option value="206120000">206120000 · CDMA 业务域话单</option><option value="202010000">202010000 · 数据业务拨号</option><option value="201010000">201010000 · 正常语音</option><option value="205060000">205060000 · 智能网话单</option><option value="203030000">203030000 · 信息台清单</option><option value="206190000">206190000 · CDMA 综合 VPN</option><option value="204210000">204210000 · 597 协同通信语音</option><option value="204350000">204350000 · 彩铃</option><option value="204220100">204220100 · 597 协同通信短信</option><option value="204470000">204470000 · 全国商务领航</option><option value="204410000">204410000 · 商务领航声讯外包</option><option value="208520000">208520000 · 国漫语音</option><option value="208530000">208530000 · 国漫数据</option><option value="208540000">208540000 · 国漫短信</option><option value="208550000">208550000 · 国漫套餐费</option><option value="203020000">203020000 · 固网/VDR</option><option value="204050000">204050000 · C 网增值运营</option><option value="204220000">204220000 · 协同通信类</option><option value="204330000">204330000 · C 网增值运营</option><option value="204340000">204340000 · C 网增值运营</option><option value="204370000">204370000 · 固网 VDR</option><option value="204380000">204380000 · C 网增值运营</option><option value="204390000">204390000 · C 网增值运营</option><option value="204400000">204400000 · 固网 VDR</option><option value="204490000">204490000 · 固网 VDR</option><option value="204510000">204510000 · 固网 VDR</option></select><button id="btnEventTypeQuery" class="wb-button primary" type="submit">查询</button><button id="btnEventTypeCancel" class="wb-button hidden" type="button">取消</button></div>
-          <p class="query-help">测试环境按事件类型查询格式、入库路由和定价关联；套餐请使用 offer_id 查询。</p>
+          <p class="query-help">事件格式、入库路由与定价关联查 MySQL，关联的销售品及产品实例查 PG；套餐请使用 offer_id 查询。</p>
         </form>
         <form id="thresholdQueryForm" class="phone-query-form query-form hidden" data-query-pane="threshold">
           <label for="thresholdProductInput">A 端产品实例 ID</label>
           <div class="query-input-row"><input id="thresholdProductInput" class="wb-field" autocomplete="off" placeholder="输入 A 端产品实例 ID" required><button id="btnThresholdQuery" class="wb-button primary" type="submit">查询</button><button id="btnThresholdCancel" class="wb-button hidden" type="button">取消</button></div>
-          <p class="query-help">查询 A/Z 关系，筛选产品规格 900178630，并返回 20%、40%、80%、100%、150%、200% 档位提醒配置。</p>
+          <p class="query-help">从 PG 查询 A/Z 关系，筛选产品规格 900178630，并返回六档提醒实例属性；这里是用户实例属性，不是 MySQL 配置定义。</p>
+        </form>
+        <form id="relationsQueryForm" class="phone-query-form query-form hidden" data-query-pane="relations">
+          <label for="relationModeInput">档案关系链</label>
+          <select id="relationModeInput" class="wb-field">
+            <option value="product-offers">产品实例 → 销售品与定价</option>
+            <option value="function-offers">接入产品 → 功能产品与销售品</option>
+            <option value="group-offers">成员产品 → 群主销售品</option>
+            <option value="offer-links-a">销售品 A端 → Z端</option>
+            <option value="offer-links-z">销售品 Z端 → A端</option>
+            <option value="offer-members">销售品 → 产品成员</option>
+            <option value="function-members">组合功能销售品 → A端主产品</option>
+            <option value="customer-offers">账户 → 客户群销售品</option>
+            <option value="account-offers">账户 → 账户群销售品</option>
+            <option value="bank-offers">账户 → 银行群销售品</option>
+            <option value="account-products">账户 → 产品实例</option>
+            <option value="group-members">非产品群销售品 → 成员产品</option>
+            <option value="inner-call">销售品 → 对端成员关系检查</option>
+          </select>
+          <label id="relationIdLabel" for="relationIdInput">产品实例 ID</label>
+          <div class="query-input-row"><input id="relationIdInput" class="wb-field" inputmode="numeric" autocomplete="off" placeholder="输入实例 ID，非业务号码" required><button id="btnRelationsQuery" class="wb-button primary" type="submit">查询</button><button id="btnRelationsCancel" class="wb-button hidden" type="button">取消</button></div>
+          <div id="relationPeerFields" class="hidden"><label for="relationPeerInput">对端产品实例 ID</label><input id="relationPeerInput" class="wb-field" inputmode="numeric" autocomplete="off"><label for="relationPeerAccountInput">对端默认电信账户 ID（可选，用于非产品群）</label><input id="relationPeerAccountInput" class="wb-field" inputmode="numeric" autocomplete="off"></div>
+          <p class="query-help">只读关系诊断：档案查 PG，销售品配置查 MySQL。账户入口请填写已核实的默认电信账户；返回原始关系候选，不自动判定有效履历、默认账户、成员角色或最终群内优惠。</p>
         </form>
         <div id="queryState" class="query-state" role="status" aria-live="polite"></div>
         <div id="queryResults" class="query-results" aria-live="polite">
-          <div data-query-result="phone"><div class="query-empty"><strong>等待查询</strong><span>请先连接 MySQL / UDAL，再输入号码。</span><button class="wb-button primary" type="button" data-open-connection-settings>打开数据源连接</button></div></div>
+          <div data-query-result="phone"><div class="query-empty"><strong>等待查询</strong><span>连接 PostgreSQL 查档案；连接 MySQL 查配置，再输入业务号码。</span><button class="wb-button primary" type="button" data-open-connection-settings>打开数据源连接</button></div></div>
           <div class="hidden" data-query-result="productInstance"></div>
           <div class="hidden" data-query-result="offer"></div>
           <div class="hidden" data-query-result="eventType"></div>
           <div class="hidden" data-query-result="threshold"></div>
+          <div class="hidden" data-query-result="relations"></div>
         </div>
       </section>
     </main>

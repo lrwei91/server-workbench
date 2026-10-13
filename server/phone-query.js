@@ -151,10 +151,10 @@ function uniqueRows(rows) {
   });
 }
 function utc8Iso(date = new Date()) { return new Date(date.getTime() + 8 * 60 * 60 * 1000).toISOString().replace('Z', '+08:00'); }
-function sourceMeta(source, database, schema) { return { source, database, ...(source === 'voyage' && schema ? { schema } : {}), readAt: utc8Iso() }; }
-function resultSourceMeta(source, schema) { return { source, ...(source === 'voyage' && schema ? { schema } : {}) }; }
+function sourceMeta(source, database, schema) { return { source, database, ...(['voyage', 'pg'].includes(source) && schema ? { schema } : {}), readAt: utc8Iso() }; }
+function resultSourceMeta(source, schema) { return { source, ...(source === 'pg' ? { schema: 'bill_inmemory', configSource: 'udal' } : source === 'voyage' && schema ? { schema } : {}) }; }
 function mapQueryTables(sql, source, schema) {
-  if (source !== 'voyage' || schema !== 'bill_inmemory') return { sql, tableMap: [], columnMap: [] };
+  if (!['voyage', 'pg'].includes(source) || schema !== 'bill_inmemory') return { sql, tableMap: [], columnMap: [] };
   let mappedSql = sql; const tableMap = []; const columnMap = [];
   for (const [logicalTable, physicalTable] of Object.entries(VOYAGE_BILL_INMEMORY_TABLE_MAP)) {
     const pattern = new RegExp(`\\b(FROM|JOIN)\\s+${logicalTable}\\b`, 'gi');
@@ -174,33 +174,59 @@ function mapQueryTables(sql, source, schema) {
     mappedSql = mappedSql.replace(pattern, physicalColumn);
     columnMap.push({ logicalColumn, physicalColumn });
   }
+  if (source === 'pg') {
+    let parameter = 0;
+    mappedSql = mappedSql.replace(/\?/g, () => `$${++parameter}`);
+    mappedSql = mappedSql.replace(/\b(FROM|JOIN)\s+([a-z_][a-z0-9_]*)\b/gi, (_match, keyword, table) => `${keyword} bill_inmemory.${table.toLowerCase()}`);
+  }
   return { sql: mappedSql, tableMap, columnMap };
 }
 
 function normalizeQueryRows(rows, source, schema, sql) {
+  if (source === 'pg') {
+    // 保留物理字段原值，增加逻辑字段供原查询链和导出兼容使用。
+    const mappings = { ...VOYAGE_BILL_INMEMORY_COLUMN_MAP };
+    if (/\bprod_inst_rel\b/i.test(sql)) Object.assign(mappings, VOYAGE_PRODUCT_RELATION_COLUMN_MAP);
+    for (const [table, columns] of Object.entries(VOYAGE_TABLE_COLUMN_MAP)) {
+      if (new RegExp(`\\b${table}\\b`, 'i').test(sql)) Object.assign(mappings, columns);
+    }
+    return rows.map((row) => {
+      const result = { ...row };
+      for (const [logical, physical] of Object.entries(mappings)) {
+        const value = rowValue(row, physical);
+        if (value !== undefined && rowValue(result, logical) === undefined) result[logical] = value;
+      }
+      return result;
+    });
+  }
   if (source !== 'voyage' || schema !== 'bill_inmemory' || !/\b(?:FROM|JOIN)\s+prod_inst_rel\b/i.test(sql)) return rows;
   const reverse = Object.fromEntries(Object.entries(VOYAGE_PRODUCT_RELATION_COLUMN_MAP).map(([logical, physical]) => [physical, logical]));
   return rows.map((row) => Object.fromEntries(Object.entries(row).map(([key, value]) => [reverse[key.toLowerCase()] || key, value])));
 }
 
 class QueryContext {
-  constructor(db, signal, source = 'udal', schema) { this.db = db; this.signal = signal; this.source = source; this.schema = source === 'voyage' ? schema : undefined; this.count = 0; this.truncated = false; this.steps = []; }
+  constructor(db, signal, source = 'udal', schema) { this.db = db; this.signal = signal; this.source = source; this.schema = source === 'pg' ? 'bill_inmemory' : source === 'voyage' ? schema : undefined; this.count = 0; this.truncated = false; this.steps = []; }
   async step(name, database, sql, values, { schema, source, paged = false } = {}) {
     if (this.signal?.aborted) throw Object.assign(new Error('查询已取消'), { code: 'QUERY_CANCELLED' });
-    const effectiveSource = source || this.source;
-    const effectiveSchema = effectiveSource === 'voyage' ? (schema || this.schema) : undefined;
+    const effectiveSource = source || (this.source === 'pg' && database === CONFIG ? 'udal' : this.source);
+    const effectiveSchema = effectiveSource === 'pg' ? 'bill_inmemory' : effectiveSource === 'voyage' ? (schema || this.schema) : undefined;
+    if (effectiveSource === 'pg') database = 'bill_inmemory';
+    if (this.count >= TOTAL_LIMIT) { this.truncated = true; return []; }
     const mapped = mapQueryTables(sql, effectiveSource, effectiveSchema);
+    const table = mapped.sql.match(/\bFROM\s+(?:bill_inmemory\.)?([a-z_][a-z0-9_]*)/i)?.[1] || '';
     try {
       const rows = normalizeQueryRows(repairBusinessText(await this.db.query(effectiveSource, database, mapped.sql, values, { signal: this.signal, timeout: 15000, ...(effectiveSchema ? { schema: effectiveSchema } : {}) })), effectiveSource, effectiveSchema, mapped.sql);
       const kept = rows.slice(0, Math.max(0, TOTAL_LIMIT - this.count));
       this.count += kept.length;
       if ((!paged && rows.length >= STEP_LIMIT) || kept.length < rows.length) this.truncated = true;
-      this.steps.push({ name, status: kept.length ? 'ok' : 'empty', count: kept.length, ...(mapped.tableMap.length ? { tableMap: mapped.tableMap } : {}), ...(mapped.columnMap.length ? { columnMap: mapped.columnMap } : {}), ...sourceMeta(effectiveSource, database, effectiveSchema) });
+      this.steps.push({ name, table, status: kept.length ? 'ok' : 'empty', count: kept.length, ...(mapped.tableMap.length ? { tableMap: mapped.tableMap } : {}), ...(mapped.columnMap.length ? { columnMap: mapped.columnMap } : {}), ...sourceMeta(effectiveSource, database, effectiveSchema) });
       return kept;
     } catch (error) {
       if (error.code === 'QUERY_CANCELLED') throw error;
-      if (/尚未连接/.test(String(error.message || ''))) throw error;
-      this.steps.push({ name, status: 'error', count: 0, message: error.message, ...(mapped.tableMap.length ? { tableMap: mapped.tableMap } : {}), ...(mapped.columnMap.length ? { columnMap: mapped.columnMap } : {}), ...sourceMeta(effectiveSource, database, effectiveSchema) });
+      if (error.code === 'PG_NOT_CONNECTED' || /尚未连接/.test(String(error.message || ''))) {
+        if (!this.count && (effectiveSource === this.source || database === CONFIG)) throw error;
+      }
+      this.steps.push({ name, table, status: 'error', count: 0, message: error.message, ...(mapped.tableMap.length ? { tableMap: mapped.tableMap } : {}), ...(mapped.columnMap.length ? { columnMap: mapped.columnMap } : {}), ...sourceMeta(effectiveSource, database, effectiveSchema) });
       return [];
     }
   }
@@ -256,7 +282,7 @@ async function readBillArchive(ctx, name, table, columns, ids) {
 async function queryBillProductArchive(ctx, input) {
   const data = { productInstances: [], relatedProductInstances: [], productRelationships: [], productAttributes: [],
     accountRelations: [], accounts: [], offerRelations: [], offerInstances: [], relatedOfferInstances: [],
-    offerInstanceRelationships: [], offerInstanceAttributes: [], offers: [] };
+    offerInstanceRelationships: [], offerInstanceAttributes: [], offers: [], pricingPlans: [] };
   data.productInstances = await readBillArchive(ctx, '产品实例档案（含历史版本）', 'prod_inst', ['prod_inst_id'], [input]);
   const products = new Set([input]); const offers = new Set();
   const processedProducts = new Set(); const processedOffers = new Set(); const directOffers = new Set();
@@ -312,11 +338,12 @@ async function queryBillProductArchive(ctx, input) {
       if (ctx.count >= TOTAL_LIMIT) { ctx.truncated = true; break; }
       const batch = definitionIds.slice(start, start + ARCHIVE_NODE_LIMIT);
       const clause = batch.length === 1 ? 'offer_id = ?' : `offer_id IN (${batch.map(() => '?').join(', ')})`;
-      const rows = await ctx.step('销售品定义（批量）', CRM, `SELECT * FROM offer WHERE ${clause} ORDER BY offer_id LIMIT ${STEP_LIMIT}`, batch);
+      const rows = await ctx.step('销售品定义（批量）', ctx.source === 'pg' ? CONFIG : CRM, `SELECT * FROM offer WHERE ${clause} ORDER BY offer_id LIMIT ${STEP_LIMIT}`, batch);
       data.offers.push(...rows);
       if (rows.length >= STEP_LIMIT) limitReasons.add(`销售品定义批次达到 ${STEP_LIMIT} 行，覆盖待核对`);
     }
   }
+  if (ctx.source === 'pg') data.pricingPlans = await ctx.each('定价计划', CONFIG, SQL.pricingPlan, valuesOf(data.offers, 'pricing_plan_id'));
   if (ctx.truncated && ctx.count >= TOTAL_LIMIT) limitReasons.add(`累计读取达到 ${TOTAL_LIMIT} 行`);
   if (ctx.steps.some((step) => step.status === 'error' && step.name.endsWith('分页游标'))) limitReasons.add('分页游标未前进');
   data.offerInstances = allOfferInstances.filter((row) => directOffers.has(String(rowValue(row, 'prod_offer_inst_id'))));
@@ -442,6 +469,18 @@ async function queryPhone(db, phone, { signal, source = 'udal', schema } = {}) {
   if (!input) throw new Error('手机号或接入号码不能为空');
   const ctx = new QueryContext(db, signal, source, schema);
   const productInstances = await ctx.step('号码产品实例', CRM, SQL.productsByPhone, [input]);
+  if (source === 'pg') {
+    const results = [];
+    for (const id of valuesOf(productInstances, 'prod_inst_id')) {
+      if (ctx.count >= TOTAL_LIMIT) { ctx.truncated = true; break; }
+      results.push(await queryBillProductArchive(ctx, String(id)));
+    }
+    const data = { productInstances };
+    for (const result of results) for (const [key, rows] of Object.entries(result.data)) data[key] = uniqueRows([...(data[key] || []), ...rows]);
+    const hasErrors = ctx.steps.some((step) => step.status === 'error');
+    return { phone: input, ...resultSourceMeta(source), queriedAt: utc8Iso(), data, steps: ctx.steps, totalRows: ctx.count, truncated: ctx.truncated,
+      status: !productInstances.length ? (hasErrors ? 'failed' : 'empty') : (hasErrors || ctx.truncated || results.some((result) => result.status !== 'complete') ? 'partial' : 'complete') };
+  }
   return { phone: input, ...resultSourceMeta(source, schema), ...await aggregateProductArchive(ctx, productInstances) };
 }
 
@@ -450,7 +489,7 @@ async function queryProductInstance(db, productInstanceId, { signal, source = 'u
   if (!input) throw new Error('产品实例 ID 不能为空');
   if (!/^\d+$/.test(input)) throw new Error('产品实例 ID 必须是数字');
   const ctx = new QueryContext(db, signal, source, schema);
-  if (source === 'voyage' && schema === 'bill_inmemory') {
+  if (source === 'pg' || (source === 'voyage' && schema === 'bill_inmemory')) {
     return { productInstanceId: input, ...resultSourceMeta(source, schema), ...await queryBillProductArchive(ctx, input) };
   }
   const productInstances = await ctx.step('产品实例档案', CRM, SQL.productsByInstance, [input]);
@@ -467,7 +506,10 @@ async function queryAccountCandidates(db, { productInstanceId, customerId }, opt
   const productId = String(productInstanceId ?? '').trim(); const custId = String(customerId ?? '').trim();
   if (!productId && !custId) throw new Error('产品实例 ID 或客户 ID 至少填写一个');
   const source = options.source || 'udal'; const ctx = new QueryContext(db, options.signal, source, options.schema); const rows = [];
-  if (productId) rows.push(...await ctx.step('按产品实例查账户候选', CRM, SQL.accountByProduct, [productId]));
+  if (productId && source === 'pg') {
+    const relations = await ctx.step('产品账户关系候选', CRM, SQL.accountRel, [productId]);
+    rows.push(...await ctx.each('按产品实例查账户候选', CRM, SQL.account, valuesOfAny(relations, ['account_id', 'acct_id'])));
+  } else if (productId) rows.push(...await ctx.step('按产品实例查账户候选', CRM, SQL.accountByProduct, [productId]));
   if (custId) rows.push(...await ctx.step('按客户查账户候选', CRM, SQL.accountByCustomer, [custId]));
   const unique = [...new Map(rows.map((row) => [String(rowValue(row, 'acct_id') ?? rowValue(row, 'account_id')), row])).values()];
   return { productInstanceId: productId || null, customerId: custId || null, ...resultSourceMeta(source, options.schema), candidate: true, queriedAt: utc8Iso(), truncated: ctx.truncated, rows: unique, steps: ctx.steps };
@@ -481,7 +523,7 @@ async function queryOffer(db, offerId, { signal, source = 'udal', schema } = {})
   const offers = await ctx.step('按 offer_id 查询套餐定义', voyage ? CRM : CONFIG, SQL.offerById, [input]);
   const offerIds = valuesOf(offers, 'OFFER_ID');
   const offerInstances = await ctx.each('套餐实例', CRM, voyage ? SQL.voyageOfferInstancesByOffer : SQL.allOfferInstancesByOffer, offerIds);
-  const instanceKey = voyage ? 'PROD_OFFER_INST_ID' : 'OFFER_INST_ID';
+  const instanceKey = voyage || source === 'pg' ? 'PROD_OFFER_INST_ID' : 'OFFER_INST_ID';
   const instanceIds = valuesOf(offerInstances, instanceKey);
   const [offerRelations, offerInstanceAttributes] = await Promise.all([
     ctx.each('套餐实例产品关系', CRM, voyage ? SQL.voyageOfferRelationsByInstance : SQL.offerRelationsByInstance, instanceIds),

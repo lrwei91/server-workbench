@@ -15,6 +15,7 @@ const proxy = require('./proxy');
 const log = require('./log');
 const { manager: database } = require('./database');
 const phoneQuery = require('./phone-query');
+const { RELATION_QUERIES, queryArchiveRelations } = require('./archive-relations');
 const { VoyageManager } = require('./voyage');
 const { manager: bigdata } = require('./bigdata-client');
 const { DcosLogs } = require('./dcos-logs');
@@ -117,11 +118,16 @@ function requireString(value, name, { allowEmpty = false } = {}) {
   return value.trim();
 }
 function requireQuerySource(value) {
-  const source = value === undefined ? 'udal' : requireString(value, 'source').toLowerCase();
-  if (!['udal', 'voyage'].includes(source)) throw new RequestError(400, 'INVALID_INPUT', 'source 必须是 udal 或 voyage');
-  return source;
+  const source = value === undefined ? 'pg' : requireString(value, 'source').toLowerCase();
+  if (!['pg', 'udal', 'voyage'].includes(source)) throw new RequestError(400, 'INVALID_INPUT', 'source 必须是 pg、udal 或 voyage');
+  // 兼容旧客户端参数，但固定查询不再按客户端选择改变档案/配置来源。
+  return 'pg';
 }
 function requireQuerySchema(value, source) {
+  if (source === 'pg') {
+    if (value !== undefined && value !== 'bill_inmemory') throw new RequestError(400, 'INVALID_INPUT', '档案查询 schema 固定为 bill_inmemory');
+    return 'bill_inmemory';
+  }
   if (source !== 'voyage') return undefined;
   const schema = value === undefined ? 'bill_inmemory' : requireString(value, 'schema');
   if (!['bill_inmemory', 'crmv3'].includes(schema)) throw new RequestError(400, 'INVALID_INPUT', 'schema 必须是 bill_inmemory 或 crmv3');
@@ -335,6 +341,12 @@ async function handle(req, res) {
   if (req.method === 'POST' && p === '/api/query/phone') {
     const body = await readBody(req); assertObject(body, ['phone', 'source', 'schema']); const source = requireQuerySource(body.source); const schema = requireQuerySchema(body.schema, source);
     const result = await runQueryRequest(req, res, (signal) => phoneQuery.queryPhone(queryManager(source), requireString(body.phone, 'phone'), { signal, source, schema })); return sendJson(res, 200, { ok: true, result });
+  }
+  if (req.method === 'GET' && p === '/api/query/relations/catalog') return sendJson(res, 200, { ok: true, queries: RELATION_QUERIES });
+  if (req.method === 'POST' && p === '/api/query/relations') {
+    const body = await readBody(req); assertObject(body, ['mode', 'id', 'peerProductInstanceId', 'peerAccountId']);
+    const result = await runQueryRequest(req, res, (signal) => queryArchiveRelations(database, body, { signal }));
+    return sendJson(res, 200, { ok: true, result });
   }
   if (req.method === 'POST' && p === '/api/query/product-instance') {
     const body = await readBody(req); assertObject(body, ['productInstanceId', 'source', 'schema']); const source = requireQuerySource(body.source); const schema = requireQuerySchema(body.schema, source);

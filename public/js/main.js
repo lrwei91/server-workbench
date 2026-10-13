@@ -20,7 +20,7 @@ function makeResourceState() { return { items: [], query: '', sortKey: 'name', s
 const state = {
   connected: false, config: null, home: '~', cwd: '~', hdfsCwd: localStorage.getItem('wb_hdfs_cwd') || '/apps', hbaseCwd: localStorage.getItem('wb_hbase_cwd') || '/',
   pendingConfirm: null, pendingName: null, insertExportResult: null,
-  gates: { files: createRequestGate(), hdfs: createRequestGate(), hbase: createRequestGate(), scan: createRequestGate(), phone: createRequestGate(), productInstance: createRequestGate(), offer: createRequestGate(), eventType: createRequestGate(), threshold: createRequestGate(), redis: createRequestGate() }, statusTimer: null, statusRunning: false, pendingUpload: null, loaded: { files: false, hdfs: false, hbase: false },
+  gates: { files: createRequestGate(), hdfs: createRequestGate(), hbase: createRequestGate(), scan: createRequestGate(), phone: createRequestGate(), productInstance: createRequestGate(), offer: createRequestGate(), eventType: createRequestGate(), threshold: createRequestGate(), relations: createRequestGate(), redis: createRequestGate() }, statusTimer: null, statusRunning: false, pendingUpload: null, loaded: { files: false, hdfs: false, hbase: false },
   annotations: {}, pendingAnnotationPath: '', pendingAnnotationKind: '',
   timeouts: { ...DEFAULT_RESOURCE_TIMEOUTS },
   resources: { files: makeResourceState(), hdfs: makeResourceState(), hbase: makeResourceState() },
@@ -31,7 +31,7 @@ const state = {
   voyage: { connected: false, config: null },
   bigdata: { connected: false, mode: 'ssh', config: null },
   connectionProfiles: { ssh: null, bigdata: null, udal: null, doris: null, pg: null, voyage: null }, connectionErrors: { ssh: '', bigdata: '', udal: '', doris: '', pg: '', voyage: '' },
-  activeQuery: 'phone', phoneQuery: { running: false, result: null, message: '', tone: '' }, productInstanceQuery: { running: false, result: null, message: '', tone: '' }, offerQuery: { running: false, result: null, message: '', tone: '' }, eventTypeQuery: { running: false, result: null, message: '', tone: '' }, thresholdQuery: { running: false, result: null, message: '', tone: '' }, redisQuery: { running: false, result: null, message: '', tone: '' },
+  activeQuery: 'phone', phoneQuery: { running: false, result: null, message: '', tone: '' }, productInstanceQuery: { running: false, result: null, message: '', tone: '' }, offerQuery: { running: false, result: null, message: '', tone: '' }, eventTypeQuery: { running: false, result: null, message: '', tone: '' }, thresholdQuery: { running: false, result: null, message: '', tone: '' }, relationsQuery: { running: false, result: null, message: '', tone: '' }, redisQuery: { running: false, result: null, message: '', tone: '' },
 };
 const ANNOTATIONS_KEY = 'wb_annotations';
 // 业务侧默认备注字典：本地未自定义时展示；用户手动保存即覆盖（清空可置空字符串表示不使用默认）
@@ -758,7 +758,7 @@ function renderConnectionList() {
     for (const [field, value] of Object.entries(values)) setText(document.querySelector(`[data-connection-field="${source}.${field}"]`), value);
     document.querySelector(`[data-connection-dot="${source}"]`)?.classList.toggle('on', connected);
     setText(document.querySelector(`[data-connection-status="${source}"]`), connected ? '已连接' : '未连接');
-    setText(document.querySelector(`[data-connection-error="${source}"]`), state.connectionErrors[source] || (source === 'pg' ? 'Redis 同步从 bill_inmemory 固定档案表只读取源数据；不执行 SQL 导出脚本。' : ''));
+    setText(document.querySelector(`[data-connection-error="${source}"]`), state.connectionErrors[source] || (source === 'pg' ? '固定档案查询与 Redis 同步从 bill_inmemory 只读；配置定义仍查 MySQL，不执行导出脚本。' : ''));
     setText(document.querySelector(`[data-connection-connect="${source}"]`), connected ? '重新连接' : '连接');
   }
 }
@@ -796,19 +796,18 @@ async function useSshBigdataMode() {
   try { const response = await postJson('/api/bigdata/use-ssh', {}); state.bigdata = { connected: false, mode: 'ssh', config: response.config || state.bigdata.config || state.connectionProfiles.bigdata }; state.connectionErrors.bigdata = ''; ['hdfs', 'hbase'].forEach((kind) => resetResourceState(kind)); renderBigdataSource(); renderConnectionList(); toast('HDFS/HBase 已切换为 SSH 命令模式', 'ok'); }
   catch (error) { state.connectionErrors.bigdata = error.message; renderConnectionList(); toast(error.message, 'err'); }
 }
-function activeDatabaseSource() { return $('#querySourceSelect')?.value === 'voyage' ? 'voyage' : 'udal'; }
-function activeDatabaseSchema(source = activeDatabaseSource()) { return source === 'voyage' ? ($('#querySchemaSelect')?.value || 'bill_inmemory') : undefined; }
-function querySourcePayload(source = activeDatabaseSource(), schema = activeDatabaseSchema(source)) { return { source, ...(source === 'voyage' ? { schema: schema || 'bill_inmemory' } : {}) }; }
-function syncQuerySchemaControl() { if ($('#querySchemaSelect')) $('#querySchemaSelect').disabled = activeDatabaseSource() !== 'voyage'; }
-function isDatabaseSourceConnected(source = activeDatabaseSource()) { return source === 'voyage' ? state.voyage.connected : state.databases.udal.connected; }
+function activeDatabaseSource() { return 'pg'; }
+function activeDatabaseSchema() { return 'bill_inmemory'; }
+function querySourcePayload() { return { source: 'pg', schema: 'bill_inmemory' }; }
+function isDatabaseSourceConnected(source = activeDatabaseSource()) { return Boolean(state.databases[source]?.connected); }
 function databaseSourceName(source = activeDatabaseSource()) { return DB_SOURCE_LABEL[source] || source; }
-const QUERY_NAMES = ['phone', 'productInstance', 'offer', 'eventType', 'threshold'];
+const QUERY_NAMES = ['phone', 'productInstance', 'offer', 'eventType', 'threshold', 'relations'];
 const QUERY_CONTROLS = {
-  phone: ['btnPhoneQuery', 'btnPhoneCancel'], productInstance: ['btnProductInstanceQuery', 'btnProductInstanceCancel'], offer: ['btnOfferQuery', 'btnOfferCancel'], eventType: ['btnEventTypeQuery', 'btnEventTypeCancel'], threshold: ['btnThresholdQuery', 'btnThresholdCancel'],
+  phone: ['btnPhoneQuery', 'btnPhoneCancel'], productInstance: ['btnProductInstanceQuery', 'btnProductInstanceCancel'], offer: ['btnOfferQuery', 'btnOfferCancel'], eventType: ['btnEventTypeQuery', 'btnEventTypeCancel'], threshold: ['btnThresholdQuery', 'btnThresholdCancel'], relations: ['btnRelationsQuery', 'btnRelationsCancel'],
 };
 function queryModel(query = state.activeQuery) { return state[`${query}Query`]; }
 function queryResultRoot(query = state.activeQuery) { return document.querySelector(`[data-query-result="${query}"]`); }
-function queryHint(query) { const sourceName = databaseSourceName(); return query === 'offer' ? `请先连接${sourceName}，再输入套餐 offer_id。` : query === 'eventType' ? `请先连接测试环境 MySQL / UDAL，再选择事件类型。` : query === 'threshold' ? `请先连接${sourceName}，再输入 A 端产品实例 ID。` : query === 'productInstance' ? `请先连接${sourceName}，再输入产品实例 ID。` : `请先连接${sourceName}，再输入号码。`; }
+function queryHint(query) { return query === 'offer' ? '套餐定义查 MySQL，订购实例查 PG；输入套餐规格 offer_id。' : query === 'eventType' ? '事件配置查 MySQL，订购实例查 PG；请选择事件类型。' : query === 'relations' ? '选择关系链，输入对应实例或账户 ID；档案查 PG，配置查 MySQL。' : query === 'threshold' ? '连接 PostgreSQL，再输入 A 端产品实例 ID，读取提醒实例属性。' : query === 'productInstance' ? '连接 PostgreSQL 查实例档案，MySQL 补充配置；请输入产品实例 ID。' : '连接 PostgreSQL 查档案，MySQL 补充配置；输入业务号码定位产品实例。'; }
 function renderQueryEmpty(query) {
   const actions = [el('button', { class: 'wb-button primary', type: 'button', text: '打开连接设置', on: { click: () => { renderConnectionList(); openDialog('connectionDialog'); } } })];
   queryResultRoot(query).replaceChildren(el('div', { class: 'query-empty' }, el('strong', { text: '等待查询' }), el('span', { text: queryHint(query) }), ...actions));
@@ -887,7 +886,7 @@ function physicalTable(result, logicalTable) {
 }
 function resultTable(dataKey, result) { return physicalTable(result, RESULT_TABLE_BY_KEY[dataKey] || ''); }
 function tableForStep(name) { return STEP_TABLE_RULES.find(([pattern]) => pattern.test(String(name || '')))?.[1] || '—'; }
-function queryStepRow(step) { const physicalTables = (step.tableMap || []).map((item) => item.physicalTable).join(', '); const mappedColumns = (step.columnMap || []).map((item) => `${item.logicalColumn}→${item.physicalColumn}`).join(', '); return { 步骤: step.name, 逻辑表: tableForStep(step.name), 实际表: physicalTables || tableForStep(step.name), 字段映射: mappedColumns || '—', 状态: step.status, 行数: step.count, 数据源: step.source, 逻辑库: step.database, Schema: step.schema || '—', 读取时间: step.readAt, 错误: step.message || '' }; }
+function queryStepRow(step) { const physicalTables = (step.tableMap || []).map((item) => item.physicalTable).join(', '); const mappedColumns = (step.columnMap || []).map((item) => `${item.logicalColumn}→${item.physicalColumn}`).join(', '); return { 步骤: step.name, 逻辑表: tableForStep(step.name), 实际表: step.table || physicalTables || tableForStep(step.name), 字段映射: mappedColumns || '—', 状态: step.status, 行数: step.count, 数据源: step.source, 逻辑库: step.database, Schema: step.schema || '—', 读取时间: step.readAt, 错误: step.message || '' }; }
 function appendFailedSteps(root, steps) {
   const failed = (steps || []).filter((step) => step.status === 'error'); if (!failed.length) return;
   const list = el('ul', { class: 'query-step-list' });
@@ -926,7 +925,7 @@ function renderRedisEmpty() { $('#redisResults').replaceChildren(el('div', { cla
 function renderInsertExport(result) {
   const target = $('#insertTargetSelect').value;
   const sql = generateInsertScript(result, { target }); setText($('#insertSqlText'), sql);
-  const identifier = result.productInstanceId ? `产品实例 ${result.productInstanceId}` : result.aProductInstanceId ? `A 端产品实例 ${result.aProductInstanceId}` : `号码 ${result.phone}`;
+  const identifier = result.productInstanceId ? `产品实例 ${result.productInstanceId}` : result.aProductInstanceId ? `A 端产品实例 ${result.aProductInstanceId}` : `业务号码 ${result.phone}`;
   setText($('#insertSqlMeta'), `${identifier} · ${result.totalRows || 0} 行查询结果 · ${target === 'postgres' ? 'PostgreSQL bill_cnos_jftest / bill_inmemory' : 'MySQL / UDAL 原逻辑库'} · 仅生成脚本，不直接写入`);
 }
 function openInsertExport(result) {
@@ -938,7 +937,7 @@ function openInsertExport(result) {
 function renderQueryResult(result) {
   const query = result.productInstanceId ? 'productInstance' : 'phone'; queryModel(query).result = result; const root = queryResultRoot(query); root.replaceChildren(); const data = result.data || {};
   const statusText = { complete: '查询完成', partial: '部分完成', empty: '无匹配', failed: '查询失败' }[result.status] || result.status;
-  const identifier = result.productInstanceId ? `产品实例 ${result.productInstanceId}` : `号码 ${result.phone}`;
+  const identifier = result.productInstanceId ? `产品实例 ${result.productInstanceId}` : `业务号码 ${result.phone}`;
   const summary = el('div', { class: 'query-summary' }, el('span', { class: `summary-chip ${result.status === 'partial' ? 'warn' : result.status === 'failed' ? 'err' : ''}`, text: statusText }), el('span', { class: 'summary-chip', text: databaseSourceName(result.source) }), ...(result.schema ? [el('span', { class: 'summary-chip', text: `Schema ${result.schema}` })] : []), el('span', { class: 'summary-chip', text: identifier }), el('span', { class: 'summary-chip', text: `共 ${result.totalRows || 0} 行` }), el('span', { class: 'summary-chip', text: formatDate(result.queriedAt, { withZone: true, milliseconds: true }) }), ...(result.truncated ? [el('span', { class: 'summary-chip warn', text: '结果已达上限' })] : []));
   if (result.source === 'voyage') summary.append(el('button', { class: 'wb-button primary query-export-button', type: 'button', text: '导出 INSERT', disabled: !hasInsertRows(result), title: hasInsertRows(result) ? '生成同步到测试环境的 INSERT 语句' : '当前结果没有可导出的数据', on: { click: () => openInsertExport(result) } }));
   root.append(summary);
@@ -947,7 +946,7 @@ function renderQueryResult(result) {
     const coverage = result.archiveCoverage;
     root.append(resultSection('查询范围与覆盖', [{
       范围: '根实例及一跳直接产品关系；根实例销售品及其一跳关系；关联节点不展开兄弟实例',
-      历史版本: '保留工程库现存的全部 his_id 版本；不代表 Redis 各 Step 的精确快照',
+      历史版本: '保留 PG 现存的全部 his_id 版本；不代表当前有效履历或 Redis 精确快照',
       产品实例数: coverage.productInstanceCount, 销售品实例数: coverage.offerInstanceCount, 展开轮数: coverage.rounds,
       上限: `${coverage.limits.nodesPerKind} 个产品与销售品 ID / ${coverage.limits.rounds} 轮 / ${coverage.limits.readRows} 行读取`,
       截断原因: coverage.limitReasons.join('；') || (result.truncated ? '累计读取达到上限' : '未触达上限'),
@@ -1007,8 +1006,7 @@ function renderOfferResult(result) {
   ));
   appendFailedSteps(root, result.steps);
   const archiveAction = (row) => { const id = rowField(row, 'PROD_INST_ID'); return el('button', { class: 'wb-button', type: 'button', text: '查看档案', disabled: !id, on: { click: () => {
-    $('#querySourceSelect').value = result.source || 'udal'; if (result.source === 'voyage' && result.schema) $('#querySchemaSelect').value = result.schema;
-    syncQuerySchemaControl(); $('#productInstanceInput').value = String(id || ''); switchQueryTab('productInstance'); $('#productInstanceQueryForm').requestSubmit();
+    $('#productInstanceInput').value = String(id || ''); switchQueryTab('productInstance'); $('#productInstanceQueryForm').requestSubmit();
   } } }); };
   root.append(
     resultSection('查询步骤与数据来源', (result.steps || []).map(queryStepRow)),
@@ -1045,8 +1043,7 @@ function renderEventTypeResult(result) {
   const archiveAction = (row) => {
     const id = rowField(row, 'PROD_INST_ID');
     return el('button', { class: 'wb-button', type: 'button', text: '查看档案', disabled: !id, on: { click: () => {
-      $('#querySourceSelect').value = result.source || 'udal'; if (result.source === 'voyage' && result.schema) $('#querySchemaSelect').value = result.schema;
-      syncQuerySchemaControl(); $('#productInstanceInput').value = String(id || ''); switchQueryTab('productInstance'); $('#productInstanceQueryForm').requestSubmit();
+      $('#productInstanceInput').value = String(id || ''); switchQueryTab('productInstance'); $('#productInstanceQueryForm').requestSubmit();
     } } });
   };
   root.append(
@@ -1069,18 +1066,18 @@ function renderEventTypeResult(result) {
     resultSection('详单入库目标表', data.targetTables, { open: true, table: 'TPL_INDB_TABLE_PG' }),
   );
   if (result.status !== 'failed' && !data.productInstances?.length) root.append(el('div', { class: 'query-empty' }, el('strong', { text: '未找到拥有该套餐的产品实例' }), el('span', { text: result.source === 'voyage' ? '请核对工程环境套餐名称；可查看销售品定义、实例及关系步骤定位断点。' : data.eventPricingStrategies?.length ? '已查到事件定价配置，但定价计划、套餐定义或实例关系链未返回匹配数据；可查看上方分步结果定位断点。' : '该事件类型暂未返回定价策略关联；事件格式与入库配置仍保留在上方。' })));
-  if (result.status === 'empty') root.append(el('div', { class: 'query-empty' }, el('strong', { text: '没有查到事件类型档案' }), el('span', { text: '请核对查询环境、Schema 和事件类型配置。' })));
+  if (result.status === 'empty') root.append(el('div', { class: 'query-empty' }, el('strong', { text: '没有查到事件类型配置与关联档案' }), el('span', { text: '请核对查询环境、Schema 和事件类型配置。' })));
 }
 async function loadCustomerProducts(customerId, source = activeDatabaseSource(), query = state.activeQuery, schema = activeDatabaseSchema(source)) {
-  try { setQueryState('正在查询同客户其他产品…', '', query); const response = await postJson('/api/query/customer-products', { customerId, ...querySourcePayload(source, schema) }, { timeout: 60000 }); const phones = [...new Set(response.result.rows.map((row) => rowField(row, 'acc_num') || rowField(row, 'acc_nbr')).filter(Boolean))]; const actions = phones.map((phone) => el('button', { class: 'wb-button', type: 'button', text: `查询 ${phone}`, on: { click: () => { $('#querySourceSelect').value = source; if (source === 'voyage' && schema) $('#querySchemaSelect').value = schema; syncQuerySchemaControl(); $('#phoneInput').value = phone; switchQueryTab('phone'); $('#phoneQueryForm').requestSubmit(); } } })); const section = resultSection('同客户其他产品（按需展开）', response.result.rows, { open: true, actions }); queryResultRoot(query).append(section); setQueryState(`同客户产品已加载 · ${response.result.rows.length} 条`, 'success', query); } catch (error) { setQueryState(error.message, 'error', query); }
+  try { setQueryState('正在查询同客户其他产品…', '', query); const response = await postJson('/api/query/customer-products', { customerId, ...querySourcePayload(source, schema) }, { timeout: 60000 }); const phones = [...new Set(response.result.rows.map((row) => rowField(row, 'acc_num') || rowField(row, 'acc_nbr')).filter(Boolean))]; const actions = phones.map((phone) => el('button', { class: 'wb-button', type: 'button', text: `查询 ${phone}`, on: { click: () => { $('#phoneInput').value = phone; switchQueryTab('phone'); $('#phoneQueryForm').requestSubmit(); } } })); const section = resultSection('同客户其他产品（按需展开）', response.result.rows, { open: true, actions }); queryResultRoot(query).append(section); setQueryState(`同客户产品已加载 · ${response.result.rows.length} 条`, 'success', query); } catch (error) { setQueryState(error.message, 'error', query); }
 }
 async function loadAccountCandidates(productInstanceId, customerId, source = activeDatabaseSource(), query = state.activeQuery, schema = activeDatabaseSchema(source)) { try { setQueryState('正在辅助定位账户…', '', query); const response = await postJson('/api/query/account-candidates', { productInstanceId: String(productInstanceId || ''), customerId: String(customerId || ''), ...querySourcePayload(source, schema) }, { timeout: 60000 }); queryResultRoot(query).append(resultSection('账户候选（非付费关系结论）', response.result.rows, { open: true })); setQueryState(`账户候选已加载 · ${response.result.rows.length} 条`, 'success', query); } catch (error) { setQueryState(error.message, 'error', query); } }
 async function restoreDatabaseStatus() { try { const response = await getJson('/api/db/status'); for (const source of ['udal', 'doris', 'pg']) { const item = response.sources?.[source] || {}; state.connectionProfiles[source] = response.defaults?.[source] || state.connectionProfiles[source]; state.databases[source] = { connected: Boolean(item.connected), config: item.config, password: '' }; } renderDbStatus(); renderConnectionList(); } catch (_) { renderDbStatus(); } }
 async function restoreVoyageStatus() { try { const response = await getJson('/api/voyage/status'); state.connectionProfiles.voyage = response.config || state.connectionProfiles.voyage; state.voyage = { connected: Boolean(response.connected), config: response.config || state.connectionProfiles.voyage }; renderDbStatus(); renderConnectionList(); } catch (_) { renderDbStatus(); } }
 async function restoreBigdataStatus() { try { const response = await getJson('/api/bigdata/status'); state.connectionProfiles.bigdata = response.config || state.connectionProfiles.bigdata; state.bigdata = { connected: Boolean(response.connected), mode: response.mode || 'ssh', config: response.config || state.connectionProfiles.bigdata }; renderBigdataSource(); renderConnectionList(); } catch (_) { renderBigdataSource(); } }
 async function submitPhoneQuery(event) {
-  event?.preventDefault(); const phone = $('#phoneInput').value.trim(); const source = activeDatabaseSource(); const schema = activeDatabaseSchema(source); if (!phone) { setQueryState('请输入手机号或接入号码', 'error', 'phone'); return; } if (!isDatabaseSourceConnected(source)) { setQueryState(`请先连接${databaseSourceName(source)}`, 'error', 'phone'); renderConnectionList(); openDialog('connectionDialog'); return; }
-  const request = state.gates.phone.next(); state.phoneQuery.running = true; state.phoneQuery.result = null; $('#btnPhoneQuery').disabled = true; $('#btnPhoneCancel').classList.remove('hidden'); setQueryState('正在按关联链分步查询…', '', 'phone'); queryResultRoot('phone').replaceChildren(el('div', { class: 'query-empty' }, el('strong', { text: '查询中' }), el('span', { text: `${databaseSourceName(source)} · 正在读取 CRM3DB 与 CONFIGDB_CNOS_JF_TEST` })));
+  event?.preventDefault(); const phone = $('#phoneInput').value.trim(); const source = activeDatabaseSource(); const schema = activeDatabaseSchema(source); if (!phone) { setQueryState('请输入业务号码', 'error', 'phone'); return; } if (!isDatabaseSourceConnected(source)) { setQueryState(`请先连接${databaseSourceName(source)}`, 'error', 'phone'); renderConnectionList(); openDialog('connectionDialog'); return; }
+  const request = state.gates.phone.next(); state.phoneQuery.running = true; state.phoneQuery.result = null; $('#btnPhoneQuery').disabled = true; $('#btnPhoneCancel').classList.remove('hidden'); setQueryState('正在按业务号码定位产品实例…', '', 'phone'); queryResultRoot('phone').replaceChildren(el('div', { class: 'query-empty' }, el('strong', { text: '查询中' }), el('span', { text: `PostgreSQL · Schema ${schema} · 正在读取档案；配置由 MySQL 补充` })));
   try { const response = await postJson('/api/query/phone', { phone, ...querySourcePayload(source, schema) }, { signal: request.signal, timeout: 60000 }); if (!request.isCurrent()) return; renderQueryResult(response.result); setQueryState(response.result.status === 'partial' ? '查询部分完成，请查看缺失或失败步骤' : response.result.status === 'empty' ? '没有找到匹配号码' : '查询完成', response.result.status === 'complete' ? 'success' : '', 'phone'); }
   catch (error) { if (!request.isCurrent() || error.code === 'REQUEST_ABORTED') return; setQueryState(error.message, 'error', 'phone'); queryResultRoot('phone').replaceChildren(el('div', { class: 'query-empty' }, el('strong', { text: '查询失败' }), el('span', { text: error.message }))); }
   finally { if (request.isCurrent()) { state.phoneQuery.running = false; $('#btnPhoneQuery').disabled = false; $('#btnPhoneCancel').classList.add('hidden'); } }
@@ -1095,25 +1092,76 @@ async function submitProductInstanceQuery(event) {
 async function submitOfferQuery(event) {
   event?.preventDefault(); const offerId = $('#offerInput').value.trim(); const source = activeDatabaseSource(); const schema = activeDatabaseSchema(source);
   if (!/^\d+$/.test(offerId)) { setQueryState('请输入数字格式的套餐 offer_id', 'error', 'offer'); return; }
-  if (!isDatabaseSourceConnected(source)) { setQueryState(`请先连接${databaseSourceName(source)}`, 'error', 'offer'); renderConnectionList(); openDialog('connectionDialog'); return; }
+  if (!isDatabaseSourceConnected('udal')) { setQueryState('请先连接 MySQL / UDAL 读取配置定义', 'error', 'offer'); renderConnectionList(); openDialog('connectionDialog'); return; }
   const request = state.gates.offer.next(); state.offerQuery.running = true; state.offerQuery.result = null; $('#btnOfferQuery').disabled = true; $('#btnOfferCancel').classList.remove('hidden'); setQueryState('正在按 offer_id 查询套餐…', '', 'offer'); queryResultRoot('offer').replaceChildren(el('div', { class: 'query-empty' }, el('strong', { text: '查询中' })));
   try { const response = await postJson('/api/query/offer', { offerId, ...querySourcePayload(source, schema) }, { signal: request.signal, timeout: 60000 }); if (!request.isCurrent()) return; renderOfferResult(response.result); const hasFailedSteps = response.result.steps?.some((step) => step.status === 'error'); setQueryState(response.result.status === 'partial' ? (hasFailedSteps ? '查询部分完成，请查看失败步骤' : '查询完成，结果已按上限截取') : response.result.status === 'empty' ? '没有找到该 offer_id 的套餐' : '查询完成', response.result.status === 'complete' || (response.result.status === 'partial' && !hasFailedSteps) ? 'success' : '', 'offer'); }
   catch (error) { if (!request.isCurrent() || error.code === 'REQUEST_ABORTED') return; setQueryState(error.message, 'error', 'offer'); queryResultRoot('offer').replaceChildren(el('div', { class: 'query-empty' }, el('strong', { text: '查询失败' }), el('span', { text: error.message }))); }
   finally { if (request.isCurrent()) { state.offerQuery.running = false; $('#btnOfferQuery').disabled = false; $('#btnOfferCancel').classList.add('hidden'); } }
 }
 async function submitEventTypeQuery(event) {
-  event?.preventDefault(); const eventTypeId = $('#eventTypeInput').value.trim(); const source = activeDatabaseSource(); const schema = activeDatabaseSchema(source); if (!/^\d+$/.test(eventTypeId)) { setQueryState('请选择正确的事件类型', 'error', 'eventType'); return; } if (source !== 'udal') { setQueryState('事件类型配置请切换到测试环境 MySQL / UDAL', 'error', 'eventType'); return; } if (!isDatabaseSourceConnected(source)) { setQueryState(`请先连接${databaseSourceName(source)}`, 'error', 'eventType'); renderConnectionList(); openDialog('connectionDialog'); return; }
-  const request = state.gates.eventType.next(); state.eventTypeQuery.running = true; state.eventTypeQuery.result = null; $('#btnEventTypeQuery').disabled = true; $('#btnEventTypeCancel').classList.remove('hidden'); setQueryState('正在查询事件类型档案…', '', 'eventType'); queryResultRoot('eventType').replaceChildren(el('div', { class: 'query-empty' }, el('strong', { text: '查询中' }), el('span', { text: `${databaseSourceName(source)} · 正在读取套餐与实例关联` })));
+  event?.preventDefault(); const eventTypeId = $('#eventTypeInput').value.trim(); const source = activeDatabaseSource(); const schema = activeDatabaseSchema(source); if (!/^\d+$/.test(eventTypeId)) { setQueryState('请选择正确的事件类型', 'error', 'eventType'); return; } if (!isDatabaseSourceConnected('udal')) { setQueryState('请先连接 MySQL / UDAL 读取配置定义', 'error', 'eventType'); renderConnectionList(); openDialog('connectionDialog'); return; }
+  const request = state.gates.eventType.next(); state.eventTypeQuery.running = true; state.eventTypeQuery.result = null; $('#btnEventTypeQuery').disabled = true; $('#btnEventTypeCancel').classList.remove('hidden'); setQueryState('正在查询事件类型配置与关联档案…', '', 'eventType'); queryResultRoot('eventType').replaceChildren(el('div', { class: 'query-empty' }, el('strong', { text: '查询中' }), el('span', { text: `${databaseSourceName(source)} · 正在读取套餐与实例关联` })));
   try { const response = await postJson('/api/query/event-type', { eventTypeId, ...querySourcePayload(source, schema) }, { signal: request.signal, timeout: 60000 }); if (!request.isCurrent()) return; renderEventTypeResult(response.result); const hasFailedSteps = response.result.steps?.some((step) => step.status === 'error'); setQueryState(response.result.status === 'partial' ? (hasFailedSteps ? '查询部分完成，请查看失败步骤' : '查询完成，结果已按上限抽样') : response.result.status === 'empty' ? '没有找到事件类型配置' : '查询完成', response.result.status === 'complete' || (response.result.status === 'partial' && !hasFailedSteps) ? 'success' : '', 'eventType'); }
   catch (error) { if (!request.isCurrent() || error.code === 'REQUEST_ABORTED') return; setQueryState(error.message, 'error', 'eventType'); queryResultRoot('eventType').replaceChildren(el('div', { class: 'query-empty' }, el('strong', { text: '查询失败' }), el('span', { text: error.message })));
   } finally { if (request.isCurrent()) { state.eventTypeQuery.running = false; $('#btnEventTypeQuery').disabled = false; $('#btnEventTypeCancel').classList.add('hidden'); } }
 }
 async function submitThresholdQuery(event) {
   event?.preventDefault(); const aProductInstanceId = $('#thresholdProductInput').value.trim(); const source = activeDatabaseSource(); const schema = activeDatabaseSchema(source); if (!aProductInstanceId) { setQueryState('请输入 A 端产品实例 ID', 'error', 'threshold'); return; } if (!isDatabaseSourceConnected(source)) { setQueryState(`请先连接${databaseSourceName(source)}`, 'error', 'threshold'); renderConnectionList(); openDialog('connectionDialog'); return; }
-  const request = state.gates.threshold.next(); state.thresholdQuery.running = true; state.thresholdQuery.result = null; $('#btnThresholdQuery').disabled = true; $('#btnThresholdCancel').classList.remove('hidden'); setQueryState('正在查询 A/Z 关系与档位提醒配置…', '', 'threshold'); queryResultRoot('threshold').replaceChildren(el('div', { class: 'query-empty' }, el('strong', { text: '查询中' }), el('span', { text: `${databaseSourceName(source)} · 正在读取 CRM3DB 的产品关系、终端产品与属性配置` })));
+  const request = state.gates.threshold.next(); state.thresholdQuery.running = true; state.thresholdQuery.result = null; $('#btnThresholdQuery').disabled = true; $('#btnThresholdCancel').classList.remove('hidden'); setQueryState('正在查询 A/Z 关系与档位提醒配置…', '', 'threshold'); queryResultRoot('threshold').replaceChildren(el('div', { class: 'query-empty' }, el('strong', { text: '查询中' }), el('span', { text: `${databaseSourceName(source)} · 正在读取 bill_inmemory 的产品关系、终端产品与实例属性` })));
   try { const response = await postJson('/api/query/threshold', { aProductInstanceId, ...querySourcePayload(source, schema) }, { signal: request.signal, timeout: 60000 }); if (!request.isCurrent()) return; renderThresholdResult(response.result); setQueryState(response.result.status === 'partial' ? '查询部分完成，请查看缺失或失败步骤' : response.result.status === 'empty' ? '没有找到符合条件的终端产品或档位配置' : '查询完成', response.result.status === 'complete' ? 'success' : '', 'threshold'); }
   catch (error) { if (!request.isCurrent() || error.code === 'REQUEST_ABORTED') return; setQueryState(error.message, 'error', 'threshold'); queryResultRoot('threshold').replaceChildren(el('div', { class: 'query-empty' }, el('strong', { text: '查询失败' }), el('span', { text: error.message })));
   } finally { if (request.isCurrent()) { state.thresholdQuery.running = false; $('#btnThresholdQuery').disabled = false; $('#btnThresholdCancel').classList.add('hidden'); } }
+}
+function syncRelationInputs() {
+  const mode = $('#relationModeInput').value;
+  const account = ['customer-offers', 'account-offers', 'bank-offers', 'account-products'].includes(mode);
+  const product = ['product-offers', 'function-offers', 'group-offers'].includes(mode);
+  setText($('#relationIdLabel'), account ? '电信账户 ID（群查询使用默认账户）' : product ? '产品实例 ID' : '销售品实例 ID（prod_offer_inst_id）');
+  $('#relationPeerFields').classList.toggle('hidden', mode !== 'inner-call');
+  $('#relationPeerInput').required = mode === 'inner-call';
+}
+function renderRelationsResult(result) {
+  state.relationsQuery.result = result;
+  const root = queryResultRoot('relations'); root.replaceChildren();
+  const labels = { productInstances: ['产品实例', 'prod_inst'], productRelationships: ['产品实例关系', 'prod_inst_rel'],
+    offerRelations: ['产品销售品关系', 'offer_prod_inst_rel'], offerInstances: ['销售品实例', 'prod_offer_inst'],
+    offerInstanceRelationships: ['销售品实例关系', 'prod_offer_inst_rel'], members: ['非产品销售品成员', 'prod_offer_member_inst'],
+    accounts: ['账户', 'account'], accountRelations: ['产品账户关系', 'prod_inst_acct'], paymentPlans: ['支付方案', 'payment_plan'],
+    functionOfferCandidates: ['功能类销售品候选 10030', 'prod_offer_inst'], offers: ['销售品配置定义 · MySQL', 'offer'],
+    pricingPlans: ['定价计划 · MySQL', 'pricing_plan'], typeRules: ['销售品类型与入口规则', '规则提示'],
+    directMatches: ['对端直接成员匹配', 'offer_prod_inst_rel'], parentMatches: ['对端群主候选匹配', 'offer_prod_inst_rel'],
+    optionalMatches: ['Z端销售品对端成员候选（核对类型30010）', 'offer_prod_inst_rel'],
+    accountMatches: ['对端账户群匹配', 'prod_offer_member_inst'], customerMatches: ['对端客户群匹配', 'prod_offer_member_inst'], bankMatches: ['对端银行群匹配', 'prod_offer_member_inst'] };
+  const status = { complete: '关系查询完成', partial: '部分完成', empty: '无匹配', failed: '查询失败' }[result.status];
+  root.append(el('div', { class: 'query-summary' }, el('span', { class: 'summary-chip', text: status }), el('span', { class: 'summary-chip', text: result.definition?.name || result.mode }), el('span', { class: 'summary-chip', text: `标识 ${result.id}` }), el('span', { class: 'summary-chip', text: `共 ${result.totalRows || 0} 行 · PG档案 / MySQL配置` })));
+  root.append(el('p', { class: 'query-help', text: result.definition?.chain || '' }), el('p', { class: 'query-help', text: result.notice || '' }));
+  appendFailedSteps(root, result.steps);
+  root.append(resultSection('查询步骤与数据来源', (result.steps || []).map(queryStepRow)));
+  for (const [key, rows] of Object.entries(result.data || {})) {
+    const [title, table] = labels[key] || [key, ''];
+    root.append(resultSection(title, rows, { open: true, table }));
+  }
+  if (result.status === 'empty') root.append(el('p', { class: 'query-help', text: '该关系链未返回候选，请核对实例 ID 与关系方向。' }));
+}
+async function submitRelationsQuery(event) {
+  event?.preventDefault();
+  const mode = $('#relationModeInput').value; const id = $('#relationIdInput').value.trim();
+  const peerProductInstanceId = $('#relationPeerInput').value.trim(); const peerAccountId = $('#relationPeerAccountInput').value.trim();
+  if (!/^\d+$/.test(id) || (mode === 'inner-call' && (!/^\d+$/.test(peerProductInstanceId) || (peerAccountId && !/^\d+$/.test(peerAccountId))))) { setQueryState('请输入对应的数字实例或账户 ID，非业务号码', 'error', 'relations'); return; }
+  if (!isDatabaseSourceConnected('pg')) { setQueryState('请先连接 PostgreSQL 查询档案', 'error', 'relations'); renderConnectionList(); openDialog('connectionDialog'); return; }
+  const request = state.gates.relations.next(); state.relationsQuery.running = true; state.relationsQuery.result = null;
+  $('#btnRelationsQuery').disabled = true; $('#btnRelationsCancel').classList.remove('hidden'); setQueryState('正在分步读取关系链…', '', 'relations');
+  queryResultRoot('relations').replaceChildren(el('div', { class: 'query-empty' }, el('strong', { text: '查询中' }), el('span', { text: 'PG 档案关系 · MySQL 配置定义' })));
+  try {
+    const payload = { mode, id, ...(mode === 'inner-call' ? { peerProductInstanceId, peerAccountId } : {}) };
+    const response = await postJson('/api/query/relations', payload, { signal: request.signal, timeout: 60000 });
+    if (!request.isCurrent()) return;
+    renderRelationsResult(response.result);
+    setQueryState({ complete: '关系查询完成；结果为原始候选', partial: '部分完成，请查看上限或失败步骤', empty: '未找到关系候选', failed: '查询失败，请查看失败步骤' }[response.result.status], response.result.status === 'complete' ? 'success' : response.result.status === 'failed' ? 'error' : '', 'relations');
+  } catch (error) {
+    if (!request.isCurrent() || error.code === 'REQUEST_ABORTED') return;
+    setQueryState(error.message, 'error', 'relations'); queryResultRoot('relations').replaceChildren(el('div', { class: 'query-empty' }, el('strong', { text: '查询失败' }), el('span', { text: error.message })));
+  } finally { if (request.isCurrent()) { state.relationsQuery.running = false; $('#btnRelationsQuery').disabled = false; $('#btnRelationsCancel').classList.add('hidden'); } }
 }
 async function submitRedisQuery(event) {
   event?.preventDefault(); const key = $('#redisKeyInput').value.trim();
@@ -1135,9 +1183,10 @@ $('#offerQueryForm').addEventListener('submit', submitOfferQuery); $('#btnOfferC
 $('#eventTypeQueryForm').addEventListener('submit', submitEventTypeQuery); $('#btnEventTypeCancel').addEventListener('click', () => { state.gates.eventType.cancel(); state.eventTypeQuery.running = false; $('#btnEventTypeQuery').disabled = false; $('#btnEventTypeCancel').classList.add('hidden'); setQueryState('查询已取消', '', 'eventType'); });
 $('#thresholdQueryForm').addEventListener('submit', submitThresholdQuery); $('#btnThresholdCancel').addEventListener('click', () => { state.gates.threshold.cancel(); state.thresholdQuery.running = false; $('#btnThresholdQuery').disabled = false; $('#btnThresholdCancel').classList.add('hidden'); setQueryState('查询已取消', '', 'threshold'); }); $('#btnQueryReset').addEventListener('click', () => clearQueryResult());
 $('#redisQueryForm').addEventListener('submit', submitRedisQuery); $('#btnRedisCancel').addEventListener('click', () => { state.gates.redis.cancel(); state.redisQuery.running = false; $('#btnRedisQuery').disabled = false; $('#btnRedisCancel').classList.add('hidden'); setRedisState('查询已取消'); });
-$('#querySourceSelect').addEventListener('change', () => { syncQuerySchemaControl(); clearQueryResult({ all: true }); });
-$('#querySchemaSelect').addEventListener('change', () => clearQueryResult({ all: true }));
-syncQuerySchemaControl();
+$('#relationsQueryForm').addEventListener('submit', submitRelationsQuery);
+$('#btnRelationsCancel').addEventListener('click', () => { state.gates.relations.cancel(); state.relationsQuery.running = false; $('#btnRelationsQuery').disabled = false; $('#btnRelationsCancel').classList.add('hidden'); setQueryState('查询已取消', '', 'relations'); });
+$('#relationModeInput').addEventListener('change', syncRelationInputs);
+syncRelationInputs();
 clearQueryResult({ all: true });
 renderRedisEmpty();
 initRedisSync({

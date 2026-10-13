@@ -95,7 +95,7 @@ class DatabaseManager {
     await Promise.allSettled(Object.keys(SOURCE_DEFAULTS).map((source) => this.disconnect(source)));
   }
 
-  // 仅供固定档案同步读取使用，不开放任意 PG SQL 的 HTTP 入口。
+  // 固定档案查询与同步共用只读事务，不开放任意 SQL 的 HTTP 入口。
   async withPgSnapshot(work, { signal } = {}) {
     const entry = this.sources.get('pg');
     if (!entry) throw Object.assign(new Error('请先连接测试环境 PostgreSQL'), { status: 409, code: 'PG_NOT_CONNECTED' });
@@ -126,8 +126,12 @@ class DatabaseManager {
   async query(sourceValue, database, sql, values = [], options = {}) {
     const source = normalizeSource(sourceValue);
     const entry = this.sources.get(source);
+    if (!entry && source === 'pg') throw Object.assign(new Error('请先连接测试环境 PostgreSQL'), { status: 409, code: 'PG_NOT_CONNECTED' });
     if (!entry) throw new Error(`${SOURCE_DEFAULTS[source].label} 尚未连接`);
-    if (source === 'pg') throw new Error('PostgreSQL 当前仅用于连接状态检查');
+    if (source === 'pg') {
+      if (!/^SELECT\s/i.test(sql.trim())) throw new Error('PostgreSQL 查询仅接受固定 SELECT');
+      return this.withPgSnapshot(async (client) => (await client.query(sql, values)).rows, options);
+    }
     const pool = entry.pools.get(database || '') || entry.pools.values().next().value;
     if (!pool) throw new Error(`数据源 ${source} 没有可用连接`);
     if (options.signal?.aborted) throw Object.assign(new Error('查询已取消'), { code: 'QUERY_CANCELLED' });
