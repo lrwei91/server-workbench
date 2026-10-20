@@ -32,6 +32,14 @@ export function initRedisSync({ confirm, refresh, openConnections }) {
       `TTL ${result.ttlMs === -1 ? '永久' : `${result.ttlMs} ms`}`, `前缀 ${result.prefixHex}`, `时间解释 ${result.options.timestampZone === 'Z' ? 'UTC' : '北京时间'}`,
     ].map((text) => el('span', { class: 'summary-chip', text }))));
     if (result.blockers.length) root.append(el('div', { class: 'redis-sync-warning' }, el('strong', { text: '先处理以下阻断项' }), el('ul', {}, result.blockers.map((text) => el('li', { text })))));
+    const comparison = result.recordComparison;
+    if (comparison) {
+      root.append(el('h4', { text: `记录级比对：PG 有、Redis 无 ${comparison.pgOnlyCount} 条` }),
+        el('p', { class: 'query-help', text: '范围：所选表、根产品及产品/销售品一跳直接关系，按 ID + his_id 跨 Step 分组去重。以下记录仅供核对，不自动追加到 Redis；0 条字段差异不表示完整档案一致。' }));
+      if (!comparison.complete) root.append(el('p', { class: 'redis-sync-warning', text: `记录级比对覆盖不完整：${comparison.warnings.join('；')}` }));
+      if (comparison.pgOnlyRecords.length) root.append(table(['PG 表', 'Redis 分组类型（非写入位置）', 'PG 新增 / Redis 缺失 ID', 'his_id'], comparison.pgOnlyRecords.map((row) => [row.table, row.group, row.id, row.hisId])));
+      if (comparison.truncated) root.append(el('p', { text: '记录级差异仅展示前 200 条；总数包含全部已比对记录。' }));
+    }
     const missing = result.groups.reduce((count, group) => count + group.missing, 0);
     if (missing || result.unrecognized.length) root.append(el('p', { class: 'redis-sync-warning', text: `保留 ${missing} 条 PG 未匹配的分组记录${result.unrecognized.length ? `；未识别分组保留：${result.unrecognized.join('、')}` : ''}。不据此删除 Redis 内容。` }));
     root.append(el('details', {}, el('summary', { text: '匹配范围与保留项' }), table(['分组 / 表', '记录数', '匹配', '缺失保留', '修改记录', '未映射字段'], result.groups.map((group) => [`${group.group} / ${group.table}`, group.records, group.matched, group.missing, group.changed, group.preservedFields.join(', ') || '—']))));
@@ -70,7 +78,7 @@ export function initRedisSync({ confirm, refresh, openConnections }) {
       const response = await postJson('/api/redis-sync/preview', { key: target, ...selected }, { signal: request.signal, timeout: 65000 });
       if (!request.isCurrent()) return;
       preview = response.result; render(preview);
-      message(preview.blockers.length ? '预览存在阻断项，先核对数据。' : preview.changedFields ? '预览完成，确认后仅写入该 key；写前备份并保留 TTL。' : '预览完成，已匹配字段无差异，无需写入。', preview.blockers.length ? 'error' : 'success');
+      message(preview.blockers.length ? '预览存在阻断项，先核对数据。' : preview.recordComparison?.pgOnlyCount || preview.recordComparison?.complete === false ? '预览完成：存在记录级差异或覆盖缺口，请核对独立列表；确认同步仅更新已有记录字段。' : preview.changedFields ? '预览完成，确认后仅写入该 key；写前备份并保留 TTL。' : '预览完成，已匹配字段无差异；记录级结果见下方限定范围。', preview.blockers.length || preview.recordComparison?.pgOnlyCount || preview.recordComparison?.complete === false ? 'warning' : 'success');
       await loadHistory(target).catch(historyError);
     } catch (error) { if (request.isCurrent()) message(error.message, 'error'); }
     finally { busy = false; controls(); }

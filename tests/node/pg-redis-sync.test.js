@@ -59,9 +59,12 @@ async function fixture(t, { ttl = -1 } = {}) {
   t.after(async () => { sockets.forEach((socket) => socket.destroy()); await new Promise((resolve) => server.close(resolve)); await fs.rm(dir, { recursive: true, force: true }); });
   const redis = new RedisArchiveService({ host: '127.0.0.1', port: server.address().port, db: 2, password: 'fixture', timeoutMs: 1000 });
   const database = { sources: new Map([['pg', { config: { host: 'fixture', database: 'fixture' } }]]),
-    withPgSnapshot: async (work) => work({ query: async (sql) => {
+    withPgSnapshot: async (work) => work({ query: async (sql, parameters) => {
       if (sql.startsWith('SELECT table_name')) return { rows: Object.entries(state.rows).flatMap(([table_name, value]) => Object.entries(value.columns).map(([column_name, data_type]) => ({ table_name, column_name, data_type }))) };
-      const table = /FROM bill_inmemory\.(\w+)/.exec(sql)[1]; return { rows: structuredClone(state.rows[table]?.rows || []) };
+      const table = /FROM bill_inmemory\.(\w+)/.exec(sql)[1];
+      const fields = [...sql.matchAll(/(\w+) = ANY/g)].map((match) => match[1]);
+      const rows = (state.rows[table]?.rows || []).filter((row) => fields.some((field) => parameters[0].includes(String(row[field]))));
+      return { rows: structuredClone(rows.slice(0, sql.includes('LIMIT 5001') ? 5001 : undefined)) };
     } }) };
   const sync = new PgRedisSync({ database, redis, backupDir: dir });
   return { state, sync, raw, dir };
@@ -151,6 +154,52 @@ test('preview is read-only, apply backs up first, verifies bytes, restores and p
   const restored = await sync.restore(applied.backupId, true);
   assert.equal(restored.verified, true); assert.deepEqual(state.raw, raw); assert.equal(state.expiresAt, expiry);
   assert.equal((await sync.history('42'))[0].status, 'restored');
+});
+
+test('record comparison discovers new subscriptions without Redis IDs and never appends them on apply', async (t) => {
+  const { sync, state } = await fixture(t);
+  const rows = (columns, rows = []) => ({ columns: Object.fromEntries(columns.map((name) => [name, 'bigint'])), rows });
+  state.rows.offer_prod_inst_rel = rows(['offer_prod_inst_rel_id', 'prod_inst_id', 'prod_offer_inst_id', 'his_id'], [
+    { offer_prod_inst_rel_id: '990000038852791', prod_inst_id: '42', prod_offer_inst_id: '990000038852790', his_id: '0' },
+    { offer_prod_inst_rel_id: '999', prod_inst_id: '99', prod_offer_inst_id: '999', his_id: '0' },
+  ]);
+  state.rows.prod_offer_inst = rows(['prod_offer_inst_id', 'his_id'], [
+    { prod_offer_inst_id: '990000038852790', his_id: '0' },
+    { prod_offer_inst_id: '990000038852790', his_id: '1' },
+    { prod_offer_inst_id: '999', his_id: '0' },
+  ]);
+  state.rows.prod_offer_inst_rel = rows(['prod_offer_inst_rel_id', 'rela_prod_offer_inst_id', 'related_prod_offer_inst_id', 'his_id']);
+  state.raw = encodeArchive({ ...original, offerInstsSecondStep: [{ prodOfferInstId: 990000038852790, hisId: 0 }] }, prefix);
+  const options = { tables: ['prod_inst', 'prod_offer_inst', 'offer_prod_inst_rel'] };
+  state.rows.prod_inst_rel = rows(['prod_inst_rel_id', 'prod_inst_a_id', 'prod_inst_z_id', 'his_id']);
+  let preview = await sync.preview('42', options);
+  assert.equal(preview.recordComparison.complete, true);
+  assert.deepEqual(preview.recordComparison.pgOnlyRecords.map((row) => [row.id, row.hisId]), [['990000038852791', '0'], ['990000038852790', '1']]);
+  assert.equal(state.writes, 0);
+  await sync.apply(preview.previewId, true);
+  assert.deepEqual(decodeArchive(state.raw).data.offerInstsSecondStep, [{ prodOfferInstId: 990000038852790, hisId: 0 }]);
+  assert.equal(decodeArchive(state.raw).data.offerProdInstRels, undefined);
+  state.rows.prod_inst.rows[0].account = 'after';
+  preview = await sync.preview('42', options);
+  assert.equal(preview.changedFields, 0);
+  assert.equal(preview.recordComparison.pgOnlyCount, 2);
+  assert.equal(preview.canApply, false);
+});
+
+test('record comparison reports incomplete schema and caps displayed records', async (t) => {
+  const { sync, state } = await fixture(t);
+  let preview = await sync.preview('42', { tables: ['prod_inst'] });
+  assert.equal(preview.recordComparison.complete, false);
+  assert.match(preview.recordComparison.warnings.join(), /prod_inst_rel/);
+  state.rows.prod_inst_attr = { columns: { prod_inst_attr_id: 'bigint', prod_inst_id: 'bigint', his_id: 'bigint' },
+    rows: Array.from({ length: 201 }, (_, id) => ({ prod_inst_attr_id: String(id), prod_inst_id: '42', his_id: '0' })) };
+  preview = await sync.preview('42', { tables: ['prod_inst_attr'] });
+  assert.equal(preview.recordComparison.pgOnlyCount, 201);
+  assert.equal(preview.recordComparison.pgOnlyRecords.length, 200);
+  assert.equal(preview.recordComparison.truncated, true);
+  state.rows.prod_inst_attr.rows = Array.from({ length: 5001 }, (_, id) => ({ prod_inst_attr_id: String(id), prod_inst_id: '42', his_id: '0' }));
+  await assert.rejects(sync.preview('42', { tables: ['prod_inst_attr'] }), { code: 'SYNC_SCOPE_TOO_LARGE' });
+  assert.equal(state.writes, 0);
 });
 
 test('apply rejects stale Redis and PG, expired previews and changed connections', async (t) => {

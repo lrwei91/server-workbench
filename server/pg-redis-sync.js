@@ -135,6 +135,63 @@ function buildCandidate(data, tableData, options, productInstanceId) {
   return { data: next, changes, changedFields, groups, unrecognized, blockers: [...new Set(blockers)], canApply: changedFields > 0 && blockers.length === 0 };
 }
 
+// 记录级发现独立于写入候选：PG 一跳范围并不等于 Redis Step 分组的组装规则。
+async function compareRecordScope(client, data, tableData, options, productInstanceId) {
+  const warnings = [], scoped = {}, records = [];
+  let count = 0;
+  const read = async (table, columns, ids) => {
+    const profile = TABLES.find((item) => item.table === table), source = tableData[table];
+    const keys = [...new Set(ids.map(String).filter((id) => /^\d+$/.test(id)))];
+    if (!keys.length) return [];
+    if (![profile.pk, ...columns].every((column) => source?.columns[column])) {
+      warnings.push(`${table} 查询字段缺失，记录级覆盖不完整`); return [];
+    }
+    if (keys.length > 5000) throw fail(413, 'SYNC_SCOPE_TOO_LARGE', '记录级比对关联 ID 超过 5000');
+    const rows = (await client.query(`SELECT * FROM ${SCHEMA}.${table} WHERE (${columns.map((column) => `${column} = ANY($1::bigint[])`).join(' OR ')}) ORDER BY ${profile.pk}${source.columns.his_id ? ', his_id NULLS FIRST' : ''} LIMIT 5001`, [keys])).rows;
+    count += rows.length;
+    if (count > 5000) throw fail(413, 'SYNC_SCOPE_TOO_LARGE', '记录级比对超过 5000 行，请缩小档案范围');
+    scoped[table] = rows;
+    return rows;
+  };
+  const values = (rows, columns) => rows.flatMap((row) => columns.map((column) => row[column])).filter((id) => id != null);
+  const products = new Set([productInstanceId]);
+  if (options.tables.some((table) => ['prod_inst', 'prod_inst_rel', 'prod_inst_attr', 'prod_inst_acct', 'account'].includes(table))) {
+    const relations = await read('prod_inst_rel', ['prod_inst_a_id', 'prod_inst_z_id'], [productInstanceId]);
+    values(relations, ['prod_inst_a_id', 'prod_inst_z_id']).forEach((id) => products.add(String(id)));
+  }
+  if (options.tables.includes('prod_inst')) await read('prod_inst', ['prod_inst_id'], [...products]);
+  if (options.tables.includes('prod_inst_attr')) await read('prod_inst_attr', ['prod_inst_id'], [...products]);
+  if (options.tables.some((table) => ['prod_inst_acct', 'account'].includes(table))) {
+    const relations = await read('prod_inst_acct', ['prod_inst_id'], [...products]);
+    if (options.tables.includes('account')) await read('account', ['account_id'], values(relations, ['account_id']));
+  }
+  if (options.tables.some((table) => ['offer_prod_inst_rel', 'prod_offer_inst', 'prod_offer_inst_attr', 'prod_offer_inst_rel'].includes(table))) {
+    const relations = await read('offer_prod_inst_rel', ['prod_inst_id'], [productInstanceId]);
+    if (relations.some((row) => row.prod_offer_inst_id == null)) warnings.push('订购关系缺少 prod_offer_inst_id，销售品覆盖不完整');
+    const direct = values(relations, ['prod_offer_inst_id']), offers = new Set(direct.map(String));
+    if (options.tables.some((table) => ['prod_offer_inst', 'prod_offer_inst_attr', 'prod_offer_inst_rel'].includes(table))) {
+      const links = await read('prod_offer_inst_rel', ['rela_prod_offer_inst_id', 'related_prod_offer_inst_id'], direct);
+      values(links, ['rela_prod_offer_inst_id', 'related_prod_offer_inst_id']).forEach((id) => offers.add(String(id)));
+    }
+    if (options.tables.includes('prod_offer_inst')) await read('prod_offer_inst', ['prod_offer_inst_id'], [...offers]);
+    if (options.tables.includes('prod_offer_inst_attr')) await read('prod_offer_inst_attr', ['prod_offer_inst_id'], [...offers]);
+  }
+  for (const profile of TABLES.filter((item) => options.tables.includes(item.table))) {
+    const hasHistory = Boolean(tableData[profile.table]?.columns.his_id);
+    const identity = (id, hisId) => JSON.stringify([String(id), hasHistory ? String(hisId ?? null) : '']);
+    const existing = new Set(Object.entries(data).filter(([group, rows]) => Array.isArray(rows) && group.replace(GROUP_SUFFIX, '') === profile.group)
+      .flatMap(([, rows]) => rows.filter((row) => row && typeof row === 'object').map((row) => identity(row[profile.field], row.hisId))));
+    const seen = new Set();
+    for (const row of scoped[profile.table] || []) {
+      const key = identity(row[profile.pk], row.his_id);
+      if (existing.has(key) || seen.has(key)) continue;
+      seen.add(key);
+      records.push({ table: profile.table, group: profile.group, id: String(row[profile.pk]), hisId: row.his_id == null ? null : String(row.his_id) });
+    }
+  }
+  return { scope: 'root-direct-relations', complete: warnings.length === 0, warnings: [...new Set(warnings)], pgOnlyCount: records.length, pgOnlyRecords: records.slice(0, 200), truncated: records.length > 200 };
+}
+
 class PgRedisSync {
   constructor({ database, redis, backupDir, clock = Date.now }) {
     this.database = database; this.redis = redis; this.backupDir = backupDir; this.clock = clock;
@@ -173,11 +230,11 @@ class PgRedisSync {
 
   async readPg(data, options, productInstanceId, signal) {
     return this.database.withPgSnapshot(async (client) => {
-      const names = [...new Set([...options.tables, 'prod_inst'])];
+      const names = TABLES.map((profile) => profile.table);
       const metadata = await client.query('SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = $1 AND table_name = ANY($2::text[]) ORDER BY table_name, ordinal_position', [SCHEMA, names]);
       const result = Object.fromEntries(names.map((table) => [table, { columns: {}, rows: [] }]));
       for (const column of metadata.rows) result[column.table_name].columns[column.column_name] = column.data_type;
-      for (const profile of TABLES.filter((item) => names.includes(item.table))) {
+      for (const profile of TABLES.filter((item) => options.tables.includes(item.table) || item.table === 'prod_inst')) {
         const source = result[profile.table];
         if (!source.columns[profile.pk]) continue;
         const records = Object.entries(data).filter(([group, value]) => Array.isArray(value) && group.replace(GROUP_SUFFIX, '') === profile.group).flatMap(([, value]) => value);
@@ -186,6 +243,7 @@ class PgRedisSync {
         if (ids.length > 5000) throw fail(413, 'SYNC_SCOPE_TOO_LARGE', '单表匹配 ID 数超过 5000');
         if (ids.length) source.rows = (await client.query(`SELECT * FROM ${SCHEMA}.${profile.table} WHERE ${profile.pk} = ANY($1::bigint[]) ORDER BY ${profile.pk}${source.columns.his_id ? ', his_id' : ''}`, [ids])).rows;
       }
+      result.recordComparison = await compareRecordScope(client, data, result, options, productInstanceId);
       return result;
     }, { signal });
   }
@@ -211,6 +269,7 @@ class PgRedisSync {
     return jsonSafe({ previewId, key: result.key, productInstanceId: result.productInstanceId, readAt: utc8Iso(), schema: SCHEMA, options,
       changedFields: result.candidate.changedFields, changes: result.candidate.changes, changesTruncated: result.candidate.changedFields > result.candidate.changes.length,
       groups: result.candidate.groups, unrecognized: result.candidate.unrecognized, blockers: result.candidate.blockers, canApply: result.candidate.canApply,
+      recordComparison: result.source.recordComparison,
       beforeBytes: result.snapshot.raw.length, afterBytes: result.after.length, ttlMs: result.snapshot.ttl,
       prefixHex: result.decoded.prefix.toString('hex'), expiresInSeconds: 600, mode: 'existing-record-fields' });
   }

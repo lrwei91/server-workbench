@@ -39,7 +39,8 @@ test('sync HTTP validates scope, confirmation, same origin and unknown fields', 
 
   const originals = Object.fromEntries(['preview', 'apply', 'restore', 'history'].map((name) => [name, PgRedisSync.prototype[name]]));
   const calls = [];
-  for (const name of Object.keys(originals)) PgRedisSync.prototype[name] = async (...args) => { calls.push({ name, args }); return { key: 'rate:cpp:42', verified: true }; };
+  const recordComparison = { pgOnlyCount: 1, pgOnlyRecords: [{ table: 'prod_offer_inst', id: '990000038852790', hisId: '0' }] };
+  for (const name of Object.keys(originals)) PgRedisSync.prototype[name] = async (...args) => { calls.push({ name, args }); return { key: 'rate:cpp:42', verified: true, recordComparison }; };
   try {
     for (const [route, body] of [
       ['preview', { key: '42', tables: ['prod_inst'], timestampZone: '+08:00' }],
@@ -48,6 +49,7 @@ test('sync HTTP validates scope, confirmation, same origin and unknown fields', 
       ['history', { key: '42' }],
     ]) {
       const result = await post(route, body, { Origin: base }); assert.equal(result.status, 200); assert.equal(result.body.result.key, 'rate:cpp:42');
+      if (route === 'preview') assert.deepEqual(result.body.result.recordComparison, recordComparison);
     }
     assert.deepEqual(calls.map((item) => item.name), ['preview', 'apply', 'restore', 'history']);
     assert.equal(calls[1].args[0], 'fixture'); assert.equal(calls[1].args[1], true); assert.ok(calls[1].args[2].signal);
@@ -61,4 +63,6 @@ test('sync UI uses server previews, explicit confirmation and no browser persist
   assert.match(html, /id="btnRedisSyncApply"[^>]*disabled/);
   assert.match(source, /confirm\(selected\.key/); assert.match(source, /previewId: selected\.previewId, confirmed: true/);
   assert.match(source, /data-restore-allowed/); assert.doesNotMatch(source, /localStorage|sessionStorage|innerHTML/);
+  assert.match(source, /PG 有、Redis 无/); assert.match(source, /comparison\.pgOnlyRecords/);
+  assert.match(source, /记录级比对覆盖不完整/); assert.match(source, /不自动追加到 Redis/);
 });

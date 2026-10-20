@@ -132,7 +132,7 @@
       </form>
       <section class="redis-sync-panel" aria-labelledby="redisSyncTitle">
         <h2 id="redisSyncTitle">PG → Redis 同步</h2>
-        <p class="query-help">以当前 Redis 为模板，按 ID + his_id 更新 PG 已有记录字段。缺失记录、未映射字段保持原值；新增、删除及关联范围变化需另行核对。只作用于上方指定 key。</p>
+        <p class="query-help">字段同步以当前 Redis 为模板，按 ID + his_id 更新已有记录；另列根产品一跳范围内“PG 有、Redis 无”的记录级差异（仅核对，不自动追加）。缺失记录、未映射字段保持原值。只作用于上方指定 key。</p>
         <details><summary>表范围与时间解释</summary><div id="redisSyncTables" class="redis-sync-tables"></div><label class="redis-sync-timezone">PG 无时区时间<select id="redisSyncTimezone" class="wb-field"><option value="+08:00">北京时间 UTC+8（当前样本）</option><option value="Z">UTC</option></select></label></details>
         <div class="redis-sync-actions"><button id="btnRedisSyncPreview" class="wb-button" type="button">从 PG 生成差异预览</button><button id="btnRedisSyncApply" class="wb-button primary" type="button" disabled>确认同步到 Redis</button><button id="btnRedisSyncHistory" class="wb-button" type="button">同步记录 / 恢复</button><button id="btnRedisSyncConnections" class="wb-button ghost" type="button">连接 PostgreSQL</button></div>
         <p id="redisSyncState" class="wb-status" role="status" aria-live="polite"></p>
