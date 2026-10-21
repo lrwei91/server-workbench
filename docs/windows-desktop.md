@@ -50,7 +50,7 @@ Python 依赖按现有 CDR requirements 安装；构建工具版本固定，CDR 
 
 普通退出与更新安装前都检查 `/cdr/api/session` 的 `dirty`：取消可返回导出，确认继续会丢弃内存会话。状态读取失败也提示确认。普通退出不会偷偷安装已下载更新。
 
-关闭时通知 Node 清理连接并终止 CDR；有超时兜底。进程崩溃时展示日志路径。仍需在目标设备验证强制结束、断电等异常场景。
+关闭时通知 Node 清理连接并终止 CDR；退出超时后强制结束进程。进程崩溃时展示日志路径。仍需在目标设备验证强制结束、断电等异常场景。
 
 ## 更新与发布
 
@@ -80,4 +80,4 @@ Actions 签名 secrets：`WINDOWS_CSC_LINK`（证书链接或 base64 PFX）、`W
 - 断网、GitHub 不可达、端口占用、下载失败：错误提示且原版本继续可用。
 - 审查安装包内容，无真实 `.env`、`config.js`、日志、源话单、导出和发布 Token。
 
-本地 smoke：设置 `WORKBENCH_DESKTOP_SMOKE=1` 后启动，会捕获页面到用户数据目录 `smoke/workbench.png`、记录 `SMOKE_READY` 并自动退出；仅用于验证启动链，非完整升级验收。
+本地 smoke：设置 `WORKBENCH_DESKTOP_SMOKE=1` 后启动，会捕获页面到用户数据目录 `smoke/workbench.png`、记录 `SMOKE_READY` 并自动退出；仅用于验证启动链，非完整升级验收；完整验收按「发布前验收」逐条执行。

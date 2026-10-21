@@ -43,8 +43,8 @@ Token 过期后可在连接设置的 Voyage 卡片中输入新 `VOYAGE_TOKEN` �
 | `offer_inst_rel` | `prod_offer_inst_rel` |
 | `offer` | `offer_ces` |
 
-`account`、`prod_inst`、`prod_inst_attr`、`prod_inst_rel`、`offer_prod_inst_rel` 保持同名；查询父表，由数据源负责路由 `_p0` 至 `_p11` 分片及 `_z` 反向索引表。工程字段固定映射 `acc_num → acc_nbr`、`offer_inst_id → prod_offer_inst_id`，步骤结果会展示字段映射。`payment_plan` 是账户付费计划，不再当作 `pricing_plan`。
+`account`、`prod_inst`、`prod_inst_attr`、`prod_inst_rel`、`offer_prod_inst_rel` 保持同名；查询父表，由数据源负责路由 `_p0` 至 `_p11` 分片及 `_z` 反向索引表。工程字段固定映射 `acc_num → acc_nbr`、`offer_inst_id → prod_offer_inst_id`，步骤结果会展示字段映射。`payment_plan` 是账户付费计划，不映射为 `pricing_plan`。
 
-测试环境号码和实例档案继续读取完整产品、账户、销售品、定价计划及扩展档案。工程 `bill_inmemory` 只执行已确认存在的主链：`prod_inst`、`prod_inst_acct`、`account`、`offer_prod_inst_rel`、`prod_offer_inst`、`offer_ces`；实例档案额外读取 `prod_inst_rel`、`prod_inst_attr` 和 `prod_offer_inst_attr`。当前清单中缺失的测试环境扩展表不再发起工程请求。默认映射为 `incf_db / bill_inmemory`，页面可切换到 `incf_db / crmv3`。
+测试环境号码和实例档案读取完整产品、账户、销售品、定价计划及扩展档案。工程 `bill_inmemory` 只执行已确认存在的主链：`prod_inst`、`prod_inst_acct`、`account`、`offer_prod_inst_rel`、`prod_offer_inst`、`offer_ces`；实例档案额外读取 `prod_inst_rel`、`prod_inst_attr` 和 `prod_offer_inst_attr`。当前清单中缺失的测试环境扩展表不发起工程请求。默认映射为 `incf_db / bill_inmemory`，页面可切换到 `incf_db / crmv3`。
 
 若后续取得定价计划所在的 datasource、database 和 schema，只需调整 `VOYAGE_CONFIG_*` 映射或对应固定查询，不影响页面查询契约。

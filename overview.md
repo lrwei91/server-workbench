@@ -6,20 +6,20 @@ Windows 桌面交付层使用 Electron + NSIS，主进程管理 Node utilityProc
 
 ## 运行结构
 
-```text
-浏览器（PC）
-  └─ Node server/server.js :17755
-       ├─ public/ + shared/
-       ├─ SSH / SFTP + HDFS/HBase 双后端适配
-       │    ├─ 显式旧链路：逐次 hadoop fs / hbase shell
-       │    └─ SSH forwardOut / 固定 nc exec channel → 内网常驻 Java 原生客户端
-       ├─ MySQL/UDAL + Doris + Voyage 在线数据库连接与固定只读查询；测试环境 PostgreSQL 连接检查
-       ├─ Redis LZ4 档案读取
-       ├─ 云翼平台 StatefulSet 容器日志与工作负载启停适配层
-       ├─ 兼容保留的自由命令与本地日志接口
-       └─ /cdr/* 反向代理
-            └─ FastAPI cdr/server.py :8000
-                 └─ cdr/engine.py（最多 100,000 条内存记录）
+```mermaid
+graph TD
+  B["浏览器（PC）"] --> N["Node server/server.js :17755"]
+  N --> P["public/ + shared/"]
+  N --> S["SSH / SFTP + HDFS/HBase 双后端适配"]
+  S --> S1["显式 SSH 命令链路：逐次 hadoop fs / hbase shell"]
+  S --> S2["SSH forwardOut / 固定 nc exec channel → 内网常驻 Java 原生客户端"]
+  N --> D["MySQL/UDAL + Doris + Voyage 在线数据库连接与固定只读查询；测试环境 PostgreSQL 连接检查"]
+  N --> R["Redis LZ4 档案读取"]
+  N --> K["云翼平台 StatefulSet 容器日志与工作负载启停适配层"]
+  N --> F["兼容保留的自由命令与本地日志接口"]
+  N --> C["/cdr/* 反向代理"]
+  C --> F2["FastAPI cdr/server.py :8000"]
+  F2 --> E["cdr/engine.py（最多 100,000 条内存记录）"]
 ```
 
 `start.bat` 只从 PATH 查找 `node`、`python`/`py`，不包含个人绝对路径。`.env.example` 展示连接结构，复制成未纳入 Git 的 `.env` 后填写真实连接信息。Node 启动时会报告配置缺失，接口仅返回掩码后的连接状态。
@@ -71,4 +71,4 @@ Windows 桌面交付层使用 Electron + NSIS，主进程管理 Node utilityProc
 
 Node builtin tests 覆盖 shell 转义、危险删除、真实错误状态、日志分页；Python unittest 覆盖非法 NDJSON、混合类型、ID 生成、批量一致性、版本/容量/原子导出等。测试使用假数据和临时目录，不接触真实凭据。
 
-浏览器验收按受影响流程和布局变化选择环境，规则见 [AGENTS.md](./AGENTS.md)。真实 SSH/SFTP/HDFS smoke 需要本机 `.env` 和已安装 `ssh2`。
+浏览器验收按受影响流程和布局变化选择环境，规则见本地协作指引 `AGENTS.md`（该文件不随仓库分发）。真实 SSH/SFTP/HDFS smoke 需要本机 `.env` 和已安装 `ssh2`。

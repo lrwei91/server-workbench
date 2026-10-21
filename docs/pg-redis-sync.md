@@ -13,7 +13,7 @@
 
 ## 当前范围
 
-此工具是**已有档案、已有记录的字段更新**，不是全库复制或完整档案重建。
+此工具的范围是**已有档案、已有记录的字段更新**；全库复制和完整档案重建不在范围内。
 
 | Redis 分组及 First/Second/Third/Fourth/FifthStep 变体 | PG 表 | ID 字段 |
 | --- | --- | --- |
@@ -42,7 +42,7 @@
 - `timestamp with time zone` 按实际时刻转换成 epoch 毫秒。亚毫秒精度或异常日期停在预览阶段。
 - 大整数通过 BigInt 保留，写回 JSON 数字类型；浏览器预览用字符串无损展示。高精度数值发生舍入风险时阻断。
 - 当前写入协议限定已核验的 `4 字节大端解压长度 + raw LZ4 block + Kryo String`。
-- Kryo 头包含 Java UTF-16 字符长度加一，随 JSON 内容重算；UTF8 编码按 Kryo 的逐 Java 字符规则处理，包括代理对。不是复制固定十六进制前缀。
+- Kryo 头包含 Java UTF-16 字符长度加一，随 JSON 内容重算；UTF8 编码按 Kryo 的逐 Java 字符规则处理，包括代理对。该实现不复制固定十六进制前缀。
 - 编码后先做解码自检，再进入备份/写入；沿用配置的默认 16 MiB 解压长度上限。
 - 协议依据：[Kryo Output 源码](https://github.com/EsotericSoftware/kryo/blob/master/src/com/esotericsoftware/kryo/io/Output.java)、[LZ4 block 规范](https://github.com/lz4/lz4/blob/dev/doc/lz4_Block_format.md)。
 
@@ -71,4 +71,4 @@
 
 ## 验证
 
-运行 `npm run check`、`npm run test:node` 与 `git diff --check`。同步专项测试使用本地假 TCP Redis 与 PG 固定样例，覆盖二进制 RESP、Kryo 长度/Unicode、LZ4、历史版本、差异、缺失保留、确认、备份、TTL、并发冲突与恢复；测试不访问真实测试环境。
+运行 `npm run check`、`npm run test:node` 与 `git diff --check`。同步专项测试使用本地假 TCP Redis 与 PG 固定样例，覆盖二进制 RESP、Kryo 长度/Unicode、LZ4、历史版本、差异、缺失保留、确认、备份、TTL、并发冲突与恢复；测试不访问真实测试环境。假 TCP Redis 与固定样例只覆盖上列协议编码与同步流程，真实链路的同步与回读按「使用」和「一致性和恢复」章节在测试环境执行。

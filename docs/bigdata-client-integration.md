@@ -2,7 +2,7 @@
 
 ## 架构
 
-浏览器继续调用工作台既有 HDFS/HBase API。Node 根据用户显式选择调用旧 SSH CLI，或通过 SSH `forwardOut` 访问内网机器 `127.0.0.1` 上的 Java 服务；若 sshd 禁止 `direct-tcpip`，则自动使用固定 `nc` exec channel 作为同一 SSH 加密会话内的字节流。Java 服务常驻复用 Hadoop `FileSystem` 与 HBase `Connection`，每次请求关闭文件流、`Table`、`ResultScanner` 和 `Admin`。
+浏览器调用工作台既有 HDFS/HBase API。Node 根据用户显式选择调用旧 SSH CLI，或通过 SSH `forwardOut` 访问内网机器 `127.0.0.1` 上的 Java 服务；若 sshd 禁止 `direct-tcpip`，则自动使用固定 `nc` exec channel 作为同一 SSH 加密会话内的字节流。Java 服务常驻复用 Hadoop `FileSystem` 与 HBase `Connection`，每次请求关闭文件流、`Table`、`ResultScanner` 和 `Admin`。
 
 旧链路保留用于人工回退。客户端连接、SSH 连接和数据库连接分别展示状态；客户端故障只报错并提示切换，不自动改变数据来源。
 
@@ -36,7 +36,7 @@ BIGDATA_CLIENT_LIST_CACHE_MS=30000
 - HBase 命名空间/表列表：缓存 30 秒；页面“刷新”传递 `refresh=true` 绕过缓存。
 - HBase scan 上限 200 行；HDFS preview 上限 256 KiB。
 - Node 请求取消或超时会关闭 SSH channel，并调用服务取消接口；Java 服务取消对应 Future 并在扫描/流复制中检查中断。
-- Java 服务对二进制 HBase Value 使用 `base64:` 摘要，结构化 `rows` 保留列族、Qualifier、时间戳和编码；兼容 `text` 继续供现有业务解析与复制使用。
+- Java 服务对二进制 HBase Value 使用 `base64:` 摘要，结构化 `rows` 保留列族、Qualifier、时间戳和编码；兼容 `text` 供现有业务解析与复制使用。
 - 日志只记录路由、耗时、结果状态和返回规模，不记录 Token、路径、RowKey 或业务内容。
 
 ## 验收记录

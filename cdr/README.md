@@ -14,8 +14,8 @@ CDR 是 Server Workbench 内嵌的 FastAPI 模块，用于加载 NDJSON 话单�
 
 - NDJSON 逐行解析，只接受对象记录；非法 JSON 会报告行号，解析完整成功后才替换当前会话。
 - `GET /api/session` 返回当前文件、总量、revision、dirty 和撤销状态。修改、批量应用、造数、撤销、导出可携带 `expected_revision`；版本不一致返回 HTTP 409 `REVISION_CONFLICT`。
-- 混合整数/浮点字段推断为 float；生成 ID 使用 O(1) 唯一性索引，避免跳号；非数字 ORG ID 后缀会安全回退。
-- 撤销栈深度和变更数量均有预算，避免无限膨胀。10 万条规模继续使用内存模型。
+- 混合整数/浮点字段推断为 float；生成 ID 使用 O(1) 唯一性索引，避免跳号；非数字 ORG ID 后缀不参与数值递增，保留长度并从 1 起探测。
+- 撤销栈深度和变更数量均有预算，避免无限膨胀。10 万条规模使用内存模型。
 
 ## 独立运行
 
@@ -28,4 +28,4 @@ python server.py
 
 ## 质量检查
 
-在项目根目录运行 `npm run test:python`。测试使用临时目录和 fixture，不需要真实凭据或远程服务。
+在项目根目录运行 `npm run test:python`。测试使用临时目录和 fixture，不需要真实凭据或远程服务。fixture 只覆盖本地解析、修改与导出逻辑；真实话单文件的加载、修改与导出按「使用流程」在源目录验证。
