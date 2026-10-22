@@ -33,7 +33,7 @@ Python 依赖按现有 CDR requirements 安装；构建工具版本固定，CDR 
 
 安装版通过 Electron `app.getPath('userData')` 获取目录，通常为 `%APPDATA%/server-workbench`；菜单「打开配置与日志目录」显示实际位置。开发版使用 `%APPDATA%/Server Workbench Dev`，与正式版分离。
 
-首次启动仅复制 `.env.example`，不自动导入源码目录的 `.env/config.js`，避免把个人凭据带入安装包。
+首次启动仅复制 `.env.example`，不自动导入源码目录的 `.env`，避免把个人凭据带入安装包。
 
 - `.env`：菜单编辑连接配置，重启生效；沿用已有字段。
 - `desktop.json`：自动检查偏好、用户选择的源目录和首次分配的 Node 端口。
@@ -78,6 +78,6 @@ Actions 签名 secrets：`WINDOWS_CSC_LINK`（证书链接或 base64 PFX）、`W
 - 退出后无残留 Node/CDR 进程；重开配置与收藏仍在。
 - 从已安装旧版升级到公开新版：下载校验、安装重启、配置保留。
 - 断网、GitHub 不可达、端口占用、下载失败：错误提示且原版本继续可用。
-- 审查安装包内容，无真实 `.env`、`config.js`、日志、源话单、导出和发布 Token。
+- 审查安装包内容，无真实 `.env`、日志、源话单、导出和发布 Token。
 
 本地 smoke：设置 `WORKBENCH_DESKTOP_SMOKE=1` 后启动，会捕获页面到用户数据目录 `smoke/workbench.png`、记录 `SMOKE_READY` 并自动退出；仅用于验证启动链，非完整升级验收；完整验收按「发布前验收」逐条执行。

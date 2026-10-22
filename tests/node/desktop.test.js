@@ -83,7 +83,7 @@ test('installer uses public GitHub NSIS and explicit resource allowlist', () => 
   assert.equal(builder.win.target[0].target, 'nsis'); assert.deepEqual(builder.win.target[0].arch, ['x64']);
   assert.equal(builder.nsis.deleteAppDataOnUninstall, false);
   assert.ok(builder.files.includes('.env.example')); assert.ok(!builder.files.includes('.env'));
-  assert.ok(!builder.files.includes('config.js')); assert.ok(!builder.files.includes('logs/**/*'));
+  assert.ok(!builder.files.some((entry) => entry.startsWith('config'))); assert.ok(!builder.files.includes('logs/**/*'));
 });
 test('quit/update protects dirty session and failed state check before shutdown', async () => {
   let prompts = 0;

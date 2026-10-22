@@ -17,8 +17,8 @@ test('static resources stream concurrently and keep missing/directory/traversal 
       res.on('end', () => resolve({ status: res.statusCode, body }));
     }).on('error', reject);
   });
-  const results = await Promise.all(Array.from({ length: 16 }, () => request('/app.js')));
-  results.forEach(result => { assert.equal(result.status, 200); assert.match(result.body, /import/); });
+  const results = await Promise.all(Array.from({ length: 16 }, () => request('/style.css')));
+  results.forEach(result => { assert.equal(result.status, 200); assert.match(result.body, /\.wb-/); });
   assert.equal((await request('/js/missing-file.js')).status, 404);
   assert.equal((await request('/js/')).status, 404);
   assert.equal((await request('/shared/..\\package.json')).status, 404);

@@ -15,7 +15,7 @@ from pathlib import Path
 
 from config import SOURCE_DIR, OUTPUT_DIR, LOG_DIR, MAX_RECORDS, UNDO_MAX_CHANGES, UNDO_DEPTH, MAX_PREVIEW
 
-# 路径常量统一由 config.py 提供（与工作台 config.js 口径一致）
+# 路径常量统一由 config.py 提供（与工作台 .env 口径一致）
 TOOL_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = TOOL_DIR.parent.parent
 CN_TZ = timezone(timedelta(hours=8), "UTC+8")
@@ -397,17 +397,6 @@ def load_file(filename):
         "has_collect_cdr_id": any("COLLECT_CDR_ID" in r for r in records),
         "biz_summary": biz_summary,
         "warnings": warnings,
-    }
-
-
-def get_config():
-    return {
-        "source_dir": str(SOURCE_DIR),
-        "output_dir": str(OUTPUT_DIR),
-        "biz_type_map": {str(k): v for k, v in BIZ_TYPE_MAP.items()},
-        "default_page_size": 100,
-        "max_records": MAX_RECORDS,
-        "max_preview": MAX_PREVIEW,
     }
 
 

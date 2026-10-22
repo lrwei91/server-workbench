@@ -26,7 +26,7 @@ Windows App 构建、内置 CDR 与 GitHub 自动更新见 [Windows 桌面版](.
 - 主工作台采用浅色工具主题，一级导航包含「资源浏览」「数据库查询」「Redis 档案」「进程日志」「话单工具」五个独立页面。窄窗口自动收为图标导航；切页保留输入、结果与滚动位置，页面地址只记录模块和子页，不包含号码或实例 ID。查询结果按分组阅读，明确的产品实例可带入档案查询或 Redis 页面，由用户发起查询。
 - 文件浏览使用结构化 SFTP 接口：目录列表、预览、新建文件/目录、删除文件或空目录、下载。删除需要二次确认，根路径受保护。
 - 服务器文件、HDFS 和 HBase 列表支持基于已加载结果的名称/路径/中文备注搜索与排序；常用目录和 HBase 表可收藏到当前浏览器。
-- HDFS 支持目录浏览、文件预览/下载、服务器文件上传、在当前目录新建目录/新建空文件，以及文件或空目录二次确认删除。新建目录/文件走 SSH 命令链路（常驻客户端服务暂无这两个接口），要求 SSH 已连接；HDFS 页的「上传」先把本机文件传到服务器当前目录，再弹出确认框指定 HDFS 目标目录；客户端服务模式复用常驻 `FileSystem`，SSH 命令链路保留为显式回退。HBase 表查看支持 20/50/100/200 行样本、RowKey 精确查询、当前样本内查找、结构化行数据和原始结果复制。高级自由命令与日志接口为兼容目的保留在后端，主界面不提供该入口。
+- HDFS 支持目录浏览、文件预览/下载、服务器文件上传、在当前目录新建目录/新建空文件，以及文件或空目录二次确认删除。新建目录/文件走 SSH 命令链路（常驻客户端服务暂无这两个接口），要求 SSH 已连接；HDFS 页的「上传」先把本机文件传到服务器当前目录，再弹出确认框指定 HDFS 目标目录；客户端服务模式复用常驻 `FileSystem`，SSH 命令链路保留为显式回退。HBase 表查看支持 20/50/100/200 行样本、RowKey 精确查询、当前样本内查找、结构化行数据和原始结果复制。
 - 固定查询支持选择环境：测试环境从 PostgreSQL `bill_inmemory` 查档案、MySQL/UDAL `CONFIGDB_CNOS_JF_TEST` 查配置；工程环境通过已连接的 Voyage 查询，支持 `bill_inmemory` / `crmv3` Schema。连接成功后切到对应查询环境，切换环境或 Schema 会取消旧请求并清空结果，避免混用。关系链查询固定使用测试 PG/MySQL，Redis 同步也仍固定从测试 PG 读取。
 - 「号码查产品」用手机号、固话或宽带业务号码 `acc_nbr` 定位产品实例。业务号码是产品实例的属性，不等于 `prod_inst_id`，同一号码可能返回多个实例或历史版本。「实例查档案」使用产品实例ID，保留PG现存 `his_id` 版本及根产品/销售品的一跳直接关系；关联节点不展开兄弟实例。销售品定义和定价计划转到MySQL查询，缺失/失败/上限分别展示；详见 [实例档案查询覆盖](./docs/archive-query-coverage.md)。
 - 「查询套餐」按规格 `offer_id` 查MySQL套餐定义与定价，再沿PG `prod_offer_inst → offer_prod_inst_rel → prod_inst` 反查订购用户。「查询事件类型」从MySQL读取事件格式、入库路由和定价关联，从PG读取关联销售品/产品实例；默认事件类型为 `206080000`（CDMA集团）。
@@ -52,12 +52,12 @@ server-workbench/
 ├─ server/                   # Node HTTP、SSH、SFTP、HDFS、数据库/档案查询、CDR 代理
 ├─ bigdata-client-service/   # 内网常驻 Java HDFS/HBase 原生客户端服务
 ├─ cdr/                      # FastAPI + 内存 CDR 引擎与前端
-└─ tests/                    # Node builtin test、Python unittest、fixture
+└─ tests/                    # Node builtin test、Python unittest、Playwright 浏览器用例、fixture
 ```
 
 ## 质量检查
 
-按改动范围选择验证项，具体规则见本地协作指引 `AGENTS.md`（该文件不随仓库分发）。常用命令如下：
+按改动范围选择验证项，常用命令如下：
 
 首次运行 Python 测试前，执行 `python -m pip install -r cdr/requirements-dev.txt` 安装测试依赖；测试与语法检查统一使用 PATH 中的 `python`。
 

@@ -16,7 +16,6 @@ graph TD
   N --> D["MySQL/UDAL + Doris + Voyage 在线数据库连接与固定只读查询；测试环境 PostgreSQL 连接检查"]
   N --> R["Redis LZ4 档案读取"]
   N --> K["云翼平台 StatefulSet 容器日志与工作负载启停适配层"]
-  N --> F["兼容保留的自由命令与本地日志接口"]
   N --> C["/cdr/* 反向代理"]
   C --> F2["FastAPI cdr/server.py :8000"]
   F2 --> E["cdr/engine.py（最多 100,000 条内存记录）"]
@@ -45,19 +44,18 @@ graph TD
 ### Node
 
 - 请求体限制 1 MiB，非法 JSON/未知字段返回真实 HTTP 状态和 `{ok:false,error:{code,message,retryable}}`。
-- `/api/exec` 是明确的高级自由命令入口；交互式命令和根目录递归强删拦截，删除类命令需 `confirmed:true`。所有参数化路径使用单引号 shell 转义。
-- `/api/connect`、`/api/db/connect`、`/api/voyage/connect`保留独立连接管理；普通固定查询显式 source=voyage 时经 Voyage 查询并校验 Schema，其余默认 PG 档案/MySQL 配置（旧 udal 参数兼容到 PG）。关系链接口仍固定 PG/MySQL。PG每次固定SELECT使用位置绑定参数、明确bill_inmemory Schema、只读Repeatable Read事务和15秒单语句超时；日期/大整数保留原值。整条跨PG/MySQL链不承诺同一快照。手机号/实例/关系链查询总超时60秒；关系诊断每步最多500行、每关联组最多100个ID、累计最多5000行。固定接口不接受用户SQL、不执行导出脚本。
-- `/api/voyage/status|connect|disconnect` 仅返回脱敏配置和连接状态；Bearer Token 只由 Node 从 `.env` 读取。适配器把 `columns + rows` 还原为对象，保留不安全大整数为字符串，并把 HTTP、鉴权和语句级错误分开报告。
-- `/api/redis/status` 返回脱敏后的 Redis 档案配置状态；`/api/query/redis` 只接收产品实例 ID 或 `rate:cpp:{数字ID}`，逐次认证、选择配置的 DB、GET 并解码 LZ4/JSON。单次连接与查询默认 15 秒，解压长度默认不超过 16 MiB，密码不进入接口响应。
+- `/api/connect`、`/api/db/connect`、`/api/voyage/connect`保留独立连接管理；普通固定查询显式 source=voyage 时经 Voyage 查询并校验 Schema，其余默认 PG 档案/MySQL 配置。关系链接口仍固定 PG/MySQL。PG每次固定SELECT使用位置绑定参数、明确bill_inmemory Schema、只读Repeatable Read事务和15秒单语句超时；日期/大整数保留原值。整条跨PG/MySQL链不承诺同一快照。手机号/实例/关系链查询总超时60秒；关系诊断每步最多500行、每关联组最多100个ID、累计最多5000行。固定接口不接受用户SQL、不执行导出脚本。
+- `/api/voyage/status|connect` 仅返回脱敏配置和连接状态；Bearer Token 只由 Node 从 `.env` 读取。适配器把 `columns + rows` 还原为对象，保留不安全大整数为字符串，并把 HTTP、鉴权和语句级错误分开报告。
+- `/api/query/redis` 只接收产品实例 ID 或 `rate:cpp:{数字ID}`，逐次认证、选择配置的 DB、GET 并解码 LZ4/JSON。单次连接与查询默认 15 秒，解压长度默认不超过 16 MiB，密码不进入接口响应。
 - `/api/redis-index/lookup|preview|apply` 补建根产品号码索引：实例直接定位 CPP；手机号先读 Redis accNbr，缺失时查测试 PG `prod_inst.acc_nbr`，最多 100 个候选。预览从所选 CPP 根 `prodInsts` 分别取 `account` 与 `accNbr`，历史成员去重后编码为二进制 SET。确认后 Lua 核对源字节与全部目标仍缺失，只新增缺失 key，不改已有 key/成员/TTL。写前本地操作记录、写后回读；响应异常保留 uncertain，不自动重放。仅覆盖所选实例，详见 [号码索引补建](./docs/redis-indexes.md)。
 - `/api/redis-sync/preview|apply|history|restore` 从 PG 按 `ID + his_id` 更新既有 Redis 档案字段，并追加根产品直接订购关系及销售品实例；其他新增类型仅核对，缺失/未知内容保留，既有记录关联端点变更阻断。新增记录与字段共用候选编码、预览重算、整条备份及恢复；编码重算 Kryo String 字符长度并生成 raw LZ4 block，Redis Lua CAS 写入保留 TTL 并回读验证。恢复绑定连接和同步后的摘要、原绝对过期时间，避免覆盖后续修改；具体边界见 [PG → Redis 同步](./docs/pg-redis-sync.md)。
 - `/api/dcos/status|connect|disconnect` 管理临时平台 Cookie，仅在 Node 内存保存且状态不返回凭据；`/api/dcos/namespaces|workloads|pods|logs` 将页面选择映射到云翼平台固定只读接口，工作负载分页由 Node 向上游发 POST。`/api/dcos/workload/start|stop` 把页面确认后的 StatefulSet 启停转发到云翼平台工作负载级接口（POST 空体），按钮可用性以当前 Pod 列表推断。会话过期返回独立错误。容器日志除页面展示外，按目标去重追加到 `logs/dcos/<集群>__<命名空间>__<Pod>__<容器>.log`（已被 `.gitignore` 覆盖，写盘失败不影响页面读取）：自动刷新重复拉取同一「末尾 N 行」窗口时，只把窗口外新增的行追加进去；进程重启后回读文件尾部继续去重；单文件超过 20 MiB 轮转为 `.1.log`。由于平台只有末尾快照接口，两次拉取之间滚出窗口的行仍会缺失。
 - UDAL 按逻辑库建立 `utf8mb4` 连接，不在查询中写库名前缀；结果中的大整数、金额和日期保留字符串。可无损识别的 UTF-8/GB18030 历史错码业务名称恢复显示并保留原始值。分支失败、关联缺失与空结果分别返回，跨库结果不表示同一事务快照。
-- 浏览器日期格式化、查询元数据、SFTP 修改时间、Node 日志日期和 CDR 生成时间均显式使用 UTC+8；数据库业务日期字符串保持原值并标注 UTC+8，不做二次偏移。
+- 浏览器日期格式化、查询元数据、SFTP 修改时间和 CDR 生成时间均显式使用 UTC+8；数据库业务日期字符串保持原值并标注 UTC+8，不做二次偏移。
 - `/api/sftp/list|preview|mkdir|touch|delete|download` 使用结构化 SFTP；删除区分 file/空 dir，根路径保护。
-- `/api/bigdata/status|connect|disconnect|use-ssh` 独立管理 HDFS/HBase 常驻客户端来源。客户端仅监听内网机器环回地址，Node 通过已建立 SSH 会话为每个请求创建 `forwardOut` 加密通道；Token 不进入响应或日志。切换来源会取消旧请求并清空已加载资源，故障不静默切换。
+- `/api/bigdata/status|connect|use-ssh` 独立管理 HDFS/HBase 常驻客户端来源。客户端仅监听内网机器环回地址，Node 通过已建立 SSH 会话为每个请求创建 `forwardOut` 加密通道；Token 不进入响应或日志。切换来源会取消旧请求并清空已加载资源，故障不静默切换。
 - `/api/hdfs/list|preview|download|upload|mkdir|touch|delete` 和 `/api/hbase/list|scan` 保持页面契约；上传在客户端模式使用常驻 `FileSystem.copyFromLocalFile`，删除只允许文件或空目录且必须二次确认，不执行递归删除。`mkdir|touch` 只接受「当前目录 + 单层名称」，由 Node 拼路径后走 SSH 命令链路（常驻客户端服务未提供这两个接口），同名目标不覆盖、父目录缺失和权限不足分别单独报错。客户端模式额外返回 `source/cached/readAt/durationMs`。HDFS 与 HBase 数据读取默认实时，仅命名空间和表列表缓存 30 秒，手动刷新绕过缓存。`/api/hbase/get` 提供 RowKey 精确查询；扫描最多 200 行，预览最多 256 KiB。
-- 命令 stdout/stderr 共用 2 MiB 预算并返回 `truncated`；日志通过异步队列写 JSONL，过期清理每天最多一次，读取支持 `limit/offset`，默认 200 条。
+- 命令 stdout/stderr 共用 2 MiB 预算并返回 `truncated`；参数化路径统一使用单引号 shell 转义，交互式命令和根目录递归强删在执行层拦截。
 - 目录刷新、HDFS 刷新和自动刷新有 AbortController/代际门禁；页面隐藏时暂停，单个刷新请求不会重入。
 
 ### CDR

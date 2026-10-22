@@ -96,10 +96,6 @@ def _log(action, params, affected=None):
 def index(): return FileResponse(STATIC_DIR / "index.html")
 
 
-@app.get("/api/config")
-def api_config(): return _run(engine.get_config)
-
-
 @app.get("/api/session")
 def api_session(): return _run(engine.get_session)
 
@@ -174,6 +170,7 @@ def api_export(req: ExportReq):
 def api_export_history(): return _run(lambda: {"items": engine.export_history()})
 
 
+# 仅浏览器回归测试与本地调试使用，页面不调用；保留以便测试隔离会话。
 @app.post("/api/reset")
 def api_reset(expected_revision: Optional[int] = Query(default=None, ge=0)):
     with engine._lock:

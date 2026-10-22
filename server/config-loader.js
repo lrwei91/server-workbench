@@ -6,14 +6,17 @@ const path = require('path');
 const root = path.join(__dirname, '..');
 const configDir = process.env.WORKBENCH_CONFIG_DIR || root;
 const envPath = path.join(configDir, '.env');
-const localPath = path.join(configDir, 'config.js');
-const examplePath = path.join(root, 'config.example.js');
-let loadedFrom = localPath;
-let config;
 
-// 只在本地配置不存在时回退到样例；样例依赖缺失或语法错误不能被静默吞掉。
-if (fs.existsSync(localPath)) config = require(localPath);
-else { loadedFrom = examplePath; config = require(examplePath); }
+// 内置默认值；本机连接信息只从 .env 读取。
+const DEFAULTS = {
+  workbench: { host: '127.0.0.1', port: 17755 },
+  ssh: { host: '', port: 22, username: '', password: '', timeoutMs: 15000, execTimeoutMs: 30000, execMaxTimeoutMs: 120000, execMaxOutputBytes: 2 * 1024 * 1024 },
+  hdfsTimeoutMs: 90000,
+  hbaseTimeoutMs: 120000,
+  cdr: { upstream: 'http://127.0.0.1:8000' },
+  dcos: { baseUrl: '', clusters: [{ id: 321, name: 'ccse-xyha-01' }], timeoutMs: 15000 },
+  logs: { dir: './logs' },
+};
 
 function parseEnv(text) {
   const result = {};
@@ -39,7 +42,6 @@ function envNumber(name, fallback) { const value = Number(env[name]); return Num
 
 function normalize(raw) {
   const value = { ...raw };
-  delete value.archive;
   const workbench = value.workbench || {};
   const ssh = value.ssh || {};
   const redisArchive = value.redisArchive || {};
@@ -124,14 +126,11 @@ function normalize(raw) {
     hbaseTimeoutMs: Number(value.hbaseTimeoutMs) || 120000,
     logs: {
       dir: process.env.WORKBENCH_DATA_DIR ? path.join(process.env.WORKBENCH_DATA_DIR, 'logs') : logs.dir || './logs',
-      maxDays: Number(logs.maxDays) || 30,
-      maxEntries: Number(logs.maxEntries) || 10000,
     },
   };
 }
 
-const normalized = normalize(config);
-const isExample = path.resolve(loadedFrom) === path.resolve(examplePath);
+const normalized = normalize(DEFAULTS);
 
 function validate() {
   const errors = [];
@@ -149,4 +148,4 @@ function resolveLogDir() {
   return path.isAbsolute(value) ? value : path.resolve(root, value);
 }
 
-module.exports = { ...normalized, loadedFrom: fs.existsSync(envPath) ? envPath : loadedFrom, isExample: !fs.existsSync(envPath), validate, resolveLogDir, root, envPath, exists: fs.existsSync(envPath), parseEnv };
+module.exports = { ...normalized, isExample: !fs.existsSync(envPath), validate, resolveLogDir, root, envPath, exists: fs.existsSync(envPath), parseEnv };

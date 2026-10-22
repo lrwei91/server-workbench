@@ -112,7 +112,7 @@ test('PG fixed SELECT runs in a read-only transaction with raw numeric/date resu
   await manager.closeAll();
 });
 
-test('HTTP test query routes retain PG and legacy UDAL routing and fixed relation modes', async () => {
+test('HTTP test query routes keep PG/Voyage routing and fixed relation modes', async () => {
   const { manager } = require('../../server/database');
   const { createServer } = require('../../server/server');
   const db = fixture(); const original = manager.query; manager.query = db.query.bind(db);
@@ -124,12 +124,10 @@ test('HTTP test query routes retain PG and legacy UDAL routing and fixed relatio
     }); req.on('error', reject); req.end(payload);
   });
   try {
-    for (const source of ['pg', 'udal']) {
-      const result = await request('POST', '/api/query/phone', { phone: '13800000000', source });
-      assert.equal(result.status, 200); assert.equal(result.body.result.source, 'pg');
-    }
-    const catalog = await request('GET', '/api/query/relations/catalog');
-    assert.equal(catalog.body.queries.length, 13);
+    const phone = await request('POST', '/api/query/phone', { phone: '13800000000', source: 'pg' });
+    assert.equal(phone.status, 200); assert.equal(phone.body.result.source, 'pg');
+    const legacy = await request('POST', '/api/query/phone', { phone: '13800000000', source: 'udal' });
+    assert.equal(legacy.status, 400); assert.equal(legacy.body.error.code, 'INVALID_INPUT');
     const result = await request('POST', '/api/query/relations', { mode: 'bank-offers', id: '401' });
     assert.equal(result.status, 200); assert.equal(result.body.result.source, 'pg');
     assert.equal((await request('POST', '/api/query/relations', { mode: 'arbitrary', id: '1' })).status, 400);

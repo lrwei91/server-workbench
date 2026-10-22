@@ -88,8 +88,6 @@ function connect(overrides = {}) {
 const INTERACTIVE_RE = /(^|\s|;|&&|\||\n)(?:vim|vi|less|more|nano|man|htop|top|tail\s+-f|watch)\b/i;
 // 只拦截明确指向根目录的递归强制删除，允许用户在确认后处理普通路径。
 const FORBIDDEN_RE = /(?:^|[;&|\n])\s*(?:sudo\s+)?rm\b(?=[^;&|\n]*\s(?:-[A-Za-z]*r[A-Za-z]*|--recursive)(?:\s|$))(?=[^;&|\n]*\s(?:-[A-Za-z]*f[A-Za-z]*|--force)(?:\s|$))[^;&|\n]*\s+['"]?\/(?:\*)?['"]?(?=\s|$)/i;
-const DANGEROUS_RE = /(?:^|[;&|\n])\s*(?:sudo\s+)?(?:rm|rmdir|del|erase|format)\b/i;
-function isDangerousCommand(cmd) { return DANGEROUS_RE.test(String(cmd || '')); }
 
 function execCommand(command, timeoutMs) {
   const cmd = String(command || '');
@@ -129,4 +127,4 @@ function execCommand(command, timeoutMs) {
   });
 }
 
-module.exports = { DEFAULT_CONFIG, expandTilde, maskConfig, shellQuote, disconnect, connect, execCommand, isDangerousCommand, INTERACTIVE_RE, FORBIDDEN_RE, get conn() { return conn; }, get connInfo() { return connInfo; }, get home() { return homeDir; } };
+module.exports = { DEFAULT_CONFIG, expandTilde, maskConfig, shellQuote, disconnect, connect, execCommand, INTERACTIVE_RE, FORBIDDEN_RE, get conn() { return conn; }, get connInfo() { return connInfo; }, get home() { return homeDir; } };

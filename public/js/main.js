@@ -210,9 +210,6 @@ document.addEventListener('click', (event) => {
 document.getElementById('hbaseScanDialog')?.addEventListener('close', () => cancelHbaseScan());
 const dcosLogs = initDcosLogs();
 let navigation;
-function switchPrimaryPage(page) {
-  navigation?.navigate(({workspace:'resources', query:'query', redis:'redis', processLogs:'logs', cdr:'cdr'})[page]);
-}
 
 function icon(name, label = '') {
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');

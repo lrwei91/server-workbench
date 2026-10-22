@@ -30,11 +30,6 @@ body {
   color: var(--wb-text-subtle);
   font-size: 12px;
 }
-.cdr-session {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-}
 .revision {
   color: var(--wb-text-subtle) !important;
   font-family: var(--wb-mono);
@@ -74,29 +69,6 @@ body {
 .load-card > .wb-status {
   padding: 0 20px 14px;
 }
-.stats-grid {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 10px;
-}
-.stat {
-  min-height: 78px;
-  padding: 14px 16px;
-  border: 1px solid var(--wb-border);
-  border-radius: var(--wb-radius-md);
-  background: var(--wb-surface);
-}
-.stat span, .stat strong {
-  display: block;
-}
-.stat span {
-  color: var(--wb-text-subtle);
-  font-size: 12px;
-}
-.stat strong {
-  margin-top: 7px;
-  font-size: 20px;
-}
 .filter-toolbar {
   display: flex;
   align-items: flex-end;
@@ -134,11 +106,6 @@ body {
   text-align: center !important;
   font-family: var(--wb-font) !important;
 }
-.record-actions {
-  display: flex;
-  gap: 5px;
-  font-family: var(--wb-font);
-}
 .pager {
   display: flex;
   align-items: center;
@@ -146,18 +113,6 @@ body {
   gap: 14px;
   color: var(--wb-text-secondary);
   font-size: 12px;
-}
-.operation-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 16px;
-}
-.operation-grid .cdr-card {
-  min-width: 0;
-  padding-bottom: 16px;
-}
-.operation-grid .card-title {
-  margin: -1px -1px 0;
 }
 .field-line {
   display: block;
@@ -179,7 +134,7 @@ body {
 .filter-row button {
   min-height: 36px;
 }
-.operation-grid > .cdr-card > #btnAddFilter {
+#btnAddFilter {
   margin: 12px 20px 0;
 }
 .op-actions {
@@ -197,9 +152,6 @@ body {
 .wb-status {
   padding-left: 20px;
   padding-right: 20px;
-}
-.export-card {
-  padding-bottom: 16px;
 }
 .export-history {
   flex-wrap: wrap;
@@ -263,19 +215,10 @@ body {
   .cdr-main {
     width: calc(100% - 32px);
   }
-  .operation-grid {
-    grid-template-columns: 1fr;
-  }
-  .form-grid {
-    grid-template-columns: 1fr;
-  }
 }
 @media (max-width: 900px) {
   .cdr-header {
     flex-wrap: wrap;
-  }
-  .cdr-session {
-    width: 100%;
   }
   .cdr-main > * {
     min-width: 0;
@@ -298,9 +241,6 @@ body {
   .filter-toolbar label, .filter-toolbar .filter-grow {
     min-width: 0;
     flex: 1 1 180px;
-  }
-  .stats-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
   .table-wrap {
     overflow-x: auto;

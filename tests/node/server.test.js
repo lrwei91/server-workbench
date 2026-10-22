@@ -6,7 +6,6 @@ const http = require('node:http');
 const { EventEmitter } = require('node:events');
 const ssh = require('../../server/ssh');
 const sftp = require('../../server/sftp');
-const log = require('../../server/log');
 const hdfs = require('../../server/hdfs');
 const hbase = require('../../server/hbase');
 const config = require('../../server/config-loader');
@@ -22,23 +21,8 @@ function request(server, method, path, body) {
   });
 }
 
-test('removed engineering archive configuration is excluded even from legacy local config', () => {
-  const directory = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'workbench-config-'));
-  try {
-    fs.writeFileSync(path.join(directory, 'config.js'), "module.exports = { archive: { authToken: 'obsolete-token' }, voyage: { apiUrl: 'http://HOST/query' }, redisArchive: { host: 'HOST' } };\n");
-    const result = require('node:child_process').spawnSync(process.execPath, ['-e', `const c=require(${JSON.stringify(require.resolve('../../server/config-loader'))}); console.log(JSON.stringify({archive:Object.hasOwn(c,'archive'),voyage:!!c.voyage,redis:!!c.redisArchive}));`], { env: { ...process.env, WORKBENCH_CONFIG_DIR: directory, ARCHIVE_AUTH_TOKEN: 'obsolete-env-token' }, encoding: 'utf8' });
-    assert.equal(result.status, 0, result.stderr);
-    assert.deepEqual(JSON.parse(result.stdout), { archive: false, voyage: true, redis: true });
-  } finally {
-    fs.unlinkSync(path.join(directory, 'config.js'));
-    fs.rmdirSync(directory);
-  }
-});
-
-test('shell quoting protects single quotes and command danger detection is broad', () => {
+test('shell quoting protects single quotes and root recursive deletes', () => {
   assert.equal(ssh.shellQuote("a'b"), "'a'\\''b'");
-  assert.equal(ssh.isDangerousCommand('rmdir /tmp/a'), true);
-  assert.equal(ssh.isDangerousCommand('format /dev/sda'), true);
   assert.equal(ssh.FORBIDDEN_RE.test('rm -rf /'), true);
   assert.equal(ssh.FORBIDDEN_RE.test('sudo rm -f -r /'), true);
   assert.equal(ssh.FORBIDDEN_RE.test('rm -rf /tmp/work'), false);
@@ -163,15 +147,11 @@ test('HTTP errors have real status and normalized shape', async () => {
   try {
     const missing = await request(server, 'GET', '/api/nope');
     assert.equal(missing.status, 404); assert.equal(missing.body.ok, false); assert.equal(missing.body.error.code, 'NOT_FOUND');
-    const danger = await request(server, 'POST', '/api/exec', { cmd: 'rm -f /tmp/x' });
-    assert.equal(danger.status, 409); assert.equal(danger.body.error.code, 'CONFIRMATION_REQUIRED');
-    const invalid = await request(server, 'POST', '/api/exec', '{bad');
+    const invalid = await request(server, 'POST', '/api/sftp/mkdir', '{bad');
     assert.equal(invalid.status, 400); assert.equal(invalid.body.error.code, 'INVALID_JSON');
-    const invalidDate = await request(server, 'GET', '/api/log/list?date=not-a-date');
-    assert.equal(invalidDate.status, 400); assert.equal(invalidDate.body.error.code, 'INVALID_DATE');
-    const unknown = await request(server, 'POST', '/api/exec', { cmd: 'echo ok', extra: true });
+    const unknown = await request(server, 'POST', '/api/sftp/mkdir', { path: '/tmp/x', extra: true });
     assert.equal(unknown.status, 400); assert.equal(unknown.body.error.code, 'UNKNOWN_FIELD');
-    const tooLarge = await request(server, 'POST', '/api/exec', 'x'.repeat(MAX_BODY_BYTES + 1));
+    const tooLarge = await request(server, 'POST', '/api/sftp/mkdir', 'x'.repeat(MAX_BODY_BYTES + 1));
     assert.equal(tooLarge.status, 413); assert.equal(tooLarge.body.error.code, 'BODY_TOO_LARGE');
     const invalidDb = await request(server, 'POST', '/api/db/connect', { source: 'oracle', host: 'HOST', port: 1, username: 'USER', password: '' });
     assert.equal(invalidDb.status, 400); assert.equal(invalidDb.body.error.code, 'INVALID_INPUT');
@@ -250,17 +230,6 @@ test('connection generation gate and structured SFTP operations use one channel'
     ssh.disconnect();
     ssh2.Client = originalClient;
   }
-});
-
-test('log queue writes asynchronously and paginates newest entries', async () => {
-  const date = '2099-12-31';
-  const fixturePath = path.join(log.LOG_DIR, `${date}.log`);
-  try {
-    await fs.promises.unlink(fixturePath).catch(() => {});
-    await log.append({ t: '00:00:01', cmd: 'test-node', badge: '成功', out: 'safe output' }, date);
-    const result = await log.list(date, { limit: 1 });
-    assert.equal(result.entries.length, 1); assert.equal(result.entries[0].cmd, 'test-node'); assert.equal(result.total, 1); assert.equal(result.hasMore, false);
-  } finally { await fs.promises.unlink(fixturePath).catch(() => {}); }
 });
 
 test('fixed query panel replaces command and log interactions', () => {
@@ -456,7 +425,6 @@ test('local env parser supports quoted credentials without exposing them through
 
 test('server-generated resource timestamps use an explicit UTC+8 offset', () => {
   assert.equal(sftp.utc8IsoFromEpochSeconds(0), '1970-01-01T08:00:00.000+08:00');
-  assert.match(log.today(new Date('2026-09-15T17:00:00.000Z')), /^2026-09-16$/);
 });
 
 test('resource refresh keeps a compact status and ignores duplicate in-flight refreshes', () => {

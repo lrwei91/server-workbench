@@ -5,7 +5,7 @@ module.exports = {
   artifactName: 'Server-Workbench-${version}-${arch}-Setup.${ext}',
   directories: { output: 'dist', buildResources: 'desktop/resources' },
   asar: true,
-  files: ['desktop/*.cjs', 'server/**/*', 'public/**/*', 'shared/**/*', 'config.example.js', '.env.example', 'package.json', '!desktop/build-*.cjs', '!**/__pycache__/**', '!node_modules/cpu-features/**/*', '!node_modules/ssh2/lib/protocol/crypto/build/**/*'],
+  files: ['desktop/*.cjs', 'server/**/*', 'public/**/*', 'shared/**/*', '.env.example', 'package.json', '!desktop/build-*.cjs', '!**/__pycache__/**', '!node_modules/cpu-features/**/*', '!node_modules/ssh2/lib/protocol/crypto/build/**/*'],
   extraResources: [{ from: 'build/python/cdr-service', to: 'cdr-service', filter: ['**/*'] }],
   // ssh2 的 CPU 探测/加密 native addon 是可选加速，使用其内置 JS/WASM 实现，避免 Node/Electron ABI 混用。
   npmRebuild: false,

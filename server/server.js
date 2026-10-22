@@ -12,10 +12,9 @@ const sftp = require('./sftp');
 const hdfs = require('./hdfs');
 const hbase = require('./hbase');
 const proxy = require('./proxy');
-const log = require('./log');
 const { manager: database } = require('./database');
 const phoneQuery = require('./phone-query');
-const { RELATION_QUERIES, queryArchiveRelations } = require('./archive-relations');
+const { queryArchiveRelations } = require('./archive-relations');
 const { VoyageManager } = require('./voyage');
 const { manager: bigdata } = require('./bigdata-client');
 const { DcosLogs } = require('./dcos-logs');
@@ -121,26 +120,19 @@ function requireString(value, name, { allowEmpty = false } = {}) {
 }
 function requireQuerySource(value) {
   const source = value === undefined ? 'pg' : requireString(value, 'source').toLowerCase();
-  if (!['pg', 'udal', 'voyage'].includes(source)) throw new RequestError(400, 'INVALID_INPUT', 'source 必须是 pg、udal 或 voyage');
-  // 工程环境复用 Voyage；旧 UDAL 档案参数仍兼容到测试 PG。
-  return source === 'voyage' ? 'voyage' : 'pg';
+  if (!['pg', 'voyage'].includes(source)) throw new RequestError(400, 'INVALID_INPUT', 'source 必须是 pg 或 voyage');
+  return source;
 }
 function requireQuerySchema(value, source) {
   if (source === 'pg') {
     if (value !== undefined && value !== 'bill_inmemory') throw new RequestError(400, 'INVALID_INPUT', '档案查询 schema 固定为 bill_inmemory');
     return 'bill_inmemory';
   }
-  if (source !== 'voyage') return undefined;
   const schema = value === undefined ? 'bill_inmemory' : requireString(value, 'schema');
   if (!['bill_inmemory', 'crmv3'].includes(schema)) throw new RequestError(400, 'INVALID_INPUT', 'schema 必须是 bill_inmemory 或 crmv3');
   return schema;
 }
 function queryManager(source) { return source === 'voyage' ? voyage : database; }
-function requireDate(value, name = 'date') {
-  const date = requireString(value, name);
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new RequestError(400, 'INVALID_DATE', `${name} 必须是 YYYY-MM-DD`);
-  return date;
-}
 function requireConnected() { if (!ssh.conn) throw new RequestError(409, 'NOT_CONNECTED', '尚未连接服务器，请先点击连接'); }
 function requireSameOrigin(req) {
   if (req.headers['sec-fetch-site'] === 'cross-site') throw new RequestError(403, 'CROSS_ORIGIN_WRITE', '跨站同步请求已拦截');
@@ -205,29 +197,11 @@ async function handle(req, res) {
   const p = url.pathname;
   if (req.method === 'GET' && p === '/api/health') return sendJson(res, 200, { ok: true });
   if (req.method === 'GET' && (p === '/' || p === '/index.html')) return staticFile(res, PUBLIC_DIR, 'index.html');
-  if (req.method === 'GET' && (p === '/style.css' || p === '/app.js' || p === '/favicon.svg')) return staticFile(res, PUBLIC_DIR, p.slice(1));
+  if (req.method === 'GET' && (p === '/style.css' || p === '/favicon.svg')) return staticFile(res, PUBLIC_DIR, p.slice(1));
   if (req.method === 'GET' && p.startsWith('/js/')) return staticFile(res, path.join(PUBLIC_DIR, 'js'), p.slice(4));
   if (req.method === 'GET' && p.startsWith('/shared/')) return staticFile(res, SHARED_DIR, p.slice(8));
   if (p === '/cdr' || p === '/cdr/' || p.startsWith('/cdr/')) return proxy.proxyToCdr(req, res, p === '/cdr' || p === '/cdr/' ? '/' : p.slice(4));
 
-  if (req.method === 'POST' && p === '/api/log/append') {
-    const body = await readBody(req); assertObject(body, ['t', 'cmd', 'badge', 'out', 'date']);
-    requireString(body.cmd, 'cmd');
-    for (const field of ['t', 'badge', 'out']) if (body[field] !== undefined && typeof body[field] !== 'string') throw new RequestError(400, 'INVALID_INPUT', `${field} 必须是字符串`);
-    if (body.date !== undefined) requireDate(body.date);
-    await log.append(body, body.date);
-    return sendJson(res, 200, { ok: true });
-  }
-  if (req.method === 'GET' && p === '/api/log/list') {
-    const rawDate = url.searchParams.get('date');
-    const date = rawDate ? requireDate(rawDate) : log.today();
-    const limit = Number(url.searchParams.get('limit') || 200);
-    const offset = Number(url.searchParams.get('offset') || 0);
-    if (!Number.isInteger(limit) || limit < 1 || !Number.isInteger(offset) || offset < 0) throw new RequestError(400, 'INVALID_INPUT', '日志分页参数必须是合法整数');
-    const result = await log.list(date, { limit, offset });
-    return sendJson(res, 200, { ok: true, date, ...result });
-  }
-  if (req.method === 'GET' && p === '/api/log/dates') return sendJson(res, 200, { ok: true, dates: await log.dates() });
   if (req.method === 'GET' && p === '/api/config') {
     const hdfsTimeoutMs = Math.max(1000, Number(config.hdfsTimeoutMs) || 90000);
     const hbaseTimeoutMs = Math.max(1000, Number(config.hbaseTimeoutMs) || 120000);
@@ -294,9 +268,6 @@ async function handle(req, res) {
   if (req.method === 'POST' && p === '/api/bigdata/connect') {
     const body = await readBody(req); assertObject(body, []); const result = await bigdata.connect(); return sendJson(res, 200, { ok: true, ...result });
   }
-  if (req.method === 'POST' && p === '/api/bigdata/disconnect') {
-    const body = await readBody(req); assertObject(body, []); return sendJson(res, 200, { ok: true, ...bigdata.disconnect() });
-  }
   if (req.method === 'POST' && p === '/api/bigdata/use-ssh') {
     const body = await readBody(req); assertObject(body, []); return sendJson(res, 200, { ok: true, ...bigdata.useSshMode() });
   }
@@ -307,10 +278,6 @@ async function handle(req, res) {
     if (body.token !== undefined && typeof body.token !== 'string') throw new RequestError(400, 'INVALID_INPUT', 'token 必须是字符串');
     const result = await voyage.connect(body.token === undefined ? {} : { token: body.token }); return sendJson(res, 200, { ok: true, ...result });
   }
-  if (req.method === 'POST' && p === '/api/voyage/disconnect') {
-    const body = await readBody(req); assertObject(body, []); await voyage.disconnect(); return sendJson(res, 200, { ok: true, ...voyage.status() });
-  }
-  if (req.method === 'GET' && p === '/api/redis/status') return sendJson(res, 200, { ok: true, config: redisArchive.defaults() });
   if (req.method === 'POST' && p === '/api/redis-index/lookup') {
     const body = await readBody(req); assertObject(body, ['inputType', 'value']);
     const result = await runQueryRequest(req, res, (signal) => redisIndexes.lookup(body.inputType, body.value, { signal }));
@@ -353,14 +320,10 @@ async function handle(req, res) {
     if (body.port !== undefined && (!Number.isInteger(Number(body.port)) || Number(body.port) < 1 || Number(body.port) > 65535)) throw new RequestError(400, 'INVALID_INPUT', 'port 必须是 1-65535 的整数');
     const connected = await database.connect(source, body); return sendJson(res, 200, { ok: true, source: source.toLowerCase(), config: connected });
   }
-  if (req.method === 'POST' && p === '/api/db/disconnect') {
-    const body = await readBody(req); assertObject(body, ['source']); const source = requireString(body.source, 'source'); await database.disconnect(source); return sendJson(res, 200, { ok: true, source: source.toLowerCase() });
-  }
   if (req.method === 'POST' && p === '/api/query/phone') {
     const body = await readBody(req); assertObject(body, ['phone', 'source', 'schema']); const source = requireQuerySource(body.source); const schema = requireQuerySchema(body.schema, source);
     const result = await runQueryRequest(req, res, (signal) => phoneQuery.queryPhone(queryManager(source), requireString(body.phone, 'phone'), { signal, source, schema })); return sendJson(res, 200, { ok: true, result });
   }
-  if (req.method === 'GET' && p === '/api/query/relations/catalog') return sendJson(res, 200, { ok: true, queries: RELATION_QUERIES });
   if (req.method === 'POST' && p === '/api/query/relations') {
     const body = await readBody(req); assertObject(body, ['mode', 'id', 'peerProductInstanceId', 'peerAccountId']);
     const result = await runQueryRequest(req, res, (signal) => queryArchiveRelations(database, body, { signal }));
@@ -407,15 +370,6 @@ async function handle(req, res) {
     try { const result = await ssh.execCommand('echo $HOME'); home = result.stdout?.trim().split('\n').pop() || '~'; } catch (_) {}
     if (!bigdata.usingClient()) void hdfs.warmupHdfs();
     return sendJson(res, 200, { ok: true, config: cfg, home });
-  }
-  if (req.method === 'POST' && p === '/api/disconnect') { bigdata.disconnect(); ssh.disconnect(); return sendJson(res, 200, { ok: true }); }
-  if (req.method === 'POST' && p === '/api/exec') {
-    const body = await readBody(req); assertObject(body, ['cmd', 'timeout', 'confirmed']);
-    const cmd = requireString(body.cmd, 'cmd');
-    if (ssh.isDangerousCommand(cmd) && body.confirmed !== true) throw new RequestError(409, 'CONFIRMATION_REQUIRED', '删除类命令需要确认', false, { command: cmd });
-    requireConnected();
-    const result = await ssh.execCommand(cmd, body.timeout);
-    return sendJson(res, 200, { ok: true, ...result });
   }
   if (req.method === 'POST' && p === '/api/sftp/list') {
     const body = await readBody(req); assertObject(body, ['path']); requireConnected(); if (body.path !== undefined && typeof body.path !== 'string') throw new RequestError(400, 'INVALID_INPUT', 'path 必须是字符串');

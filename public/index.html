@@ -138,16 +138,16 @@
       </form>
 <p id="redisHandoff" class="handoff-note hidden"></p></div>
 <div class="redis-task-body">
-<section id="redisPanel-archive" data-redis-panel="archive" role="tabpanel" aria-labelledby="redisTab-archive"><div id="redisState" class="redis-state" role="status" aria-live="polite"></div><div id="redisResults" class="redis-results" aria-live="polite"></div></section>      <section id="redisPanel-sync" role="tabpanel" aria-labelledby="redisTab-sync" class="redis-sync-panel hidden" data-redis-panel="sync" aria-labelledby="redisSyncTitle">
-        <h2 id="redisSyncTitle">PG → Redis 同步</h2>
+<section id="redisPanel-archive" data-redis-panel="archive" role="tabpanel" aria-labelledby="redisTab-archive"><div id="redisState" class="redis-state" role="status" aria-live="polite"></div><div id="redisResults" class="redis-results" aria-live="polite"></div></section>      <section id="redisPanel-sync" role="tabpanel" aria-labelledby="redisTab-sync" class="redis-sync-panel hidden" data-redis-panel="sync">
+        <h2>PG → Redis 同步</h2>
         <p class="query-help">按 ID + his_id 更新已有字段并追加根产品直接订购关系及销售品实例；预览列明目标分组和新增值。其他新增类型仅核对，PG 缺失记录保持原值。写前备份、保留 TTL，只作用于上方指定 key。</p>
         <details><summary>表范围与时间解释</summary><div id="redisSyncTables" class="redis-sync-tables"></div><label class="redis-sync-timezone">PG 无时区时间<select id="redisSyncTimezone" class="wb-field"><option value="+08:00">北京时间 UTC+8（当前样本）</option><option value="Z">UTC</option></select></label></details>
         <div class="redis-sync-actions"><button id="btnRedisSyncPreview" class="wb-button" type="button">从 PG 生成差异预览</button><button id="btnRedisSyncConnections" class="wb-button ghost" type="button">连接 PostgreSQL</button></div>
         <p id="redisSyncState" class="wb-status" role="status" aria-live="polite"></p>
         <div id="redisSyncResults"></div><footer class="task-footer"><button id="btnRedisSyncApply" class="wb-button primary" type="button" disabled>确认同步到 Redis</button></footer>
       </section>
-      <section id="redisPanel-indexes" role="tabpanel" aria-labelledby="redisTab-indexes" class="redis-sync-panel hidden" data-redis-panel="indexes" aria-labelledby="redisIndexTitle">
-        <h2 id="redisIndexTitle">新增缺失的号码索引 key</h2>
+      <section id="redisPanel-indexes" role="tabpanel" aria-labelledby="redisTab-indexes" class="redis-sync-panel hidden" data-redis-panel="indexes">
+        <h2>新增缺失的号码索引 key</h2>
         <p class="query-help">从 Redis CPP 的根产品字段分别生成 rate:account 和 rate:accNbr；两种号码不互相替代。手机号先查 accNbr 索引，缺失时从测试 PG 定位实例；完整 CPP 缺失时先导入档案。只补缺失 key，已有内容保留。</p>
         <form id="redisIndexForm" class="redis-index-form">
           <label>输入类型<select id="redisIndexType" class="wb-field"><option value="instance">产品实例 ID / rate:cpp 主键</option><option value="phone">手机号 / 接入号码（acc_nbr）</option></select></label>

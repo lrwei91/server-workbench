@@ -17,7 +17,7 @@
 
 ## 新增关系场景
 
-接口 `POST /api/query/relations` 仅接受固定 `mode`、`id` 以及对端检查的 `peerProductInstanceId` / 可选 `peerAccountId`。`GET /api/query/relations/catalog` 返回场景与链路说明。页面各场景的输入标签随所选模式变化。
+接口 `POST /api/query/relations` 仅接受固定 `mode`、`id` 以及对端检查的 `peerProductInstanceId` / 可选 `peerAccountId`。页面各场景的输入标签随所选模式变化。
 
 |mode|输入|链路|
 |---|---|---|

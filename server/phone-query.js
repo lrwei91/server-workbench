@@ -121,7 +121,6 @@ const SQL = {
   eventSubscriptionOffers: 'SELECT DISTINCT o.* FROM event_pricing_strategy eps JOIN pricing_combine pc ON pc.EVENT_PRICING_STRATEGY_ID = eps.EVENT_PRICING_STRATEGY_ID JOIN offer o ON o.PRICING_PLAN_ID = pc.PRICING_PLAN_ID WHERE eps.EVENT_TYPE_ID >= ? AND eps.EVENT_TYPE_ID < ? ORDER BY CASE WHEN o.STATUS_CD = \'1000\' THEN 0 ELSE 1 END, o.OFFER_ID LIMIT 20',
   pricingCombineByStrategy: `SELECT * FROM pricing_combine WHERE EVENT_PRICING_STRATEGY_ID = ? LIMIT ${STEP_LIMIT}`,
   pricingObject: `SELECT * FROM pricing_object WHERE PRICING_OBJECT_ID = ? LIMIT ${STEP_LIMIT}`,
-  offersByPricingPlan: `SELECT * FROM offer WHERE PRICING_PLAN_ID = ? LIMIT ${STEP_LIMIT}`,
   offerInstancesByOffer: 'SELECT * FROM offer_inst WHERE OFFER_ID = ? LIMIT 3',
   allOfferInstancesByOffer: `SELECT * FROM offer_inst WHERE OFFER_ID = ? LIMIT ${STEP_LIMIT}`,
   offerRelationsByInstance: `SELECT * FROM offer_prod_inst_rel WHERE OFFER_INST_ID = ? LIMIT ${STEP_LIMIT}`,
