@@ -28,6 +28,17 @@ jobs:
         shell: bash
         run: test "$GITHUB_REF_NAME" = "v$(node -p 'require("./package.json").version')"
       - run: npm test
+      - name: Install Chromium for browser regression
+        run: npx playwright install chromium
+      - name: Run browser regression
+        run: npm run test:browser
+      - name: Upload browser test artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-test-results
+          path: test-results/
+          if-no-files-found: ignore
       - name: Build Windows installer (no upload)
         run: npm run desktop:dist
         env:
