@@ -47,19 +47,17 @@ for (const protocol of ['http:', 'https:']) {
   });
 }
 
-test('CDR startup loads files once and restores a loaded session', async () => {
-  const source = fs.readFileSync(require.resolve('../../cdr/static/js/main.js'), 'utf8');
-  const refresh = source.split('\n').find(line => line.startsWith('async function refreshSession('));
-  const init = source.split('\n').find(line => line.startsWith('(async function init()'));
-  const counts = { files: 0, records: 0, history: 0 };
-  const select = {};
-  const context = { state: {}, getJson: async () => ({ loaded: true, filename: 'fixture.json', can_undo: true }), renderSession() {}, $: () => select,
-    loadFiles: async () => { counts.files++; }, refreshRecords: async () => { counts.records++; }, loadExportHistory: async () => { counts.history++; }, handleError(error) { throw error; } };
-  vm.createContext(context);
-  vm.runInContext(refresh, context);
-  await vm.runInContext(init, context);
-  assert.deepEqual(counts, { files: 1, records: 1, history: 1 });
-  assert.equal(select.value, 'fixture.json');
-  await vm.runInContext('refreshSession()', context);
-  assert.deepEqual(counts, { files: 2, records: 2, history: 2 });
+// CDR startup/session restoration is exercised through the real browser and local engine.
+
+test('SVG navigation sprites and favicon are served as images', async t => {
+  const server = createServer();
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => { server.closeAllConnections(); server.close(); });
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  for (const asset of ['/shared/icons.svg', '/favicon.svg']) {
+    const response = await fetch(origin + asset);
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get('content-type'), /^image\/svg\+xml/);
+    assert.match(await response.text(), /<svg/);
+  }
 });

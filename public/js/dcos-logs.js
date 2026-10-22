@@ -26,12 +26,18 @@ export function initDcosLogs() {
     const pods = Array.isArray(state.pods) ? state.pods : null;
     $('#dcosStartWorkload').disabled = state.runningAction || !selectedWorkload || pods === null || pods.length > 0;
     $('#dcosStopWorkload').disabled = state.runningAction || !selectedWorkload || pods === null || pods.length === 0;
+    for (const selector of selectors) if (state.runningAction) $(selector).disabled = true;
+    renderConnection();
+    $('#dcosWorkloadSearch').disabled = state.runningAction;
+    $('#dcosSearchButton').disabled = state.runningAction;
+    if (state.runningAction) { $('#dcosPrevPage').disabled = true; $('#dcosNextPage').disabled = true; }
   }
   function renderConnection(message = '') {
     setText($('#dcosConnectionStatus'), state.connected ? '已连接' : state.configured ? '未连接' : '待配置');
     $('#dcosConnectionDot').classList.toggle('on', state.connected);
-    $('#dcosConnect').disabled = !state.configured || !$('#dcosCookieInput').value.trim();
-    $('#dcosDisconnect').disabled = !state.connected;
+    $('#dcosConnect').disabled = state.runningAction || !state.configured || !$('#dcosCookieInput').value.trim();
+    $('#dcosDisconnect').disabled = state.runningAction || !state.connected;
+    $('#dcosCookieInput').disabled = state.runningAction;
     setText($('#dcosBaseUrl'), state.configured ? state.baseUrl : '待配置');
     setText($('#dcosClusters'), state.clusters.map((cluster) => `${cluster.name} (${cluster.id})`).join('、') || '—');
     setText($('#dcosConnectionError'), message || (state.configured ? 'Cookie 仅保存在本次 Node 进程内存；过期后重新粘贴。' : '请在本机 .env 设置 DCOS_BASE_URL。'));
@@ -45,7 +51,7 @@ export function initDcosLogs() {
     resetFrom(1); renderConnection(message);
   }
   async function loadStatus() {
-    try { applyStatus(await getJson('/api/dcos/status')); }
+    try { applyStatus(await getJson('/api/dcos/status')); if (isActive()) note(state.connected ? '请选择集群。' : state.configured ? '请先在此页粘贴云翼平台 Cookie。' : '请先配置云翼平台连接。'); }
     catch (error) { renderConnection(error.message); }
   }
   function schedule() {
@@ -119,7 +125,10 @@ export function initDcosLogs() {
     try {
       const result = await getJson(q('/api/dcos/logs', { clusterId, namespaceName, podName, containerName, tailingLines: $('#dcosLines').value }), { signal: request.signal, timeout: 30000 });
       if (!request.isCurrent()) return;
-      setText($('#dcosLogText'), result.lines.length ? result.lines.join('\n') : '当前没有日志。');
+      const log = $('#dcosLogText');
+      const position = log.scrollTop;
+      setText(log, result.lines.length ? result.lines.join('\n') : '当前没有日志。');
+      log.scrollTop = $('#dcosFollow').checked ? log.scrollHeight : position;
       const saved = result.saved;
       const savedText = saved?.error ? '本地保存失败' : saved?.appended ? `本地 +${saved.appended} 行` : '本地无新增';
       $('#dcosLogState').title = saved?.path ? `本地日志：${saved.path}` : '';
@@ -148,12 +157,17 @@ export function initDcosLogs() {
       note(`${action === 'stop' ? '已停止' : '已启动'} ${workloadName}，正在刷新 Pod 列表…`, 'success');
       await loadPods();
     } catch (error) { handleError(error); updateWorkloadButtons(); }
-    finally { state.runningAction = false; updateWorkloadButtons(); }
+    finally {
+      state.runningAction = false;
+      for (const selector of selectors) $(selector).disabled = $(selector).options.length <= 1;
+      pageInfo(); updateWorkloadButtons();
+    }
   }
 
   $('#dcosCookieInput').addEventListener('input', () => renderConnection());
   $('#dcosConnect').addEventListener('click', async (event) => {
     event.preventDefault(); event.stopPropagation(); // 折叠卡片内的按钮不应触发 summary 展开/收起
+    if (state.runningAction) return;
     const cookie = $('#dcosCookieInput').value;
     $('#dcosConnect').disabled = true; setText($('#dcosConnectionError'), '正在验证会话…');
     try { applyStatus(await postJson('/api/dcos/connect', { cookie }, { timeout: 30000 }), '云翼平台会话已连接。'); note('请选择集群。'); }
@@ -162,6 +176,7 @@ export function initDcosLogs() {
   });
   $('#dcosDisconnect').addEventListener('click', async (event) => {
     event.preventDefault(); event.stopPropagation();
+    if (state.runningAction) return;
     try { cancelRequests(); applyStatus(await postJson('/api/dcos/disconnect', {}), '已断开云翼平台会话。'); setText($('#dcosLogText'), ''); note('请重新连接云翼平台。'); }
     catch (error) { renderConnection(error.message); }
   });
@@ -186,10 +201,23 @@ export function initDcosLogs() {
     if (pending) void runWorkloadAction(pending);
   });
   $('#dcosAutoRefresh').addEventListener('change', schedule);
+  $('#dcosFollow').addEventListener('change', () => { if ($('#dcosFollow').checked) $('#dcosLogText').scrollTop = $('#dcosLogText').scrollHeight; });
+  $('#dcosLogText').addEventListener('scroll', () => {
+    const log = $('#dcosLogText');
+    if (log.scrollHeight - log.scrollTop - log.clientHeight > 24) $('#dcosFollow').checked = false;
+  });
   document.addEventListener('visibilitychange', () => { if (document.hidden) cancelLogRequest(); else if (isActive() && $('#dcosAutoRefresh').checked) void loadLogs(); });
   void loadStatus();
   return {
-    activate() { if (!state.connected) note('请先在此页粘贴云翼平台 Cookie。'); schedule(); },
+    activate() {
+      if (!state.connected) { note('请先在此页粘贴云翼平台 Cookie。'); return; }
+      if (state.runningAction) return;
+      if ($('#dcosCluster').value && $('#dcosNamespace').options.length <= 1) void loadNamespaces();
+      else if ($('#dcosNamespace').value && $('#dcosWorkload').options.length <= 1) void loadWorkloads();
+      else if ($('#dcosWorkload').value && state.pods === null) void loadPods();
+      else if ($('#dcosContainer').value && !$('#dcosLogText').textContent) void loadLogs();
+      else schedule();
+    },
     deactivate() { cancelRequests(); },
   };
 }

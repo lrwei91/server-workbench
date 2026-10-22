@@ -29,8 +29,8 @@ graph TD
 - `shared/tokens.css` 是纯白工具覆盖：画布/表面白、黑墨层级、荧光黄主操作与选中、蓝色焦点、独立状态色，视觉旋钮按 4/3/6 控制密度、圆角和阴影。
 - `shared/ui.js` 提供统一请求错误模型、可区分的超时/主动取消、DOM 节点创建、状态播报、格式化和原生 `dialog` 焦点进入/恢复。
 - `shared/icons.svg` 为图标精灵。主工作台和 CDR 前端均使用 `textContent`/节点构造渲染远端数据，不把文件名、路径、字段值拼入 `innerHTML`。
-- 主工作台采用「资源浏览与查询」「Redis 档案」「进程日志」「话单工具」四个一级侧边栏入口；资源页保持 PC 双栏，资源浏览与数据库查询宽度比例为 1:1.5。连接弹窗按环境分组并默认收起，测试环境展示 SSH/SFTP、HDFS/HBase 客户端服务、MySQL/UDAL、Doris 和 PostgreSQL 独立连接，工程环境展示 Voyage 在线数据库；云翼平台会话连接移至进程日志页面。资源页分别标明 SSH 状态与 HDFS/HBase 当前读取方式，查询来源状态位于查询面板。
-- 右侧固定查询恢复环境选择：测试环境档案查 PostgreSQL `bill_inmemory`、配置查 MySQL/UDAL `CONFIGDB_CNOS_JF_TEST`；工程环境经 Voyage 查询，可选择 `bill_inmemory` / `crmv3`。前端按所选源检查连接并传递 source/schema，切换时取消旧请求并清空结果。号码不等于产品实例 ID，同一号码可能含多个实例/历史；bill_inmemory 实例档案保留 `his_id` 与一跳关系，crmv3 沿用工程档案查询路径。关系链固定 PG/MySQL、Redis 同步固定 PG，不受环境选择影响。
+- 主工作台采用资源浏览、数据库查询、Redis 档案、进程日志、话单工具五个独立工作区。`navigation.js` 管理仅含枚举的 hash 路由，`connections.js` 管理相关源状态与右侧连接抽屉，`resource-ui.js` 管理路径编辑、面包屑与行操作菜单，`query-results.js` 管理表格及结果分组，`redis-ui.js` 管理 Redis 子页。页面节点和 CDR iframe 在切页时保留；只有日志页处于前台时恢复其轮询。收藏、备注沿用原存储格式，查询数据与预览不持久化。
+- 数据库查询页保留环境选择：测试环境档案查 PostgreSQL `bill_inmemory`、配置查 MySQL/UDAL `CONFIGDB_CNOS_JF_TEST`；工程环境经 Voyage 查询，可选择 `bill_inmemory` / `crmv3`。前端按所选源检查连接并传递 source/schema，切换时取消旧请求并清空结果。号码不等于产品实例 ID，同一号码可能含多个实例/历史；bill_inmemory 实例档案保留 `his_id` 与一跳关系，crmv3 沿用工程档案查询路径。关系链固定 PG/MySQL、Redis 同步固定 PG，不受环境选择影响。
 - PG查询复用逻辑到物理表/字段映射：`prod_inst_acct_rel → prod_inst_acct`、`offer_inst → prod_offer_inst`、`offer_inst_rel → prod_offer_inst_rel`、`acc_num → acc_nbr`、销售品关系A/Z字段等；保留物理原值并提供逻辑兼容字段。配置查询不套用该映射，套餐定义读取MySQL `offer`。新增独立“关系链查询”覆盖产品/销售品正反向、功能产品、群主、三类非产品群及对端成员诊断；结果是带履历/状态/角色的原始候选，详见 [档案查询与关系链](./docs/archive-relations.md)。
 - “查询套餐”按规格offer_id读取MySQL定义和定价，从PG反查订购销售品实例、产品关系及产品实例。“查询事件类型”保留MySQL事件格式、入库路由、定价策略/组合查询，订购实例与产品关联转查PG。每一步记录实际来源，单分支失败保留已成功数据。
 - 阈值查询以 A 端产品实例 ID 为入口，分步读取 `prod_inst_rel`、产品规格为 `900178630` 的 `prod_inst`，以及六个固定档位属性对应的 `prod_inst_attr`，避免 UDAL 子查询路由限制。
@@ -72,4 +72,4 @@ graph TD
 
 Node builtin tests 覆盖 shell 转义、危险删除、真实错误状态、日志分页；Python unittest 覆盖非法 NDJSON、混合类型、ID 生成、批量一致性、版本/容量/原子导出等。测试使用假数据和临时目录，不接触真实凭据。
 
-浏览器验收按受影响流程和布局变化选择环境，规则见本地协作指引 `AGENTS.md`（该文件不随仓库分发）。真实 SSH/SFTP/HDFS smoke 需要本机 `.env` 和已安装 `ssh2`。
+`npm run test:browser` 运行 Playwright，用隔离的真实 CDR 引擎和模拟的远端接口覆盖页面切换、结果分组、ID 联动、取消/过期响应、Redis 写入保护、日志轮询及话单操作。布局测试包含 1024/1366/1920 宽度和 125%/150% 缩放对应的有效 CSS 视口，截图保存在忽略提交的 `outputs/ui-redesign/`。首次运行需 `npx playwright install chromium`；可用 `WORKBENCH_BROWSER_CHANNEL=chrome` 选择本机 Chrome，或用 `WORKBENCH_PYTHON` 指定测试服务的 Python。真实 SSH/SFTP/HDFS smoke 仍需本机 `.env` 和内网；有效视口测试不替代 Windows 实机验收。

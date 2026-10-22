@@ -1,19 +1,19 @@
 import { $, $$, el, getJson, postJson, formatBytes, formatDate, createRequestGate } from '/shared/ui.js';
 
-export function initRedisSync({ confirm, refresh, openConnections }) {
+export function initRedisSync({ confirm, refresh, openConnections, isWriting, acquireWrite, releaseWrite }) {
   const gate = createRequestGate();
   let preview = null, busy = false;
   const key = () => $('#redisKeyInput').value.trim();
-  const message = (text, tone = '') => { $('#redisSyncState').textContent = text; $('#redisSyncState').dataset.tone = tone; };
+  const message = (text, tone = '') => { $('#redisSyncState').textContent = text; $('#redisSyncState').dataset.tone = tone; if ($('#redisPage').dataset.task === 'history') { $('#redisHistoryState').textContent = text; $('#redisHistoryState').dataset.tone = tone; } };
   const options = () => ({ tables: $$('input[name="redisSyncTable"]:checked').map((input) => input.value), timestampZone: $('#redisSyncTimezone').value });
   function controls() {
-    $('#btnRedisSyncPreview').disabled = busy;
-    $('#btnRedisSyncApply').disabled = busy || !preview?.canApply;
-    $('#btnRedisSyncHistory').disabled = busy;
-    $('#redisKeyInput').disabled = busy;
-    $('#redisSyncTimezone').disabled = busy;
-    $$('input[name="redisSyncTable"]').forEach((input) => { input.disabled = busy; });
-    $$('[data-redis-restore]').forEach((button) => { button.disabled = busy || button.dataset.restoreAllowed !== 'true'; });
+    $('#btnRedisSyncPreview').disabled = busy || isWriting();
+    $('#btnRedisSyncApply').disabled = busy || isWriting() || !preview?.canApply;
+    $('#btnRedisSyncHistory').disabled = busy || isWriting();
+    $('#redisKeyInput').disabled = busy || isWriting();
+    $('#redisSyncTimezone').disabled = busy || isWriting();
+    $$('input[name="redisSyncTable"]').forEach((input) => { input.disabled = busy || isWriting(); });
+    $$('[data-redis-restore]').forEach((button) => { button.disabled = busy || isWriting() || button.dataset.restoreAllowed !== 'true'; });
   }
   function invalidate() {
     gate.cancel(); preview = null; controls();
@@ -54,6 +54,7 @@ export function initRedisSync({ confirm, refresh, openConnections }) {
     if (result.changesTruncated) root.append(el('p', { text: '页面仅展示前 200 处差异，确认后同步全部预览差异。' }));
   }
   async function loadHistory(target = key()) {
+    if (!/^(?:rate:cpp:)?\d{1,20}$/.test(target)) throw new Error('请输入有效产品实例 ID 或 rate:cpp 主键');
     const response = await postJson('/api/redis-sync/history', { key: target });
     if (key() !== target) return;
     const root = $('#redisSyncHistory'); root.replaceChildren();
@@ -64,18 +65,20 @@ export function initRedisSync({ confirm, refresh, openConnections }) {
         'data-restore-allowed': String(['applied', 'pending', 'uncertain'].includes(backup.status)),
         disabled: busy || !['applied', 'pending', 'uncertain'].includes(backup.status), on: { click: () => {
           confirm(target, `恢复 ${formatDate(backup.createdAt, { withZone: true })} 同步前的原始值及原过期时间。若当前 Redis 已被后续修改，恢复将停止。`, async () => {
-            if (key() !== target || busy) return;
+            if (key() !== target || busy || !acquireWrite()) return;
             busy = true; preview = null; controls(); message('正在恢复并回读校验…');
             try { const response = await postJson('/api/redis-sync/restore', { backupId: backup.backupId, confirmed: true }, { timeout: 65000 }); message(`恢复成功，回读已验证 · ${response.result.backupId}`, 'success'); await refresh(); await loadHistory(target).catch(historyError); }
             catch (error) { message(error.message, 'error'); }
-            finally { busy = false; controls(); }
+            finally { busy = false; releaseWrite(); controls(); }
           });
         } } });
       root.append(el('div', { class: 'redis-sync-history-row' }, el('span', { text: `${formatDate(backup.createdAt, { withZone: true })} · ${statuses[backup.status] || backup.status} · ${backup.changedFields} 处字段 · 新增 ${backup.addedRecords || 0} 条 · ${backup.backupId}` }), button));
     });
   }
   function historyError(error) { $('#redisSyncHistory').replaceChildren(el('p', { class: 'redis-sync-warning', text: `同步记录读取失败：${error.message}。可点击「同步记录 / 恢复」重试。` })); }
+  document.addEventListener('redis:write-state', controls);
   $('#btnRedisSyncPreview').addEventListener('click', async () => {
+    if (busy || isWriting()) return;
     const target = key();
     if (!/^(?:rate:cpp:)?\d+$/.test(target)) { message('请输入产品实例 ID 或 rate:cpp 主键', 'error'); return; }
     const selected = options();
@@ -88,23 +91,24 @@ export function initRedisSync({ confirm, refresh, openConnections }) {
       message(preview.blockers.length ? '预览存在阻断项，先核对数据。' : preview.unresolvedRecords || preview.recordComparison?.complete === false ? '预览完成：存在仅核对记录或覆盖缺口，请核对处理方式；仅写入已纳入候选的字段和新增订购。' : preview.canApply ? `预览完成：${preview.changedFields} 处字段差异、${preview.addedRecords || 0} 条待追加；写前备份并保留 TTL。` : '预览完成，限定范围内无待写入差异。', preview.blockers.length || preview.unresolvedRecords || preview.recordComparison?.complete === false ? 'warning' : 'success');
       await loadHistory(target).catch(historyError);
     } catch (error) { if (request.isCurrent()) message(error.message, 'error'); }
-    finally { busy = false; controls(); }
+    finally { if (request.isCurrent()) { busy = false; controls(); } }
   });
   $('#btnRedisSyncApply').addEventListener('click', () => {
     const selected = preview, target = key();
-    if (!selected?.canApply || busy) return;
+    if (!selected?.canApply || busy || isWriting()) return;
     confirm(selected.key, `将当前 PG 预览的 ${selected.changedFields} 处字段差异及 ${selected.addedRecords || 0} 条新增订购记录写入此 Redis 档案。另有 ${selected.unresolvedRecords || 0} 条新增记录仅核对、不写入。${selected.timeAdjustmentCount ? `${selected.timeAdjustmentCount} 个时间字段按预览由微秒截至毫秒，不四舍五入。` : ''}PG 缺失记录保持原值；自动备份旧值、保留 TTL 并回读验证。`, async () => {
-      if (preview !== selected || key() !== target || busy) { message('选择已变化，请重新预览', 'error'); return; }
+      if (preview !== selected || key() !== target || busy || isWriting()) { message('选择已变化，请重新预览', 'error'); return; }
+      if (!acquireWrite()) return;
       busy = true; preview = null; controls(); message('正在备份、同步并回读校验…');
       try {
         const response = await postJson('/api/redis-sync/apply', { previewId: selected.previewId, confirmed: true }, { timeout: 65000 });
         message(`同步成功，回读已验证 · ${response.result.changedFields} 处字段 · 新增 ${response.result.addedRecords || 0} 条 · 备份 ${response.result.backupId}`, 'success');
         await refresh(); await loadHistory(target).catch(historyError);
       } catch (error) { message(`${error.message}${error.details?.backupId ? ` · 备份 ${error.details.backupId} · 请查看同步记录` : ''}`, 'error'); await loadHistory(target).catch(() => {}); }
-      finally { busy = false; controls(); }
+      finally { busy = false; releaseWrite(); controls(); }
     });
   });
-  $('#btnRedisSyncHistory').addEventListener('click', () => { void loadHistory().catch((error) => message(error.message, 'error')); });
+  $('#btnRedisSyncHistory').addEventListener('click', () => { void loadHistory().catch(historyError); });
   $('#btnRedisSyncConnections').addEventListener('click', openConnections);
   $('#redisKeyInput').addEventListener('input', () => { invalidate(); $('#redisSyncHistory').replaceChildren(); });
   $('#redisSyncTimezone').addEventListener('change', invalidate);

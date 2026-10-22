@@ -95,3 +95,31 @@ export class DialogController {
   }
   onCancel(event) { event.preventDefault(); this.close(); }
 }
+
+/** Roving tab focus shared by resource, query, Redis and CDR tool tabs. */
+export function initTabKeyboard(root = document) {
+  root.addEventListener('keydown', event => {
+    const tab = event.target.closest('[role="tab"]');
+    if (!tab || !['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+    const tabs = $$('[role="tab"]', tab.closest('[role="tablist"]')).filter(item => !item.disabled);
+    const index = tabs.indexOf(tab);
+    const next = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : (index + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+    event.preventDefault(); tabs[next]?.click(); tabs[next]?.focus();
+  });
+  root.addEventListener('click', event => {
+    const tab = event.target.closest('[role="tab"]');
+    if (tab) $$('[role="tab"]', tab.closest('[role="tablist"]')).forEach(item => { item.tabIndex = item === tab ? 0 : -1; });
+  });
+  $$('[role="tablist"]', root).forEach(list => $$('[role="tab"]', list).forEach((tab, index) => { tab.tabIndex = tab.getAttribute('aria-selected') === 'true' || (index === 0 && !list.querySelector('[aria-selected="true"]')) ? 0 : -1; }));
+}
+
+export function initDrawerControls(root = document) {
+  root.addEventListener('click', event => {
+    const button = event.target.closest('[data-drawer-expand]');
+    if (!button) return;
+    const drawer = document.getElementById(button.dataset.drawerExpand);
+    const expanded = drawer.classList.toggle('expanded');
+    button.textContent = expanded ? '收起' : '展开';
+    button.setAttribute('aria-expanded', String(expanded));
+  });
+}

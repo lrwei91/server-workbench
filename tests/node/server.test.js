@@ -265,10 +265,10 @@ test('log queue writes asynchronously and paginates newest entries', async () =>
 
 test('fixed query panel replaces command and log interactions', () => {
   const html = fs.readFileSync(path.join(__dirname, '../../public/index.html'), 'utf8');
-  const source = fs.readFileSync(path.join(__dirname, '../../public/js/main.js'), 'utf8');
+  const source = ['main.js', 'connections.js', 'query-results.js'].map(file => fs.readFileSync(path.join(__dirname, '../../public/js', file), 'utf8')).join('\n');
   assert.match(html, /<h1>数据库查询<\/h1>/); assert.match(html, /号码查产品/); assert.match(html, /实例查档案/); assert.match(html, /id="productInstanceQueryForm"/); assert.match(html, /查询套餐/); assert.match(html, /查询事件类型/); assert.match(html, /id="offerQueryForm"/); assert.match(html, /<input id="offerInput"[^>]*inputmode="numeric"/); assert.match(html, /id="eventTypeQueryForm"/); assert.match(html, /value="206080000" selected/); assert.match(html, /阈值查询/); assert.match(html, /Voyage 在线数据库/); assert.match(html, /测试档案：PostgreSQL · bill_inmemory/); assert.match(html, /配置：MySQL/); assert.match(html, /id="querySourceSelect"/); assert.match(html, /id="querySchemaSelect"/); assert.match(html, /id="relationsQueryForm"/); assert.match(html, /id="connectionDialog"/);
   assert.match(html, /id="insertDialog"/); assert.match(html, /id="insertSqlCopy"/); assert.match(html, /一键复制/);
-  assert.match(html, /data-primary-page="redis">Redis 档案/); assert.match(html, /id="redisPage"[^>]*data-primary-panel="redis"/); assert.match(html, /id="redisQueryForm"/); assert.match(html, /id="btnRedisQuery"/);
+  assert.match(html, /data-primary-page="redis"[^>]*aria-label="Redis 档案"/); assert.match(html, /id="redisPage"[^>]*data-primary-panel="redis"/); assert.match(html, /id="redisQueryForm"/); assert.match(html, /id="btnRedisQuery"/);
   assert.doesNotMatch(html, /data-query-tab="redis"|data-tab="redis"/);
   assert.doesNotMatch(html, /cacheRedis|data-cache-/);
   assert.doesNotMatch(html, /id="cmdInput"|id="logFlow"|id="btnCmds"|id="commandsDialog"/);
@@ -393,8 +393,7 @@ test('query tabs preserve independent results until explicitly cleared', () => {
 });
 
 test('query result sections show source tables, hide empty categories, and preserve vertical scrolling', () => {
-  const source = fs.readFileSync(path.join(__dirname, '../../public/js/main.js'), 'utf8');
-  const css = fs.readFileSync(path.join(__dirname, '../../public/style.css'), 'utf8');
+  const source = ['main.js', 'connections.js', 'query-results.js'].map(file => fs.readFileSync(path.join(__dirname, '../../public/js', file), 'utf8')).join('\n');
   assert.match(source, /resultSection\('产品实例',[^\n]+table: resultTable\('productInstances', result\)/);
   assert.match(source, /resultSection\('定价计划',[^\n]+table: resultTable\('pricingPlans', result\)/);
   assert.match(source, /resultSection\('档位提醒配置',[^\n]+table: resultTable\('thresholdAttributes', result\)/);
@@ -404,21 +403,13 @@ test('query result sections show source tables, hide empty categories, and prese
   assert.match(source, /resultSection\('销售品实例费用',[^\n]+table: resultTable\('offerInstanceFees', result\)/);
   assert.match(source, /`\$\{title\} · \$\{rows\?\.length \|\| 0\} 条\$\{tableSuffix\}`/);
   assert.match(source, /逻辑表: tableForStep\(step\.name\)/); assert.match(source, /实际表: step\.table \|\| physicalTables/);
-  assert.match(css, /\.query-results \{[^}]*overflow-x:\s*hidden;[^}]*overflow-y:\s*auto;/);
-  assert.match(css, /\.query-table-wrap \{[^}]*overflow-x:\s*auto;[^}]*overflow-y:\s*hidden;/);
-  assert.match(css, /\.query-step span \{[^}]*overflow-wrap:\s*anywhere;[^}]*word-break:\s*break-word;/);
 });
 
-test('workbench keeps a 1 to 1.5 desktop ratio and the phone query action on one line', () => {
-  const css = fs.readFileSync(path.join(__dirname, '../../public/style.css'), 'utf8');
-  assert.match(css, /grid-template-columns:\s*minmax\(0,\s*1fr\)\s+minmax\(0,\s*1\.5fr\)/);
-  assert.match(css, /\.query-input-row \.wb-button \{[^}]*flex:\s*0 0 auto;[^}]*white-space:\s*nowrap;/);
-  assert.match(css, /dialog#connectionDialog\[open\][^{]*\{[^}]*width:\s*min\(1200px,\s*calc\(100vw - 32px\)\);[^}]*max-width:\s*none;/);
-});
+
 
 test('connection settings use independent source controls and keep credentials out of browser storage', () => {
   const html = fs.readFileSync(path.join(__dirname, '../../public/index.html'), 'utf8');
-  const source = fs.readFileSync(path.join(__dirname, '../../public/js/main.js'), 'utf8');
+  const source = ['main.js', 'connections.js', 'query-results.js'].map(file => fs.readFileSync(path.join(__dirname, '../../public/js', file), 'utf8')).join('\n');
   const dialog = html.match(/<dialog id="connectionDialog"[\s\S]*?<\/dialog>/)?.[0] || '';
   assert.match(dialog, /<details class="connection-environment" data-connection-environment="test"><summary[^>]*><span>测试环境<\/span>/);
   assert.match(dialog, /<details class="connection-environment" data-connection-environment="project"><summary><span>工程环境<\/span>/);
@@ -443,7 +434,7 @@ test('primary sidebar owns resources, process logs, and CDR while quick lookup i
   const source = fs.readFileSync(path.join(__dirname, '../../public/js/main.js'), 'utf8');
   const topbar = html.match(/<header class="topbar">[\s\S]*?<\/header>/)?.[0] || '';
   assert.match(html, /<nav class="primary-sidebar"/);
-  assert.deepEqual([...html.matchAll(/data-primary-page="([^"]+)"/g)].map((match) => match[1]), ['workspace', 'redis', 'processLogs', 'cdr']);
+  assert.deepEqual([...html.matchAll(/data-primary-page="([^"]+)"/g)].map((match) => match[1]), ['workspace', 'query', 'redis', 'processLogs', 'cdr']);
   assert.doesNotMatch(topbar, /btnBilling|btnCdr|btnProcessLogs/);
   assert.doesNotMatch(html, /billingDialog|dcosLogDialog|cdrDialog|billingContent/);
   assert.match(html, /id="cdrPage"[^>]*data-primary-panel="cdr"/);

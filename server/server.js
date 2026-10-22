@@ -178,6 +178,7 @@ function contentType(file) {
   if (file.endsWith('.html')) return 'text/html; charset=utf-8';
   if (file.endsWith('.css')) return 'text/css; charset=utf-8';
   if (file.endsWith('.js')) return 'application/javascript; charset=utf-8';
+  if (file.endsWith('.svg')) return 'image/svg+xml; charset=utf-8';
   return 'application/octet-stream';
 }
 async function staticFile(res, base, relative) {
@@ -204,7 +205,7 @@ async function handle(req, res) {
   const p = url.pathname;
   if (req.method === 'GET' && p === '/api/health') return sendJson(res, 200, { ok: true });
   if (req.method === 'GET' && (p === '/' || p === '/index.html')) return staticFile(res, PUBLIC_DIR, 'index.html');
-  if (req.method === 'GET' && (p === '/style.css' || p === '/app.js')) return staticFile(res, PUBLIC_DIR, p.slice(1));
+  if (req.method === 'GET' && (p === '/style.css' || p === '/app.js' || p === '/favicon.svg')) return staticFile(res, PUBLIC_DIR, p.slice(1));
   if (req.method === 'GET' && p.startsWith('/js/')) return staticFile(res, path.join(PUBLIC_DIR, 'js'), p.slice(4));
   if (req.method === 'GET' && p.startsWith('/shared/')) return staticFile(res, SHARED_DIR, p.slice(8));
   if (p === '/cdr' || p === '/cdr/' || p.startsWith('/cdr/')) return proxy.proxyToCdr(req, res, p === '/cdr' || p === '/cdr/' ? '/' : p.slice(4));

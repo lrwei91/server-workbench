@@ -1,17 +1,17 @@
 import { $, el, postJson, createRequestGate } from '/shared/ui.js';
 
-export function initRedisIndexes({ confirm, openConnections }) {
+export function initRedisIndexes({ confirm, openConnections, isWriting, acquireWrite, releaseWrite }) {
   const gate = createRequestGate();
   let preview = null, loading = false, writing = false;
   const state = (text, tone = '') => { $('#redisIndexState').textContent = text; $('#redisIndexState').dataset.tone = tone; };
   const resultRoot = $('#redisIndexResults');
   const targetText = (result) => result.target ? `${result.target.host}:${result.target.port} / DB${result.target.db}` : '当前配置的 Redis DB';
   function controls() {
-    $('#btnRedisIndexLookup').disabled = loading || writing;
-    $('#btnRedisIndexPreview').disabled = loading || writing || !$('#redisIndexCandidate').value;
-    $('#btnRedisIndexApply').disabled = loading || writing || !preview?.canApply;
+    $('#btnRedisIndexLookup').disabled = loading || writing || isWriting();
+    $('#btnRedisIndexPreview').disabled = loading || writing || isWriting() || !$('#redisIndexCandidate').value;
+    $('#btnRedisIndexApply').disabled = loading || writing || isWriting() || !preview?.canApply;
     $('#btnRedisIndexCancel').classList.toggle('hidden', !loading);
-    for (const id of ['redisIndexType', 'redisIndexInput', 'redisIndexCandidate']) $(`#${id}`).disabled = writing;
+    for (const id of ['redisIndexType', 'redisIndexInput', 'redisIndexCandidate']) $(`#${id}`).disabled = writing || isWriting();
   }
   function invalidate(clearCandidates = true) {
     gate.cancel(); preview = null; loading = false; resultRoot.replaceChildren();
@@ -36,8 +36,9 @@ export function initRedisIndexes({ confirm, openConnections }) {
     preview = response.result; render(preview);
     state(preview.canApply ? '预览完成，请核对字段映射及所选实例；确认后仅创建缺失 key。' : '没有待新增 key；已有 key 不做覆盖或成员修复。', preview.canApply ? 'warning' : 'success');
   }
+  document.addEventListener('redis:write-state', controls);
   $('#redisIndexForm').addEventListener('submit', async (event) => {
-    event.preventDefault(); if (writing || loading) return;
+    event.preventDefault(); if (writing || loading || isWriting()) return;
     const value = $('#redisIndexInput').value.trim(), inputType = $('#redisIndexType').value;
     if (!(inputType === 'instance' ? /^(?:rate:cpp:)?\d{1,20}$/ : /^\d{1,20}$/).test(value)) { state('请输入有效实例 ID 或手机号', 'error'); return; }
     invalidate(); const request = gate.next(); loading = true; controls(); state('正在定位实例，仅读取数据…');
@@ -53,7 +54,7 @@ export function initRedisIndexes({ confirm, openConnections }) {
     finally { if (request.isCurrent()) { loading = false; controls(); } }
   });
   $('#btnRedisIndexPreview').addEventListener('click', async () => {
-    if (loading || writing || !$('#redisIndexCandidate').value) return;
+    if (loading || writing || isWriting() || !$('#redisIndexCandidate').value) return;
     invalidate(false); const request = gate.next(); loading = true; controls(); state('正在读取 CPP 与索引状态…');
     try { await readPreview(request); }
     catch (error) { if (request.isCurrent()) state(error.message, 'error'); }
@@ -61,10 +62,11 @@ export function initRedisIndexes({ confirm, openConnections }) {
   });
   $('#btnRedisIndexApply').addEventListener('click', () => {
     const selected = preview;
-    if (!selected?.canApply || loading || writing) return;
+    if (!selected?.canApply || loading || writing || isWriting()) return;
     confirm(selected.groups.filter((group) => group.status === 'missing').map((group) => group.key).join('\n'),
       `目标 ${targetText(selected)}：从 ${selected.key} 的根产品字段创建 ${selected.missingKeys} 个缺失 SET key，按 LZ4/Kryo 二进制编码并回读验证。新 key 无 TTL；已有 key 保持原样。仅含所选实例，不保证共享号码的全库成员覆盖。`, async () => {
         if (preview !== selected || writing || loading) { state('输入或选择已变化，请重新预览', 'error'); return; }
+        if (!acquireWrite()) return;
         writing = true; preview = null; controls(); state('正在新增并回读校验；请等待结果，勿重复操作…');
         try {
           const response = await postJson('/api/redis-index/apply', { previewId: selected.previewId, confirmed: true }, { timeout: 65000 });
@@ -72,7 +74,7 @@ export function initRedisIndexes({ confirm, openConnections }) {
           selected.canApply = false; selected.missingKeys = 0;
           selected.groups.forEach((group) => { if (group.status === 'missing') { group.status = 'created'; group.type = 'set'; } }); render(selected);
         } catch (error) { state(`${error.message} · 请重新查询 key 状态后再操作${error.details?.auditId ? ` · 操作记录 ${error.details.auditId}` : ''}`, 'error'); }
-        finally { writing = false; controls(); }
+        finally { writing = false; releaseWrite(); controls(); }
       });
   });
   $('#redisIndexInput').addEventListener('input', () => invalidate());
