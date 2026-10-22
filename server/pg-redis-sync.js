@@ -18,7 +18,7 @@ const TABLES = [
   { group: 'offerInstRels', table: 'prod_offer_inst_rel', pk: 'prod_offer_inst_rel_id', field: 'prodOfferInstRelId' },
   { group: 'accounts', table: 'account', pk: 'account_id', field: 'accountId' },
 ];
-const GROUP_SUFFIX = /(?:First|Second|Third|Fourth|Fifth)Step$/;
+const GROUP_SUFFIX = /(?:First|Second|Third|Fourth|Fifth|Sixth)StepZ?$/;
 const SCOPE_FIELDS = new Set(['prodInstId', 'prodInstAId', 'prodInstZId', 'prodOfferInstId', 'relaProdOfferInstId', 'relatedProdOfferInstId', 'accountId', 'parentProdInstId']);
 const hash = (value) => createHash('sha256').update(value).digest('hex');
 const snake = (value) => value.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`);
@@ -65,15 +65,26 @@ function numericValue(value, original) {
   return number;
 }
 
-function convertPgValue(value, original, type, timestampZone) {
+function convertPgValue(value, original, type, timestampZone, onTimeAdjustment) {
   if (value === null) return null;
   if (/^timestamp/.test(type)) {
-    let text = String(value).replace(' ', 'T');
-    if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(text) || /\.\d{3}\d*[1-9]\d*/.test(text)) throw fail(409, 'FIELD_TIME', '字段时间格式或亚毫秒精度需要核对');
-    if (type === 'timestamp without time zone') text += timestampZone;
-    else text = text.replace(/([+-]\d{2})$/, '$1:00');
+    const rawValue = String(value).trim();
+    const match = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,6}))?(Z|[+-]\d{2}(?::?\d{2})?)?$/.exec(rawValue);
+    if (!match) throw fail(409, 'FIELD_TIME', '字段时间格式需要核对');
+    const [, year, month, day, hour, minute, second, fraction = '', offset] = match;
+    const y = Number(year), m = Number(month), d = Number(day);
+    const days = [31, y % 4 === 0 && (y % 100 !== 0 || y % 400 === 0) ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    if (y === 0 || m < 1 || m > 12 || d < 1 || d > days[m - 1] || Number(hour) > 23 || Number(minute) > 59 || Number(second) > 59) throw fail(409, 'FIELD_TIME', '字段日历日期或时分秒需要核对');
+    const withoutZone = type === 'timestamp without time zone';
+    if ((withoutZone && offset) || (!withoutZone && !offset)) throw fail(409, 'FIELD_TIME', '字段时区与 PG 类型不一致');
+    let zone = withoutZone ? timestampZone : offset;
+    if (/^[+-]\d{2}$/.test(zone)) zone += ':00';
+    else if (/^[+-]\d{4}$/.test(zone)) zone = `${zone.slice(0, 3)}:${zone.slice(3)}`;
+    const text = `${year}-${month}-${day}T${hour}:${minute}:${second}.${fraction.padEnd(3, '0').slice(0, 3)}${zone}`;
     const milliseconds = Date.parse(text);
     if (!Number.isSafeInteger(milliseconds)) throw fail(409, 'FIELD_TIME', '字段时间超出毫秒范围');
+    // Redis/Java Long 使用毫秒；PG 微秒向下截至毫秒，保留原值供预览核对，不进位。
+    if (/[1-9]/.test(fraction.slice(3))) onTimeAdjustment?.({ rawValue, normalizedValue: text, targetValue: milliseconds });
     return typeof original === 'string' ? String(milliseconds) : milliseconds;
   }
   if (['bigint', 'integer', 'smallint', 'numeric', 'real', 'double precision'].includes(type)) return numericValue(value, original);
@@ -83,8 +94,14 @@ function convertPgValue(value, original, type, timestampZone) {
   throw fail(409, 'FIELD_TYPE', '字段类型需要人工核对');
 }
 
+function recordTimeAdjustment(candidate, identity, adjustment) {
+  candidate.timeAdjustmentCount += 1;
+  if (candidate.timeAdjustments.length < 200) candidate.timeAdjustments.push({ ...identity, ...adjustment });
+}
+
 function buildCandidate(data, tableData, options, productInstanceId) {
   const next = structuredClone(data), changes = [], blockers = [], groups = [], unrecognized = [];
+  const timeInfo = { timeAdjustmentCount: 0, timeAdjustments: [] };
   let changedFields = 0, rootFound = false;
   for (const [group, records] of Object.entries(next)) {
     const profile = TABLES.find((item) => item.group === group.replace(GROUP_SUFFIX, ''));
@@ -103,7 +120,7 @@ function buildCandidate(data, tableData, options, productInstanceId) {
     for (const [position, record] of records.entries()) {
       if (!record || typeof record !== 'object' || Array.isArray(record)) { blockers.push(`${group}[${position}] 不是档案记录`); continue; }
       const id = String(record[profile.field] ?? '');
-      if (!/^\d+$/.test(id) || (source.columns.his_id && record.hisId == null)) { blockers.push(`${group}[${position}] 缺少 ID 或 hisId`); continue; }
+      if (!/^\d+$/.test(id) || (source.columns.his_id && !Object.hasOwn(record, 'hisId'))) { blockers.push(`${group}[${position}] 缺少 ID 或 hisId`); continue; }
       const identity = `${id}:${source.columns.his_id ? record.hisId : ''}`;
       const candidates = index.get(identity) || [];
       if (!candidates.length) {
@@ -119,7 +136,7 @@ function buildCandidate(data, tableData, options, productInstanceId) {
         const column = snake(field), type = source.columns[column];
         if (!type || field === 'parentProdInstId') { if (!summary.preservedFields.includes(field)) summary.preservedFields.push(field); continue; }
         let after;
-        try { after = convertPgValue(row[column], before, type, options.timestampZone); }
+        try { after = convertPgValue(row[column], before, type, options.timestampZone, (adjustment) => recordTimeAdjustment(timeInfo, { group, table: profile.table, id, hisId: display(record.hisId), field, column }, adjustment)); }
         catch (error) { blockers.push(`${group}[${position}].${field}：${error.message}`); continue; }
         if (stringifyLosslessJson(before) === stringifyLosslessJson(after)) continue;
         if (field === profile.field || field === 'hisId' || SCOPE_FIELDS.has(field)) { blockers.push(`${group}[${position}].${field} 的关联范围已变化，需重建规则`); continue; }
@@ -132,10 +149,10 @@ function buildCandidate(data, tableData, options, productInstanceId) {
   // 即使用户仅选属性表，也必须独立验证源产品存在；服务层读取根表。
   if (!rootFound) rootFound = tableData.prod_inst?.rows.some((row) => String(row.prod_inst_id) === productInstanceId);
   if (!rootFound) blockers.push('PG 中未匹配到目标产品实例');
-  return { data: next, changes, changedFields, groups, unrecognized, blockers: [...new Set(blockers)], canApply: changedFields > 0 && blockers.length === 0 };
+  return { data: next, changes, changedFields, groups, unrecognized, ...timeInfo, blockers: [...new Set(blockers)], canApply: changedFields > 0 && blockers.length === 0 };
 }
 
-// 记录级发现独立于写入候选：PG 一跳范围并不等于 Redis Step 分组的组装规则。
+// 一跳发现与追加规则分离；只有已定义组装规则的直接订购参与追加。
 async function compareRecordScope(client, data, tableData, options, productInstanceId) {
   const warnings = [], scoped = {}, records = [];
   let count = 0;
@@ -151,6 +168,7 @@ async function compareRecordScope(client, data, tableData, options, productInsta
     count += rows.length;
     if (count > 5000) throw fail(413, 'SYNC_SCOPE_TOO_LARGE', '记录级比对超过 5000 行，请缩小档案范围');
     scoped[table] = rows;
+    source.scopeRows = rows;
     return rows;
   };
   const values = (rows, columns) => rows.flatMap((row) => columns.map((column) => row[column])).filter((id) => id != null);
@@ -189,7 +207,83 @@ async function compareRecordScope(client, data, tableData, options, productInsta
       records.push({ table: profile.table, group: profile.group, id: String(row[profile.pk]), hisId: row.his_id == null ? null : String(row.his_id) });
     }
   }
+  tableData.scopeRecords = records;
   return { scope: 'root-direct-relations', complete: warnings.length === 0, warnings: [...new Set(warnings)], pgOnlyCount: records.length, pgOnlyRecords: records.slice(0, 200), truncated: records.length > 200 };
+}
+
+// 与订阅者 OfferInst / OfferProdInstRel Bean 对齐；不继承另一条订购的值。
+const SUBSCRIPTION_FIELDS = {
+  offer_prod_inst_rel: 'offerProdInstRelId prodOfferInstId prodInstId roleCd dcsStatusCd statusDate effDate expDate areaId recUpdateDate hisId updateDate',
+  prod_offer_inst: 'prodOfferInstId prodOfferId dcsStatusCd statusDate effDate expDate trialEffDate trialExpDate areaId regionCd recUpdateDate offerSubType dcsIbsOfferType hisId updateDate',
+};
+const STRING_FIELDS = new Set(['roleCd', 'dcsStatusCd', 'regionCd', 'offerSubType', 'dcsIbsOfferType']);
+function appendSubscriptions(candidate, source, options, root) {
+  const additions = [], unresolved = [];
+  const identity = (id, hisId) => `${id}:${hisId ?? null}`;
+  const rootRelations = (source.offer_prod_inst_rel?.scopeRows || []).filter((row) => String(row.prod_inst_id) === root);
+  const directIds = new Set(rootRelations.map((row) => String(row.prod_offer_inst_id)));
+  const hasOffer = (id) => Object.entries(candidate.data).some(([group, rows]) => group.replace(GROUP_SUFFIX, '') === 'offerInsts'
+    && Array.isArray(rows) && rows.some((row) => row && String(row.prodOfferInstId) === String(id)));
+  for (const item of source.scopeRecords || []) {
+    const profile = TABLES.find((entry) => entry.table === item.table);
+    const table = source[item.table];
+    const rows = (table.scopeRows || []).filter((row) => identity(row[profile.pk], row.his_id) === identity(item.id, item.hisId));
+    const row = rows[0];
+    let reason = '';
+    if (!SUBSCRIPTION_FIELDS[item.table] || !row || (item.table === 'offer_prod_inst_rel' ? String(row.prod_inst_id) !== root : !directIds.has(item.id))) reason = '仅核对：当前追加范围为根产品的直接订购关系及销售品实例';
+    else if (rows.some((entry) => stringifyLosslessJson(entry) !== stringifyLosslessJson(row))) reason = '同 ID + his_id 存在冲突的 PG 记录';
+    else if (item.table === 'prod_offer_inst' && !options.tables.includes('offer_prod_inst_rel')) reason = '追加销售品实例需同时选择 offer_prod_inst_rel';
+    else if (item.table === 'offer_prod_inst_rel' && !options.tables.includes('prod_offer_inst') && !hasOffer(row.prod_offer_inst_id)) reason = '追加订购关系需同时选择 prod_offer_inst 或已有对应 Redis 销售品实例';
+    if (reason) { item.action = 'review'; item.reason = reason; unresolved.push(item); continue; }
+    const base = profile.group;
+    const stepStyle = Object.keys(candidate.data).some((group) => GROUP_SUFFIX.test(group));
+    const target = Object.hasOwn(candidate.data, base) ? base : `${base}${stepStyle ? 'FirstStep' : ''}`;
+    item.targetGroup = target;
+    try {
+      if (Object.hasOwn(candidate.data, base) && Object.hasOwn(candidate.data, `${base}FirstStep`)) throw Error('基础分组与 FirstStep 同时存在，请先核对写入位置');
+      if (Object.hasOwn(candidate.data, target) && !Array.isArray(candidate.data[target])) throw Error('目标分组不是数组');
+      const templates = Object.entries(candidate.data).filter(([group, value]) => group.replace(GROUP_SUFFIX, '') === base && Array.isArray(value)).flatMap(([, value]) => value);
+      const fields = new Set([...SUBSCRIPTION_FIELDS[item.table].split(' '), ...templates.flatMap((record) => Object.keys(record || {}))]);
+      const required = [profile.field, 'hisId', 'prodOfferInstId', 'dcsStatusCd', 'statusDate', 'effDate', 'expDate', item.table === 'prod_offer_inst' ? 'prodOfferId' : 'prodInstId'];
+      const record = {};
+      for (const field of fields) {
+        if (field === 'parentProdInstId') { record[field] = numericValue(root, 0); continue; }
+        // 部分 PG 档案沿用 offer_id 列名，订阅者 JSON 字段固定为 prodOfferId。
+        const column = field === 'prodOfferId' && !table.columns.prod_offer_id ? 'offer_id' : snake(field);
+        const type = table.columns[column];
+        if (!type) {
+          if (required.includes(field) || templates.some((record) => Object.hasOwn(record, field))) throw Error(`${field} 缺少已确认的 PG 映射`);
+          continue;
+        }
+        if (!Object.hasOwn(row, column)) throw Error(`${column} 未返回值`);
+        if (required.includes(field) && field !== 'hisId' && row[column] == null) throw Error(`${column} 为 NULL`);
+        try {
+          record[field] = convertPgValue(row[column], STRING_FIELDS.has(field) ? '' : null, type, options.timestampZone,
+            (adjustment) => recordTimeAdjustment(candidate, { group: target, table: item.table, id: item.id, hisId: item.hisId, field, column }, adjustment));
+        } catch (error) { throw Error(`${field} (${column})：${error.message}`); }
+      }
+      item.action = 'append';
+      additions.push({ ...item, record });
+    } catch (error) { item.action = 'review'; item.reason = error.message; unresolved.push(item); }
+  }
+  // 关系与实例必须形成完整配对；某一条转换失败时整次预览阻断，避免半套订购。
+  for (const addition of additions.filter((item) => item.table === 'offer_prod_inst_rel')) {
+    const id = String(addition.record.prodOfferInstId);
+    if (!hasOffer(id) && !additions.some((item) => item.table === 'prod_offer_inst' && item.id === id)) {
+      candidate.blockers.push(`订购关系 ${addition.id} 缺少可写入的销售品实例 ${id}`);
+    }
+  }
+  for (const item of unresolved) {
+    if (SUBSCRIPTION_FIELDS[item.table] && (item.table === 'offer_prod_inst_rel' || directIds.has(item.id))) candidate.blockers.push(`${item.table} ${item.id}：${item.reason}`);
+  }
+  for (const item of additions) {
+    (candidate.data[item.targetGroup] ||= []).push(item.record);
+  }
+  candidate.addedRecords = additions.length;
+  candidate.additions = additions;
+  candidate.unresolvedRecords = unresolved.length;
+  candidate.blockers = [...new Set(candidate.blockers)];
+  candidate.canApply = (candidate.changedFields > 0 || additions.length > 0) && candidate.blockers.length === 0;
 }
 
 class PgRedisSync {
@@ -254,6 +348,7 @@ class PgRedisSync {
     const decoded = decodeArchive(snapshot.raw, this.redis.config.maxDecodedBytes);
     const source = await this.readPg(decoded.data, options, identity.productInstanceId, signal);
     const candidate = buildCandidate(decoded.data, source, options, identity.productInstanceId);
+    appendSubscriptions(candidate, source, options, identity.productInstanceId);
     const after = candidate.canApply ? encodeArchive(candidate.data, decoded.prefix, this.redis.config.maxDecodedBytes) : snapshot.raw;
     if (candidate.canApply && stringifyLosslessJson(decodeArchive(after, this.redis.config.maxDecodedBytes).data) !== stringifyLosslessJson(candidate.data)) throw fail(500, 'ENCODE_VERIFY_FAILED', '档案编码自检失败');
     return { ...identity, snapshot, decoded, source, candidate, after };
@@ -268,10 +363,12 @@ class PgRedisSync {
     this.previews.set(previewId, { ...result, options, created: this.clock(), fingerprint: this.connectionFingerprint() });
     return jsonSafe({ previewId, key: result.key, productInstanceId: result.productInstanceId, readAt: utc8Iso(), schema: SCHEMA, options,
       changedFields: result.candidate.changedFields, changes: result.candidate.changes, changesTruncated: result.candidate.changedFields > result.candidate.changes.length,
+      addedRecords: result.candidate.addedRecords, additions: result.candidate.additions.slice(0, 200), additionsTruncated: result.candidate.addedRecords > 200, unresolvedRecords: result.candidate.unresolvedRecords,
+      timeAdjustmentCount: result.candidate.timeAdjustmentCount, timeAdjustments: result.candidate.timeAdjustments, timeAdjustmentsTruncated: result.candidate.timeAdjustmentCount > 200,
       groups: result.candidate.groups, unrecognized: result.candidate.unrecognized, blockers: result.candidate.blockers, canApply: result.candidate.canApply,
       recordComparison: result.source.recordComparison,
       beforeBytes: result.snapshot.raw.length, afterBytes: result.after.length, ttlMs: result.snapshot.ttl,
-      prefixHex: result.decoded.prefix.toString('hex'), expiresInSeconds: 600, mode: 'existing-record-fields' });
+      prefixHex: result.decoded.prefix.toString('hex'), expiresInSeconds: 600, mode: 'fields-and-direct-subscriptions' });
   }
 
   async exclusive(key, work) {
@@ -312,14 +409,14 @@ class PgRedisSync {
       if (Math.abs(current.snapshot.expiresAt - preview.snapshot.expiresAt) > 2) throw fail(409, 'REDIS_TTL_CHANGED', 'Redis 过期时间已变化，请重新预览');
       if (!current.candidate.canApply || !current.after.equals(preview.after)) throw fail(409, 'PG_CHANGED', 'PG 数据或映射结果已变化，请重新预览');
       const backup = { backupId: randomUUID(), key: preview.key, createdAt: utc8Iso(), fingerprint: preview.fingerprint, before: current.snapshot.raw.toString('base64'),
-        beforeHash: hash(current.snapshot.raw), afterHash: hash(current.after), expiresAt: current.snapshot.expiresAt, changedFields: current.candidate.changedFields, status: 'pending' };
+        beforeHash: hash(current.snapshot.raw), afterHash: hash(current.after), expiresAt: current.snapshot.expiresAt, changedFields: current.candidate.changedFields, addedRecords: current.candidate.addedRecords, status: 'pending' };
       await this.writeBackup(backup, { create: true }); // 原始二进制已落盘才进入写入。
       this.previews.delete(previewId);
       try {
         const result = await this.replace(preview.key, current.snapshot.raw, current.after, 'sync', current.snapshot.expiresAt, signal);
         backup.status = 'applied';
         await this.writeBackup(backup);
-        return { key: preview.key, backupId: backup.backupId, changedFields: backup.changedFields, ...result, completedAt: utc8Iso() };
+        return { key: preview.key, backupId: backup.backupId, changedFields: backup.changedFields, addedRecords: backup.addedRecords, ...result, completedAt: utc8Iso() };
       } catch (error) {
         backup.status = ['REDIS_CHANGED', 'REDIS_TTL_CHANGED', 'BACKUP_EXPIRED'].includes(error.code) ? 'not-applied' : 'uncertain';
         await this.writeBackup(backup).catch(() => {});
@@ -341,7 +438,7 @@ class PgRedisSync {
     const backups = [];
     for (const file of files.filter((item) => /^[0-9a-f-]+\.json$/.test(item))) {
       const item = await this.readBackup(file.slice(0, -5));
-      if (item.key === key && item.fingerprint === this.connectionFingerprint()) backups.push({ backupId: item.backupId, key: item.key, createdAt: item.createdAt, status: item.status, changedFields: item.changedFields, expiresAt: item.expiresAt });
+      if (item.key === key && item.fingerprint === this.connectionFingerprint()) backups.push({ backupId: item.backupId, key: item.key, createdAt: item.createdAt, status: item.status, changedFields: item.changedFields, addedRecords: item.addedRecords || 0, expiresAt: item.expiresAt });
     }
     return backups.sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 20);
   }

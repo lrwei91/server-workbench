@@ -40,6 +40,28 @@ function ownerMeaning(value) {
   return value === '24A' ? '独享' : '共享';
 }
 
+function resultTable(records) {
+  const columns = [...new Set(records.flatMap((record) => Object.keys(record)))];
+  return { columns, rows: records.map((record) => columns.map((column) => String(record[column] ?? '—'))) };
+}
+
+function accumulatorTableRecord({ cell, fields }, detail = false) {
+  return {
+    ROW_KEY: cell.rowKey,
+    ...(detail ? { 'ROW_PREFIX（前缀）': fields.prefix, 'DETAIL_TYPE（明细类型）': fields.detailType } : {}),
+    'ACCUM（结果）': `${fields.accum}（${accumMeaning(fields.accum)}）`,
+    'OWNER_TYPE（归属）': `${fields.ownerType}（${ownerMeaning(fields.ownerType)}）`,
+    'RATABLE_RESOURCE_ID（量本/资源类型）': fields.ratableResourceId,
+    'RESOURCE_CYCLE_ID（量本账期）': fields.resourceCycleId,
+    'PRICING_PLAN_ID（定价计划）': fields.pricingPlanId,
+    'PREFER_INST_ID（套餐销售品实例）': fields.preferInstId,
+    ...(detail ? { 'ROW_KEY 附加段': fields.extraSegments.join(' / ') } : {}),
+    'VALUE_RAW（原始值）': cell.value,
+    TIMESTAMP: formatHbaseTimestamp(cell.timestamp),
+    QUALIFIER: `${cell.family}:${cell.qualifier}`,
+  };
+}
+
 export function formatHbaseTimestamp(value) {
   const raw = String(value ?? '—');
   if (!/^-?\d+$/.test(raw)) return raw;
@@ -113,7 +135,7 @@ function formatAccumulatorDetailScan(raw, isTrial = false) {
   });
   const skippedCount = Math.max(0, cells.length - records.length);
   if (skippedCount) lines.push(`另有 ${skippedCount} 条记录未按 MS/SM RowKey 格式解析，请复制原始结果核对。`);
-  return { text: lines.join('\n').trimEnd(), structured: true, parsedCount: records.length, skippedCount };
+  return { text: lines.join('\n').trimEnd(), structured: true, parsedCount: records.length, skippedCount, table: resultTable(records.map((record) => accumulatorTableRecord(record, true))) };
 }
 
 export function parseTicketDispatchRowKey(rowKey, tablePath = '') {
@@ -143,6 +165,20 @@ function formatTicketDispatchScan(tablePath, raw) {
 
   const tableName = tableNameFromPath(tablePath).toUpperCase();
   const tableState = tableName === 'TICKET_DISPATCHED_FILE' ? '已处理' : '未处理';
+  const table = resultTable(records.map(({ cell, fields }) => ({
+    'TABLE_STATE（表状态）': tableState,
+    'ROW_PREFIX（来源/分区编码）': fields.rowPrefix,
+    ...(fields.layout === 'pending' ? {
+      'SOURCE_STAGE（来源标识）': fields.sourceStage, 'CODE_4（第 4 段）': fields.code4, 'SEGMENT_6（第 6 段）': fields.segment6,
+    } : {
+      'DISPATCH_TYPE（分发类型）': `${fields.dispatchType}（${dispatchTypeMeaning(fields.dispatchType)}）`,
+      'CODE_6（第 6 段）': fields.code6, 'SEGMENT_7（第 7 段）': fields.segment7,
+    }),
+    'PROCESS_SCENE（处理场景）': fields.processScene,
+    'DISPATCH_TIME_KEY（分发时间键）': fields.dispatchTimeKey,
+    'SOURCE_PATH（来源文件）': fields.sourcePath,
+    'VALUE_RAW（原始值）': cell.value, TIMESTAMP: formatHbaseTimestamp(cell.timestamp), ROW_KEY: cell.rowKey,
+  })));
   const lines = [
     `话单分发记录（${tableState}，已解析 ${records.length} 条）`,
     '字段来源：RowKey；Qualifier 为空。复制按钮仍复制原始 scan 输出。',
@@ -173,7 +209,7 @@ function formatTicketDispatchScan(tablePath, raw) {
   });
   const skippedCount = Math.max(0, cells.length - records.length);
   if (skippedCount) lines.push(`另有 ${skippedCount} 条记录未按 7 段 RowKey 格式解析，请复制原始结果核对。`);
-  return { text: lines.join('\n').trimEnd(), structured: true, parsedCount: records.length, skippedCount };
+  return { text: lines.join('\n').trimEnd(), structured: true, parsedCount: records.length, skippedCount, table };
 }
 
 const BATCH_MAJOR_FIELDS = [
@@ -258,9 +294,16 @@ function formatBatchMajorScan(info, cells, raw) {
   }
 
   const lines = [`${info.stage}批次主表（${info.state}，已解析 ${rows.size} 个批次）`, '字段来源：RowKey 为批次 ID；列族 batch_info 的 Qualifier 为字段名。复制按钮仍复制原始 scan 输出。', ''];
+  const tableRecords = [];
   [...rows.entries()].forEach(([rowKey, rowCells], index) => {
     const values = new Map(rowCells.map((cell) => [cell.qualifier, cell.value]));
     const known = new Set(BATCH_MAJOR_FIELDS.map(([name]) => name));
+    tableRecords.push({
+      'BATCH_ID（批次 ID）': rowKey,
+      ...Object.fromEntries(BATCH_MAJOR_FIELDS.filter(([name]) => values.has(name)).map(([name, label]) => [label, formatBatchMajorValue(name, values.get(name))])),
+      ...Object.fromEntries(rowCells.filter((cell) => !known.has(cell.qualifier)).map((cell, fieldIndex) => [`${cell.qualifier}（扩展字段 ${fieldIndex + 1}）`, cell.value])),
+      TIMESTAMP: formatHbaseTimestamp(rowCells[0]?.timestamp),
+    });
     lines.push(`[${index + 1}] BATCH_ID（批次 ID）：${rowKey}`);
     const visible = BATCH_MAJOR_FIELDS.filter(([name]) => values.has(name)).map(([name, label]) => `${label}：${formatBatchMajorValue(name, values.get(name))}`);
     for (let offset = 0; offset < visible.length; offset += 2) lines.push(`    ${visible.slice(offset, offset + 2).join('    ')}`);
@@ -268,7 +311,7 @@ function formatBatchMajorScan(info, cells, raw) {
     lines.push(`    TIMESTAMP：${formatHbaseTimestamp(rowCells[0]?.timestamp)}`, '');
   });
   const parsedCells = [...rows.values()].reduce((total, row) => total + row.length, 0);
-  return { text: lines.join('\n').trimEnd(), structured: true, parsedCount: rows.size, skippedCount: Math.max(0, cells.length - parsedCells) };
+  return { text: lines.join('\n').trimEnd(), structured: true, parsedCount: rows.size, skippedCount: Math.max(0, cells.length - parsedCells), table: resultTable(tableRecords) };
 }
 
 function parseBatchMinorCell(cell) {
@@ -310,7 +353,15 @@ function formatBatchMinorScan(info, cells, raw) {
       '',
     );
   });
-  return { text: lines.join('\n').trimEnd(), structured: true, parsedCount: records.length, skippedCount: Math.max(0, cells.length - records.length) };
+  const table = resultTable(records.map(({ cell, fields }) => ({
+    'BATCH_ID（批次 ID）': fields.batchId,
+    'DIRECTION（方向）': `${fields.direction}（${fields.direction === 'in' ? '输入' : '输出'}）`,
+    'SOURCE_PATH（来源文件）': fields.sourcePath, 'TARGET_PATH（目标文件）': fields.targetPath,
+    'RESULT_SEGMENT_1（结果段 1）': fields.result1, 'RESULT_SEGMENT_2（结果段 2）': fields.result2,
+    'RESULT_PATH（结果文件）': fields.resultPath, 'VALUE_RAW（原始值）': cell.value,
+    TIMESTAMP: formatHbaseTimestamp(cell.timestamp), ROW_KEY: cell.rowKey,
+  })));
+  return { text: lines.join('\n').trimEnd(), structured: true, parsedCount: records.length, skippedCount: Math.max(0, cells.length - records.length), table };
 }
 
 function formatBatchInfoScan(tablePath, raw) {
@@ -356,5 +407,5 @@ export function formatHbaseScanText(tablePath, rawText) {
   });
   const skippedCount = Math.max(0, qualifierCount - records.length);
   if (skippedCount) lines.push(`另有 ${skippedCount} 个 f 列 Qualifier 未按 6 段格式解析，请复制原始结果核对。`);
-  return { text: lines.join('\n').trimEnd(), structured: true, parsedCount: records.length, skippedCount };
+  return { text: lines.join('\n').trimEnd(), structured: true, parsedCount: records.length, skippedCount, table: resultTable(records.map((record) => accumulatorTableRecord(record))) };
 }

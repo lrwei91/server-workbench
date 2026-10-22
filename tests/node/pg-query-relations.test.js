@@ -112,7 +112,7 @@ test('PG fixed SELECT runs in a read-only transaction with raw numeric/date resu
   await manager.closeAll();
 });
 
-test('HTTP fixed query routes ignore legacy source selection and expose only fixed relation modes', async () => {
+test('HTTP test query routes retain PG and legacy UDAL routing and fixed relation modes', async () => {
   const { manager } = require('../../server/database');
   const { createServer } = require('../../server/server');
   const db = fixture(); const original = manager.query; manager.query = db.query.bind(db);
@@ -124,7 +124,7 @@ test('HTTP fixed query routes ignore legacy source selection and expose only fix
     }); req.on('error', reject); req.end(payload);
   });
   try {
-    for (const source of ['pg', 'udal', 'voyage']) {
+    for (const source of ['pg', 'udal']) {
       const result = await request('POST', '/api/query/phone', { phone: '13800000000', source });
       assert.equal(result.status, 200); assert.equal(result.body.result.source, 'pg');
     }

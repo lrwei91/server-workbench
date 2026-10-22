@@ -140,7 +140,10 @@ export function generateInsertScript(result, { generatedAt = utc8Iso(), target =
     if (!columns.length) continue;
     totalRows += rows.length;
     const physicalTable = target === 'postgres' ? (POSTGRES_TABLE_MAP[table] || table) : table;
-    lines.push('', `-- ${target === 'postgres' ? '来源逻辑库' : '目标逻辑库'}：${database} | 表：${physicalTable} | ${rows.length} 行`);
+    const databaseLabel = target === 'postgres'
+      ? `来源：工程环境 Voyage${result.schema ? ` | Schema：${result.schema}` : ''}`
+      : `目标逻辑库：${database}`;
+    lines.push('', `-- ${databaseLabel} | 表：${physicalTable} | ${rows.length} 行`);
     const targetTable = target === 'postgres' ? `${quoteIdentifier('bill_inmemory', target)}.${quoteIdentifier(physicalTable, target)}` : quoteIdentifier(table, target);
     lines.push(`INSERT INTO ${targetTable} (${columns.map((column) => quoteIdentifier(column, target)).join(', ')}) VALUES`);
     rows.forEach((row, index) => {

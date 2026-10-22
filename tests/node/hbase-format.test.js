@@ -20,6 +20,9 @@ test('monthly ACCUMULATOR scan formats qualifier fields for direct reading', asy
   const result = formatHbaseScanText('/ns_bill_cnos_jf_test:ACCUMULATOR_202609', raw);
   assert.equal(result.structured, true);
   assert.equal(result.parsedCount, 2);
+  assert.equal(result.table.rows.length, 2);
+  assert.equal(result.table.rows[0][result.table.columns.indexOf('VALUE_RAW（原始值）')], '907003419_7158761731');
+  assert.equal(result.table.rows[1][result.table.columns.indexOf('ROW_KEY')], '23|48243980');
   assert.match(result.text, /ACCUM（结果）：200（初始化）/);
   assert.match(result.text, /OWNER_TYPE（归属）：24A（独享）/);
   assert.match(result.text, /RATABLE_RESOURCE_ID（量本\/资源类型）：1246/);
@@ -42,6 +45,7 @@ test('TRY_ACCUMULATOR monthly tables reuse qualifier formatting and identify tri
     assert.equal(isMonthlyAccumulatorTable(tablePath), true);
     assert.equal(result.structured, true);
     assert.equal(result.parsedCount, 1);
+    assert.equal(result.table.rows.length, 1);
     assert.match(result.text, /试算量本初始化 \/ 结转结果/);
     assert.match(result.text, /ACCUM（结果）：200（初始化）/);
     assert.match(result.text, /OWNER_TYPE（归属）：24A（独享）/);
@@ -101,6 +105,8 @@ test('monthly ACCUMULATOR_DETAIL scan formats MS and SM RowKey fields', async ()
   const result = formatHbaseScanText('/ns_bill_cnos_jf_test:ACCUMULATOR_DETAIL_202606', raw);
   assert.equal(result.structured, true);
   assert.equal(result.parsedCount, 3);
+  assert.equal(result.table.rows.length, 3);
+  assert.equal(result.table.rows[2][result.table.columns.indexOf('DETAIL_TYPE（明细类型）')], 'SM');
   assert.match(result.text, /DETAIL_TYPE（明细类型）：MS/);
   assert.match(result.text, /DETAIL_TYPE（明细类型）：SM/);
   assert.match(result.text, /ACCUM（结果）：200（初始化）/);
@@ -144,6 +150,8 @@ test('TICKET dispatch tables format seven-part RowKeys and lifecycle state', asy
   const done = formatHbaseScanText('/ns_bill_cnos_jf_test:TICKET_DISPATCHED_FILE', raw);
   assert.equal(done.structured, true);
   assert.equal(done.parsedCount, 2);
+  assert.equal(done.table.rows.length, 2);
+  assert.equal(done.table.rows[0][done.table.columns.indexOf('DISPATCH_TYPE（分发类型）')], 'MERGE（合账）');
   assert.match(done.text, /话单分发记录（已处理，已解析 2 条）/);
   assert.match(done.text, /SOURCE_PATH（来源文件）：\/apps\/bill_cnos_jf_test\/cal\/normal\/chargeOutput/);
   assert.match(done.text, /DISPATCH_TIME_KEY（分发时间键）：20260904143701245/);
@@ -163,6 +171,7 @@ test('TICKET dispatch tables format seven-part RowKeys and lifecycle state', asy
   ].join('\n');
   const pending = formatHbaseScanText('/ns_bill_cnos_jf_test:TICKET_DISPATCH_FILE', pendingRaw);
   assert.match(pending.text, /话单分发记录（未处理，已解析 1 条）/);
+  assert.equal(pending.table.rows[0][pending.table.columns.indexOf('SOURCE_STAGE（来源标识）')], 'IBS');
   assert.match(pending.text, /SOURCE_STAGE（来源标识）：IBS/);
   assert.match(pending.text, /PROCESS_SCENE（处理场景）：CAL_NOR/);
   assert.match(pending.text, /CODE_4（第 4 段）：590/);
@@ -189,6 +198,7 @@ test('batch major tables group batch_info qualifiers by batch id', async () => {
   assert.equal(isBatchInfoTable('/ns_bill_cnos_jf_test:rating_batch_major_info'), true);
   assert.equal(result.structured, true);
   assert.equal(result.parsedCount, 1);
+  assert.equal(result.table.rows[0][result.table.columns.indexOf('STATUS（当前状态）')], '105（成功）');
   assert.match(result.text, /批价批次主表（已完成，已解析 1 个批次）/);
   assert.match(result.text, /BATCH_ID（批次 ID）：1000000008/);
   assert.match(result.text, /BATCH_TYPE（批次类型）：102/);
@@ -216,6 +226,8 @@ test('batch minor tables split direction, file paths and result segments', async
   const result = formatHbaseScanText('/ns_bill_cnos_jf_test:preproc_batch_minor_info', raw);
   assert.equal(result.structured, true);
   assert.equal(result.parsedCount, 2);
+  assert.equal(result.table.rows.length, 2);
+  assert.equal(result.table.rows[1][result.table.columns.indexOf('DIRECTION（方向）')], 'out（输出）');
   assert.match(result.text, /采预批次子表（已完成，已解析 2 条文件记录）/);
   assert.match(result.text, /BATCH_ID（批次 ID）：1000000001/);
   assert.match(result.text, /DIRECTION（方向）：in（输入）/);
@@ -256,4 +268,21 @@ test('malformed TRY_ACCUMULATOR records retain raw output', async () => {
   const detailRaw = 'bad-row-key column=f:, timestamp=1, value=sample';
   const detailResult = formatHbaseScanText('/ns_cnos:TRY_ACCUMULATOR_DETAIL_202609', detailRaw);
   assert.deepEqual(detailResult, { text: detailRaw, structured: false, parsedCount: 0, skippedCount: 1 });
+});
+
+test('batch list keeps sparse and repeated extension qualifiers without overwriting values', async () => {
+  const { formatHbaseScanText } = await import(formatterUrl);
+  const raw = [
+    'batch-a column=batch_info:status, timestamp=1, value=105',
+    'batch-a column=batch_info:custom, timestamp=1, value=lower',
+    'batch-a column=batch_info:CUSTOM, timestamp=2, value=upper',
+    'batch-a column=batch_info:custom, timestamp=3, value=another-version',
+    'batch-b column=batch_info:rcv_files, timestamp=1, value=12',
+  ].join('\n');
+  const { table } = formatHbaseScanText('/ns:rating_batch_major_info', raw);
+  assert.equal(table.rows.length, 2);
+  for (const value of ['lower', 'upper', 'another-version']) assert.ok(table.rows[0].includes(value));
+  assert.equal(table.rows[1][table.columns.indexOf('STATUS（当前状态）')], '—');
+  assert.equal(table.rows[1][table.columns.indexOf('RCV_FILES（接收文件数）')], '12');
+  assert.ok(table.rows.every((row) => row.length === table.columns.length));
 });

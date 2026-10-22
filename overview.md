@@ -30,7 +30,7 @@ graph TD
 - `shared/ui.js` 提供统一请求错误模型、可区分的超时/主动取消、DOM 节点创建、状态播报、格式化和原生 `dialog` 焦点进入/恢复。
 - `shared/icons.svg` 为图标精灵。主工作台和 CDR 前端均使用 `textContent`/节点构造渲染远端数据，不把文件名、路径、字段值拼入 `innerHTML`。
 - 主工作台采用「资源浏览与查询」「Redis 档案」「进程日志」「话单工具」四个一级侧边栏入口；资源页保持 PC 双栏，资源浏览与数据库查询宽度比例为 1:1.5。连接弹窗按环境分组并默认收起，测试环境展示 SSH/SFTP、HDFS/HBase 客户端服务、MySQL/UDAL、Doris 和 PostgreSQL 独立连接，工程环境展示 Voyage 在线数据库；云翼平台会话连接移至进程日志页面。资源页分别标明 SSH 状态与 HDFS/HBase 当前读取方式，查询来源状态位于查询面板。
-- 右侧固定查询按表分源：档案统一从 PostgreSQL `bill_inmemory` 读取，配置定义从 MySQL/UDAL `CONFIGDB_CNOS_JF_TEST` 读取，不再切换查询环境。号码查产品按业务号码 `acc_nbr` 定位产品实例；号码不等于 `prod_inst_id`，同一号码可能含多个实例/历史。实例档案使用固定九表的一跳关系范围，保留现存 `his_id`，关联节点不展开兄弟实例；销售品定义及定价计划查MySQL。
+- 右侧固定查询恢复环境选择：测试环境档案查 PostgreSQL `bill_inmemory`、配置查 MySQL/UDAL `CONFIGDB_CNOS_JF_TEST`；工程环境经 Voyage 查询，可选择 `bill_inmemory` / `crmv3`。前端按所选源检查连接并传递 source/schema，切换时取消旧请求并清空结果。号码不等于产品实例 ID，同一号码可能含多个实例/历史；bill_inmemory 实例档案保留 `his_id` 与一跳关系，crmv3 沿用工程档案查询路径。关系链固定 PG/MySQL、Redis 同步固定 PG，不受环境选择影响。
 - PG查询复用逻辑到物理表/字段映射：`prod_inst_acct_rel → prod_inst_acct`、`offer_inst → prod_offer_inst`、`offer_inst_rel → prod_offer_inst_rel`、`acc_num → acc_nbr`、销售品关系A/Z字段等；保留物理原值并提供逻辑兼容字段。配置查询不套用该映射，套餐定义读取MySQL `offer`。新增独立“关系链查询”覆盖产品/销售品正反向、功能产品、群主、三类非产品群及对端成员诊断；结果是带履历/状态/角色的原始候选，详见 [档案查询与关系链](./docs/archive-relations.md)。
 - “查询套餐”按规格offer_id读取MySQL定义和定价，从PG反查订购销售品实例、产品关系及产品实例。“查询事件类型”保留MySQL事件格式、入库路由、定价策略/组合查询，订购实例与产品关联转查PG。每一步记录实际来源，单分支失败保留已成功数据。
 - 阈值查询以 A 端产品实例 ID 为入口，分步读取 `prod_inst_rel`、产品规格为 `900178630` 的 `prod_inst`，以及六个固定档位属性对应的 `prod_inst_attr`，避免 UDAL 子查询路由限制。
@@ -46,10 +46,11 @@ graph TD
 
 - 请求体限制 1 MiB，非法 JSON/未知字段返回真实 HTTP 状态和 `{ok:false,error:{code,message,retryable}}`。
 - `/api/exec` 是明确的高级自由命令入口；交互式命令和根目录递归强删拦截，删除类命令需 `confirmed:true`。所有参数化路径使用单引号 shell 转义。
-- `/api/connect`、`/api/db/connect`、`/api/voyage/connect`保留独立连接管理；固定 `/api/query/*`档案统一PG、配置统一MySQL，不采用客户端来源切换。PG每次固定SELECT使用位置绑定参数、明确bill_inmemory Schema、只读Repeatable Read事务和15秒单语句超时；日期/大整数保留原值。整条跨PG/MySQL链不承诺同一快照。手机号/实例/关系链查询总超时60秒；关系诊断每步最多500行、每关联组最多100个ID、累计最多5000行。固定接口不接受用户SQL、不执行导出脚本。
+- `/api/connect`、`/api/db/connect`、`/api/voyage/connect`保留独立连接管理；普通固定查询显式 source=voyage 时经 Voyage 查询并校验 Schema，其余默认 PG 档案/MySQL 配置（旧 udal 参数兼容到 PG）。关系链接口仍固定 PG/MySQL。PG每次固定SELECT使用位置绑定参数、明确bill_inmemory Schema、只读Repeatable Read事务和15秒单语句超时；日期/大整数保留原值。整条跨PG/MySQL链不承诺同一快照。手机号/实例/关系链查询总超时60秒；关系诊断每步最多500行、每关联组最多100个ID、累计最多5000行。固定接口不接受用户SQL、不执行导出脚本。
 - `/api/voyage/status|connect|disconnect` 仅返回脱敏配置和连接状态；Bearer Token 只由 Node 从 `.env` 读取。适配器把 `columns + rows` 还原为对象，保留不安全大整数为字符串，并把 HTTP、鉴权和语句级错误分开报告。
 - `/api/redis/status` 返回脱敏后的 Redis 档案配置状态；`/api/query/redis` 只接收产品实例 ID 或 `rate:cpp:{数字ID}`，逐次认证、选择配置的 DB、GET 并解码 LZ4/JSON。单次连接与查询默认 15 秒，解压长度默认不超过 16 MiB，密码不进入接口响应。
-- `/api/redis-sync/preview|apply|history|restore` 从 PG 按 `ID + his_id` 更新既有 Redis 档案字段；缺失/未知内容保留，关联范围变更阻断。编码重算 Kryo String 字符长度并生成 raw LZ4 block；确认应用前复读检查，原始值先备份到忽略的 `logs/pg-redis-sync/`，Redis Lua CAS 写入保留 TTL 并回读验证。恢复绑定连接和同步后的摘要、原绝对过期时间，避免覆盖后续修改；具体边界见 [PG → Redis 同步](./docs/pg-redis-sync.md)。
+- `/api/redis-index/lookup|preview|apply` 补建根产品号码索引：实例直接定位 CPP；手机号先读 Redis accNbr，缺失时查测试 PG `prod_inst.acc_nbr`，最多 100 个候选。预览从所选 CPP 根 `prodInsts` 分别取 `account` 与 `accNbr`，历史成员去重后编码为二进制 SET。确认后 Lua 核对源字节与全部目标仍缺失，只新增缺失 key，不改已有 key/成员/TTL。写前本地操作记录、写后回读；响应异常保留 uncertain，不自动重放。仅覆盖所选实例，详见 [号码索引补建](./docs/redis-indexes.md)。
+- `/api/redis-sync/preview|apply|history|restore` 从 PG 按 `ID + his_id` 更新既有 Redis 档案字段，并追加根产品直接订购关系及销售品实例；其他新增类型仅核对，缺失/未知内容保留，既有记录关联端点变更阻断。新增记录与字段共用候选编码、预览重算、整条备份及恢复；编码重算 Kryo String 字符长度并生成 raw LZ4 block，Redis Lua CAS 写入保留 TTL 并回读验证。恢复绑定连接和同步后的摘要、原绝对过期时间，避免覆盖后续修改；具体边界见 [PG → Redis 同步](./docs/pg-redis-sync.md)。
 - `/api/dcos/status|connect|disconnect` 管理临时平台 Cookie，仅在 Node 内存保存且状态不返回凭据；`/api/dcos/namespaces|workloads|pods|logs` 将页面选择映射到云翼平台固定只读接口，工作负载分页由 Node 向上游发 POST。`/api/dcos/workload/start|stop` 把页面确认后的 StatefulSet 启停转发到云翼平台工作负载级接口（POST 空体），按钮可用性以当前 Pod 列表推断。会话过期返回独立错误。容器日志除页面展示外，按目标去重追加到 `logs/dcos/<集群>__<命名空间>__<Pod>__<容器>.log`（已被 `.gitignore` 覆盖，写盘失败不影响页面读取）：自动刷新重复拉取同一「末尾 N 行」窗口时，只把窗口外新增的行追加进去；进程重启后回读文件尾部继续去重；单文件超过 20 MiB 轮转为 `.1.log`。由于平台只有末尾快照接口，两次拉取之间滚出窗口的行仍会缺失。
 - UDAL 按逻辑库建立 `utf8mb4` 连接，不在查询中写库名前缀；结果中的大整数、金额和日期保留字符串。可无损识别的 UTF-8/GB18030 历史错码业务名称恢复显示并保留原始值。分支失败、关联缺失与空结果分别返回，跨库结果不表示同一事务快照。
 - 浏览器日期格式化、查询元数据、SFTP 修改时间、Node 日志日期和 CDR 生成时间均显式使用 UTC+8；数据库业务日期字符串保持原值并标注 UTC+8，不做二次偏移。

@@ -4,6 +4,7 @@ import { generateInsertScript, hasInsertRows, INSERT_TABLES } from '/js/insert-e
 import { redisArchiveLabel, redisTimestampText } from '/js/redis-labels.js';
 import { initDcosLogs } from '/js/dcos-logs.js';
 import { initRedisSync } from '/js/redis-sync.js';
+import { initRedisIndexes } from '/js/redis-indexes.js';
 
 const HDFS_UPLOAD_TIMEOUT = 200000;
 const DEFAULT_RESOURCE_TIMEOUTS = { filesListMs: 30000, hdfsListMs: 190000, hbaseScanMs: 130000 };
@@ -26,7 +27,7 @@ const state = {
   resources: { files: makeResourceState(), hdfs: makeResourceState(), hbase: makeResourceState() },
   favorites: [],
   pendingFavorite: null,
-  hbaseScan: { tablePath: '', limit: 20, queryKind: 'scan', rowKey: '', rawText: '', displayText: '', structured: false, parsedCount: 0, skippedCount: 0, truncated: false, loading: false, startedAt: 0, progressTimer: null, error: '', matchIndex: 0 },
+  hbaseScan: { tablePath: '', limit: 20, queryKind: 'scan', rowKey: '', rawText: '', displayText: '', table: null, structured: false, parsedCount: 0, skippedCount: 0, truncated: false, loading: false, startedAt: 0, progressTimer: null, error: '', matchIndex: 0 },
   databases: { udal: { connected: false, config: null, password: '' }, doris: { connected: false, config: null, password: '' }, pg: { connected: false, config: null, password: '' } },
   voyage: { connected: false, config: null },
   bigdata: { connected: false, mode: 'ssh', config: null },
@@ -461,7 +462,7 @@ function setConnected(connected, cfg = null) {
   if (connected) { state.favorites = loadFavoritesForCurrentServer(); renderFavorites(); updateFavoriteButtons(); return; }
   ['files', 'hdfs', 'hbase'].forEach((kind) => { resetResourceState(kind); });
   if (dialogs.get('hbaseScanDialog')?.isOpen) closeDialog('hbaseScanDialog');
-  cancelHbaseScan(); state.hbaseScan.rawText = ''; state.hbaseScan.displayText = ''; state.hbaseScan.structured = false; state.hbaseScan.parsedCount = 0; state.hbaseScan.skippedCount = 0; state.hbaseScan.truncated = false; state.hbaseScan.error = ''; state.hbaseScan.tablePath = '';
+  cancelHbaseScan(); state.hbaseScan.rawText = ''; state.hbaseScan.displayText = ''; state.hbaseScan.table = null; state.hbaseScan.structured = false; state.hbaseScan.parsedCount = 0; state.hbaseScan.skippedCount = 0; state.hbaseScan.truncated = false; state.hbaseScan.error = ''; state.hbaseScan.tablePath = '';
   $('#fileList').replaceChildren(el('div', { class: 'empty-tip', text: '尚未连接服务器\n请先打开连接设置' }));
   $('#hdfsList').replaceChildren(el('div', { class: 'empty-tip', text: '尚未连接服务器' }));
   $('#hbaseList').replaceChildren(el('div', { class: 'empty-tip', text: '尚未连接服务器' }));
@@ -551,14 +552,30 @@ function renderHighlightedText(node, text, query, activeIndex = 0) {
   return matches;
 }
 function renderHbaseScan() {
-  const scan = state.hbaseScan; const query = $('#hbaseScanSearch').value.trim(); const text = scan.displayText || '';
+  const scan = state.hbaseScan; const query = $('#hbaseScanSearch').value.trim(); const text = hbaseScanSearchText(scan);
   const matches = findTextMatches(text, query); scan.matchIndex = matches.length ? Math.min(scan.matchIndex, matches.length - 1) : 0;
   if (!query) setText($('#hbaseScanMatch'), '仅查找当前样本');
   else if (matches.length) setText($('#hbaseScanMatch'), `匹配 ${matches.length} 处 · 仅查找当前样本`);
   else setText($('#hbaseScanMatch'), '当前样本中未找到');
   $('#hbaseScanPrev').disabled = !matches.length; $('#hbaseScanNext').disabled = !matches.length;
-  if (scan.loading && !text) setText($('#hbaseScanText'), '正在读取…');
-  else renderHighlightedText($('#hbaseScanText'), text, query, scan.matchIndex);
+  const tableView = Boolean(scan.displayText && scan.table?.rows.length);
+  $('#hbaseScanText').classList.toggle('hidden', tableView);
+  $('#hbaseScanTable').classList.toggle('hidden', !tableView);
+  $('#hbaseScanTable').replaceChildren();
+  if (tableView) {
+    let offset = 0;
+    const cell = (tag, value) => {
+      const node = el(tag, tag === 'th' ? { scope: 'col' } : {});
+      const count = renderHighlightedText(node, value, query, scan.matchIndex - offset).length;
+      offset += count;
+      return node;
+    };
+    const table = el('table', { class: 'hbase-result-table', 'aria-label': 'HBase 查询结果' });
+    table.append(el('thead', {}, el('tr', {}, el('th', { scope: 'col', text: '序号' }), ...scan.table.columns.map((value) => cell('th', value)))));
+    table.append(el('tbody', {}, ...scan.table.rows.map((row, index) => el('tr', {}, el('th', { scope: 'row', text: index + 1 }), ...row.map((value) => cell('td', value))))));
+    $('#hbaseScanTable').append(table);
+  } else if (scan.loading && !text) setText($('#hbaseScanText'), '正在读取…');
+  else renderHighlightedText($('#hbaseScanText'), scan.displayText || '', query, scan.matchIndex);
   const formatSource = isBatchInfoTable(scan.tablePath) ? 'RowKey 与列族 batch_info' : isMonthlyAccumulatorDetailTable(scan.tablePath) || isTicketDispatchTable(scan.tablePath) ? 'RowKey' : '列族 f 的 Qualifier';
   const formatNote = scan.structured ? `已从 ${formatSource} 解析 ${scan.parsedCount} 条${scan.skippedCount ? `，${scan.skippedCount} 条格式不匹配` : ''}。` : '';
   setText($('#hbaseScanNotice'), `${formatNote}${scan.truncated ? '输出已截断；当前内容仅代表已加载样本，复制仍会保留原始输出。' : '仅查找当前样本；匹配数量按文字出现次数计算，复制按钮会保留原始输出。'}`);
@@ -568,12 +585,15 @@ function renderHbaseScan() {
   $('#hbaseScanRetry').classList.toggle('hidden', !scan.error || scan.loading);
   setText($('#hbaseScanMeta'), scan.tablePath ? `${scan.tablePath.replace(/^\/+/, '')} · ${scan.queryKind === 'get' ? `RowKey ${scan.rowKey}` : `最多 ${scan.limit} 行`}` : '');
 }
+function hbaseScanSearchText(scan) {
+  return scan.displayText && scan.table?.rows.length ? [...scan.table.columns, ...scan.table.rows.flat()].join('\n') : scan.displayText || '';
+}
 function clearHbaseScanTimer() { if (state.hbaseScan.progressTimer) { clearInterval(state.hbaseScan.progressTimer); state.hbaseScan.progressTimer = null; } }
 function cancelHbaseScan() { clearHbaseScanTimer(); state.hbaseScan.loading = false; state.hbaseScan.startedAt = 0; state.gates.scan.cancel(); }
 function startHbaseScanLoading(tablePath, limit) {
   const scan = state.hbaseScan; const sameTable = scan.tablePath === tablePath;
   clearHbaseScanTimer(); scan.tablePath = tablePath; scan.limit = limit; scan.queryKind = 'scan'; scan.rowKey = ''; scan.loading = true; scan.startedAt = Date.now(); scan.error = ''; scan.matchIndex = 0;
-  if (!sameTable) { scan.rawText = ''; scan.displayText = ''; scan.structured = false; scan.parsedCount = 0; scan.skippedCount = 0; scan.truncated = false; $('#hbaseScanSearch').value = ''; }
+  if (!sameTable) { scan.rawText = ''; scan.displayText = ''; scan.table = null; scan.structured = false; scan.parsedCount = 0; scan.skippedCount = 0; scan.truncated = false; $('#hbaseScanSearch').value = ''; }
   $('#hbaseScanLimit').value = String(limit); renderHbaseScan();
   renderHbaseScan(); status(`HBase · ${tablePath} · 正在读取`);
 }
@@ -584,7 +604,7 @@ async function loadHbaseSample(tablePath, limit) {
     const result = await postJson('/api/hbase/scan', { path: tablePath, limit }, { signal: request.signal, timeout: state.timeouts.hbaseScanMs });
     if (!request.isCurrent()) return null;
     const scan = state.hbaseScan; scan.tablePath = tablePath; scan.limit = Number(result.limit) || limit; scan.rawText = String(result.text || ''); scan.truncated = Boolean(result.truncated);
-    const formatted = formatHbaseScanText(tablePath, scan.rawText); scan.structured = formatted.structured; scan.parsedCount = formatted.parsedCount; scan.skippedCount = formatted.skippedCount;
+    const formatted = formatHbaseScanText(tablePath, scan.rawText); scan.table = formatted.table; scan.structured = formatted.structured; scan.parsedCount = formatted.parsedCount; scan.skippedCount = formatted.skippedCount;
     scan.displayText = formatted.structured ? formatted.text : (scan.rawText ? (scan.truncated ? scan.rawText : (prettifyJson(scan.rawText) || scan.rawText)) : '');
     finishHbaseScan(); status(`HBase · ${tablePath} · 样本已加载`, 'success'); return result;
   } catch (error) {
@@ -597,14 +617,14 @@ function scanHbase(tablePath) {
   const sameTable = state.hbaseScan.tablePath === value;
   const tableName = value.split(':').pop() || ''; const desc = aliasTextFor(value, tableName); const descLine = desc ? splitAliasText(desc).desc : '';
   setText($('#hbaseScanTitle'), 'HBase 表查看'); setText($('#hbaseScanDesc'), descLine ? `说明：${descLine}` : '');
-  if (!sameTable) { state.hbaseScan.rawText = ''; state.hbaseScan.displayText = ''; state.hbaseScan.structured = false; state.hbaseScan.parsedCount = 0; state.hbaseScan.skippedCount = 0; state.hbaseScan.truncated = false; state.hbaseScan.error = ''; $('#hbaseScanSearch').value = ''; }
+  if (!sameTable) { state.hbaseScan.rawText = ''; state.hbaseScan.displayText = ''; state.hbaseScan.table = null; state.hbaseScan.structured = false; state.hbaseScan.parsedCount = 0; state.hbaseScan.skippedCount = 0; state.hbaseScan.truncated = false; state.hbaseScan.error = ''; $('#hbaseScanSearch').value = ''; }
   openDialog('hbaseScanDialog'); renderHbaseScan(); void loadHbaseSample(value, sameTable ? state.hbaseScan.limit : 20);
 }
 function moveHbaseScanMatch(delta) {
-  const scan = state.hbaseScan; const matches = findTextMatches(scan.displayText, $('#hbaseScanSearch').value.trim());
+  const scan = state.hbaseScan; const matches = findTextMatches(hbaseScanSearchText(scan), $('#hbaseScanSearch').value.trim());
   if (!matches.length) return;
   scan.matchIndex = (scan.matchIndex + delta + matches.length) % matches.length; renderHbaseScan();
-  requestAnimationFrame(() => $('#hbaseScanText mark.active-match')?.scrollIntoView({ block: 'center', behavior: 'smooth' }));
+  requestAnimationFrame(() => $('#hbaseScanDialog mark.active-match')?.scrollIntoView({ block: 'center', inline: 'center', behavior: 'smooth' }));
 }
 async function previewRemote(remotePath, kind) {
   openDialog('previewDialog'); setText($('#previewTitle'), kind === 'hdfs' ? 'HDFS 文件预览' : '文件预览'); setText($('#previewMeta'), remotePath); setText($('#previewText'), '正在读取…');
@@ -717,13 +737,14 @@ function connectionConfig(source) {
 }
 async function loadHbaseRowKey(tablePath, rowKey) {
   const request = state.gates.scan.next(); const scan = state.hbaseScan;
+  scan.rawText = ''; scan.displayText = ''; scan.table = null; scan.structured = false; scan.parsedCount = 0; scan.skippedCount = 0; scan.truncated = false;
   clearHbaseScanTimer(); scan.tablePath = tablePath; scan.queryKind = 'get'; scan.rowKey = rowKey; scan.loading = true; scan.startedAt = Date.now(); scan.error = ''; scan.matchIndex = 0; renderHbaseScan();
   const update = () => { renderHbaseScan(); status(`HBase · ${tablePath} · 正在精确查询 RowKey`); }; update(); scan.progressTimer = setInterval(update, 1000);
   try {
     const result = await postJson('/api/hbase/get', { path: tablePath, rowKey }, { signal: request.signal, timeout: 60000 });
     if (!request.isCurrent()) return null;
     scan.rawText = String(result.text || ''); scan.truncated = Boolean(result.truncated); scan.structured = false; scan.parsedCount = Number(result.rowCount) || 0; scan.skippedCount = 0;
-    const formatted = formatHbaseScanText(tablePath, scan.rawText); scan.structured = formatted.structured; scan.parsedCount = formatted.parsedCount || scan.parsedCount; scan.skippedCount = formatted.skippedCount; scan.displayText = formatted.structured ? formatted.text : (scan.rawText || '（未找到该 RowKey）');
+    const formatted = formatHbaseScanText(tablePath, scan.rawText); scan.table = formatted.table; scan.structured = formatted.structured; scan.parsedCount = formatted.parsedCount || scan.parsedCount; scan.skippedCount = formatted.skippedCount; scan.displayText = formatted.structured ? formatted.text : (scan.rawText || '（未找到该 RowKey）');
     finishHbaseScan(); status(`HBase · ${tablePath} · RowKey 查询完成`, 'success'); return result;
   } catch (error) { if (!request.isCurrent() || error.code === 'REQUEST_ABORTED') return null; finishHbaseScan(error); status(error.message, 'error'); return null; }
 }
@@ -780,10 +801,12 @@ async function connectSource(source) {
       clearQueryResult({ all: true }); const response = await postJson('/api/voyage/connect', token ? { token } : {}, { timeout: 30000 });
       state.voyage = { connected: Boolean(response.connected), config: response.config || state.connectionProfiles.voyage };
       state.connectionProfiles.voyage = response.config || state.connectionProfiles.voyage;
+      $('#querySourceSelect').value = 'voyage'; syncQuerySchemaControl(); clearQueryResult({ all: true });
       renderConnectionList(); renderDbStatus(); toast('工程环境 Voyage 在线数据库已连接', 'ok');
     } else {
       clearQueryResult({ all: true }); const response = await postJson('/api/db/connect', { source }, { timeout: 30000 });
       state.databases[source] = { connected: true, config: response.config || state.connectionProfiles[source], password: '' };
+      if (source === 'pg') { $('#querySourceSelect').value = 'pg'; syncQuerySchemaControl(); clearQueryResult({ all: true }); }
       renderConnectionList(); renderDbStatus(); toast(`${DB_SOURCE_LABEL[source]} 已连接`, 'ok');
     }
   } catch (error) {
@@ -796,18 +819,30 @@ async function useSshBigdataMode() {
   try { const response = await postJson('/api/bigdata/use-ssh', {}); state.bigdata = { connected: false, mode: 'ssh', config: response.config || state.bigdata.config || state.connectionProfiles.bigdata }; state.connectionErrors.bigdata = ''; ['hdfs', 'hbase'].forEach((kind) => resetResourceState(kind)); renderBigdataSource(); renderConnectionList(); toast('HDFS/HBase 已切换为 SSH 命令模式', 'ok'); }
   catch (error) { state.connectionErrors.bigdata = error.message; renderConnectionList(); toast(error.message, 'err'); }
 }
-function activeDatabaseSource() { return 'pg'; }
-function activeDatabaseSchema() { return 'bill_inmemory'; }
-function querySourcePayload() { return { source: 'pg', schema: 'bill_inmemory' }; }
-function isDatabaseSourceConnected(source = activeDatabaseSource()) { return Boolean(state.databases[source]?.connected); }
+let voyageQuerySchema = 'bill_inmemory';
+function activeDatabaseSource() { return $('#querySourceSelect').value === 'voyage' ? 'voyage' : 'pg'; }
+function activeDatabaseSchema(source = activeDatabaseSource()) { return source === 'voyage' ? $('#querySchemaSelect').value : 'bill_inmemory'; }
+function querySourcePayload(source = activeDatabaseSource(), schema = activeDatabaseSchema(source)) { return { source, schema }; }
+function isDatabaseSourceConnected(source = activeDatabaseSource()) { return source === 'voyage' ? Boolean(state.voyage.connected) : Boolean(state.databases[source]?.connected); }
 function databaseSourceName(source = activeDatabaseSource()) { return DB_SOURCE_LABEL[source] || source; }
+function syncQuerySchemaControl() {
+  const source = activeDatabaseSource(), engineering = source === 'voyage', relations = state.activeQuery === 'relations';
+  $('#querySourceSelect').disabled = relations;
+  $('#querySchemaSelect').disabled = relations || !engineering;
+  $('#querySchemaSelect').value = engineering ? voyageQuerySchema : 'bill_inmemory';
+  setText($('#querySourceNote'), relations ? '关系链查询固定使用测试 PG 档案 / MySQL 配置；此环境选择不作用于关系链。' : engineering ? `工程环境：Voyage · Schema ${voyageQuerySchema}（档案与配置均经 Voyage 读取）` : '测试档案：PostgreSQL · bill_inmemory；配置：MySQL / UDAL · CONFIGDB_CNOS_JF_TEST');
+  $('#productInstanceQueryForm .query-help').textContent = engineering ? `按 prod_inst_id 查询工程环境 Voyage · ${voyageQuerySchema} 档案，保留关联查询步骤与实际来源。` : '按 prod_inst_id 查询 PG 档案，保留历史版本、直接产品/销售品关系、属性和账户；关联节点不展开兄弟实例。销售品定义与定价计划查 MySQL。';
+  $('#offerQueryForm .query-help').textContent = engineering ? '通过工程环境 Voyage 查询套餐及订购实例，使用当前 Schema，不要求连接测试 MySQL。' : '按 offer_id 查 MySQL 套餐定义与定价计划，再经 PG 销售品实例、产品关系反查订购用户；规格 ID 与销售品实例 ID 分开使用。';
+  $('#eventTypeQueryForm .query-help').textContent = engineering ? '通过工程环境 Voyage 查询事件配置与关联实例，使用当前 Schema。' : '事件格式、入库路由与定价关联查 MySQL，关联的销售品及产品实例查 PG；套餐请使用 offer_id 查询。';
+  $('#thresholdQueryForm .query-help').textContent = `从${engineering ? `工程环境 Voyage · ${voyageQuerySchema}` : '测试 PG'}查询 A/Z 关系，筛选产品规格 900178630，并返回六档提醒实例属性。`;
+}
 const QUERY_NAMES = ['phone', 'productInstance', 'offer', 'eventType', 'threshold', 'relations'];
 const QUERY_CONTROLS = {
   phone: ['btnPhoneQuery', 'btnPhoneCancel'], productInstance: ['btnProductInstanceQuery', 'btnProductInstanceCancel'], offer: ['btnOfferQuery', 'btnOfferCancel'], eventType: ['btnEventTypeQuery', 'btnEventTypeCancel'], threshold: ['btnThresholdQuery', 'btnThresholdCancel'], relations: ['btnRelationsQuery', 'btnRelationsCancel'],
 };
 function queryModel(query = state.activeQuery) { return state[`${query}Query`]; }
 function queryResultRoot(query = state.activeQuery) { return document.querySelector(`[data-query-result="${query}"]`); }
-function queryHint(query) { return query === 'offer' ? '套餐定义查 MySQL，订购实例查 PG；输入套餐规格 offer_id。' : query === 'eventType' ? '事件配置查 MySQL，订购实例查 PG；请选择事件类型。' : query === 'relations' ? '选择关系链，输入对应实例或账户 ID；档案查 PG，配置查 MySQL。' : query === 'threshold' ? '连接 PostgreSQL，再输入 A 端产品实例 ID，读取提醒实例属性。' : query === 'productInstance' ? '连接 PostgreSQL 查实例档案，MySQL 补充配置；请输入产品实例 ID。' : '连接 PostgreSQL 查档案，MySQL 补充配置；输入业务号码定位产品实例。'; }
+function queryHint(query) { if (activeDatabaseSource() === 'voyage' && query !== 'relations') return `连接工程环境 Voyage · Schema ${activeDatabaseSchema()}，按当前环境查询${{ phone: '业务号码', productInstance: '产品实例', offer: '套餐', eventType: '事件类型', threshold: '提醒属性' }[query]}。`; return query === 'offer' ? '套餐定义查 MySQL，订购实例查 PG；输入套餐规格 offer_id。' : query === 'eventType' ? '事件配置查 MySQL，订购实例查 PG；请选择事件类型。' : query === 'relations' ? '选择关系链，输入对应实例或账户 ID；档案查 PG，配置查 MySQL。' : query === 'threshold' ? '连接 PostgreSQL，再输入 A 端产品实例 ID，读取提醒实例属性。' : query === 'productInstance' ? '连接 PostgreSQL 查实例档案，MySQL 补充配置；请输入产品实例 ID。' : '连接 PostgreSQL 查档案，MySQL 补充配置；输入业务号码定位产品实例。'; }
 function renderQueryEmpty(query) {
   const actions = [el('button', { class: 'wb-button primary', type: 'button', text: '打开连接设置', on: { click: () => { renderConnectionList(); openDialog('connectionDialog'); } } })];
   queryResultRoot(query).replaceChildren(el('div', { class: 'query-empty' }, el('strong', { text: '等待查询' }), el('span', { text: queryHint(query) }), ...actions));
@@ -946,7 +981,7 @@ function renderQueryResult(result) {
     const coverage = result.archiveCoverage;
     root.append(resultSection('查询范围与覆盖', [{
       范围: '根实例及一跳直接产品关系；根实例销售品及其一跳关系；关联节点不展开兄弟实例',
-      历史版本: '保留 PG 现存的全部 his_id 版本；不代表当前有效履历或 Redis 精确快照',
+      历史版本: '保留所选档案源现存的全部 his_id 版本；不代表当前有效履历或 Redis 精确快照',
       产品实例数: coverage.productInstanceCount, 销售品实例数: coverage.offerInstanceCount, 展开轮数: coverage.rounds,
       上限: `${coverage.limits.nodesPerKind} 个产品与销售品 ID / ${coverage.limits.rounds} 轮 / ${coverage.limits.readRows} 行读取`,
       截断原因: coverage.limitReasons.join('；') || (result.truncated ? '累计读取达到上限' : '未触达上限'),
@@ -1069,15 +1104,16 @@ function renderEventTypeResult(result) {
   if (result.status === 'empty') root.append(el('div', { class: 'query-empty' }, el('strong', { text: '没有查到事件类型配置与关联档案' }), el('span', { text: '请核对查询环境、Schema 和事件类型配置。' })));
 }
 async function loadCustomerProducts(customerId, source = activeDatabaseSource(), query = state.activeQuery, schema = activeDatabaseSchema(source)) {
-  try { setQueryState('正在查询同客户其他产品…', '', query); const response = await postJson('/api/query/customer-products', { customerId, ...querySourcePayload(source, schema) }, { timeout: 60000 }); const phones = [...new Set(response.result.rows.map((row) => rowField(row, 'acc_num') || rowField(row, 'acc_nbr')).filter(Boolean))]; const actions = phones.map((phone) => el('button', { class: 'wb-button', type: 'button', text: `查询 ${phone}`, on: { click: () => { $('#phoneInput').value = phone; switchQueryTab('phone'); $('#phoneQueryForm').requestSubmit(); } } })); const section = resultSection('同客户其他产品（按需展开）', response.result.rows, { open: true, actions }); queryResultRoot(query).append(section); setQueryState(`同客户产品已加载 · ${response.result.rows.length} 条`, 'success', query); } catch (error) { setQueryState(error.message, 'error', query); }
+  const request = state.gates[query].next();
+  try { setQueryState('正在查询同客户其他产品…', '', query); const response = await postJson('/api/query/customer-products', { customerId, ...querySourcePayload(source, schema) }, { signal: request.signal, timeout: 60000 }); if (!request.isCurrent()) return; const phones = [...new Set(response.result.rows.map((row) => rowField(row, 'acc_num') || rowField(row, 'acc_nbr')).filter(Boolean))]; const actions = phones.map((phone) => el('button', { class: 'wb-button', type: 'button', text: `查询 ${phone}`, on: { click: () => { $('#phoneInput').value = phone; switchQueryTab('phone'); $('#phoneQueryForm').requestSubmit(); } } })); const section = resultSection('同客户其他产品（按需展开）', response.result.rows, { open: true, actions }); queryResultRoot(query).append(section); setQueryState(`同客户产品已加载 · ${response.result.rows.length} 条`, 'success', query); } catch (error) { if (request.isCurrent()) setQueryState(error.message, 'error', query); }
 }
-async function loadAccountCandidates(productInstanceId, customerId, source = activeDatabaseSource(), query = state.activeQuery, schema = activeDatabaseSchema(source)) { try { setQueryState('正在辅助定位账户…', '', query); const response = await postJson('/api/query/account-candidates', { productInstanceId: String(productInstanceId || ''), customerId: String(customerId || ''), ...querySourcePayload(source, schema) }, { timeout: 60000 }); queryResultRoot(query).append(resultSection('账户候选（非付费关系结论）', response.result.rows, { open: true })); setQueryState(`账户候选已加载 · ${response.result.rows.length} 条`, 'success', query); } catch (error) { setQueryState(error.message, 'error', query); } }
+async function loadAccountCandidates(productInstanceId, customerId, source = activeDatabaseSource(), query = state.activeQuery, schema = activeDatabaseSchema(source)) { const request = state.gates[query].next(); try { setQueryState('正在辅助定位账户…', '', query); const response = await postJson('/api/query/account-candidates', { productInstanceId: String(productInstanceId || ''), customerId: String(customerId || ''), ...querySourcePayload(source, schema) }, { signal: request.signal, timeout: 60000 }); if (!request.isCurrent()) return; queryResultRoot(query).append(resultSection('账户候选（非付费关系结论）', response.result.rows, { open: true })); setQueryState(`账户候选已加载 · ${response.result.rows.length} 条`, 'success', query); } catch (error) { if (request.isCurrent()) setQueryState(error.message, 'error', query); } }
 async function restoreDatabaseStatus() { try { const response = await getJson('/api/db/status'); for (const source of ['udal', 'doris', 'pg']) { const item = response.sources?.[source] || {}; state.connectionProfiles[source] = response.defaults?.[source] || state.connectionProfiles[source]; state.databases[source] = { connected: Boolean(item.connected), config: item.config, password: '' }; } renderDbStatus(); renderConnectionList(); } catch (_) { renderDbStatus(); } }
 async function restoreVoyageStatus() { try { const response = await getJson('/api/voyage/status'); state.connectionProfiles.voyage = response.config || state.connectionProfiles.voyage; state.voyage = { connected: Boolean(response.connected), config: response.config || state.connectionProfiles.voyage }; renderDbStatus(); renderConnectionList(); } catch (_) { renderDbStatus(); } }
 async function restoreBigdataStatus() { try { const response = await getJson('/api/bigdata/status'); state.connectionProfiles.bigdata = response.config || state.connectionProfiles.bigdata; state.bigdata = { connected: Boolean(response.connected), mode: response.mode || 'ssh', config: response.config || state.connectionProfiles.bigdata }; renderBigdataSource(); renderConnectionList(); } catch (_) { renderBigdataSource(); } }
 async function submitPhoneQuery(event) {
   event?.preventDefault(); const phone = $('#phoneInput').value.trim(); const source = activeDatabaseSource(); const schema = activeDatabaseSchema(source); if (!phone) { setQueryState('请输入业务号码', 'error', 'phone'); return; } if (!isDatabaseSourceConnected(source)) { setQueryState(`请先连接${databaseSourceName(source)}`, 'error', 'phone'); renderConnectionList(); openDialog('connectionDialog'); return; }
-  const request = state.gates.phone.next(); state.phoneQuery.running = true; state.phoneQuery.result = null; $('#btnPhoneQuery').disabled = true; $('#btnPhoneCancel').classList.remove('hidden'); setQueryState('正在按业务号码定位产品实例…', '', 'phone'); queryResultRoot('phone').replaceChildren(el('div', { class: 'query-empty' }, el('strong', { text: '查询中' }), el('span', { text: `PostgreSQL · Schema ${schema} · 正在读取档案；配置由 MySQL 补充` })));
+  const request = state.gates.phone.next(); state.phoneQuery.running = true; state.phoneQuery.result = null; $('#btnPhoneQuery').disabled = true; $('#btnPhoneCancel').classList.remove('hidden'); setQueryState('正在按业务号码定位产品实例…', '', 'phone'); queryResultRoot('phone').replaceChildren(el('div', { class: 'query-empty' }, el('strong', { text: '查询中' }), el('span', { text: source === 'voyage' ? `工程环境 · Voyage · Schema ${schema} · 正在读取档案` : `PostgreSQL · Schema ${schema} · 正在读取档案；配置由 MySQL 补充` })));
   try { const response = await postJson('/api/query/phone', { phone, ...querySourcePayload(source, schema) }, { signal: request.signal, timeout: 60000 }); if (!request.isCurrent()) return; renderQueryResult(response.result); setQueryState(response.result.status === 'partial' ? '查询部分完成，请查看缺失或失败步骤' : response.result.status === 'empty' ? '没有找到匹配号码' : '查询完成', response.result.status === 'complete' ? 'success' : '', 'phone'); }
   catch (error) { if (!request.isCurrent() || error.code === 'REQUEST_ABORTED') return; setQueryState(error.message, 'error', 'phone'); queryResultRoot('phone').replaceChildren(el('div', { class: 'query-empty' }, el('strong', { text: '查询失败' }), el('span', { text: error.message }))); }
   finally { if (request.isCurrent()) { state.phoneQuery.running = false; $('#btnPhoneQuery').disabled = false; $('#btnPhoneCancel').classList.add('hidden'); } }
@@ -1092,14 +1128,14 @@ async function submitProductInstanceQuery(event) {
 async function submitOfferQuery(event) {
   event?.preventDefault(); const offerId = $('#offerInput').value.trim(); const source = activeDatabaseSource(); const schema = activeDatabaseSchema(source);
   if (!/^\d+$/.test(offerId)) { setQueryState('请输入数字格式的套餐 offer_id', 'error', 'offer'); return; }
-  if (!isDatabaseSourceConnected('udal')) { setQueryState('请先连接 MySQL / UDAL 读取配置定义', 'error', 'offer'); renderConnectionList(); openDialog('connectionDialog'); return; }
+  if (!isDatabaseSourceConnected(source === 'voyage' ? 'voyage' : 'udal')) { setQueryState(source === 'voyage' ? '请先连接工程环境 Voyage' : '请先连接 MySQL / UDAL 读取配置定义', 'error', 'offer'); renderConnectionList(); openDialog('connectionDialog'); return; }
   const request = state.gates.offer.next(); state.offerQuery.running = true; state.offerQuery.result = null; $('#btnOfferQuery').disabled = true; $('#btnOfferCancel').classList.remove('hidden'); setQueryState('正在按 offer_id 查询套餐…', '', 'offer'); queryResultRoot('offer').replaceChildren(el('div', { class: 'query-empty' }, el('strong', { text: '查询中' })));
   try { const response = await postJson('/api/query/offer', { offerId, ...querySourcePayload(source, schema) }, { signal: request.signal, timeout: 60000 }); if (!request.isCurrent()) return; renderOfferResult(response.result); const hasFailedSteps = response.result.steps?.some((step) => step.status === 'error'); setQueryState(response.result.status === 'partial' ? (hasFailedSteps ? '查询部分完成，请查看失败步骤' : '查询完成，结果已按上限截取') : response.result.status === 'empty' ? '没有找到该 offer_id 的套餐' : '查询完成', response.result.status === 'complete' || (response.result.status === 'partial' && !hasFailedSteps) ? 'success' : '', 'offer'); }
   catch (error) { if (!request.isCurrent() || error.code === 'REQUEST_ABORTED') return; setQueryState(error.message, 'error', 'offer'); queryResultRoot('offer').replaceChildren(el('div', { class: 'query-empty' }, el('strong', { text: '查询失败' }), el('span', { text: error.message }))); }
   finally { if (request.isCurrent()) { state.offerQuery.running = false; $('#btnOfferQuery').disabled = false; $('#btnOfferCancel').classList.add('hidden'); } }
 }
 async function submitEventTypeQuery(event) {
-  event?.preventDefault(); const eventTypeId = $('#eventTypeInput').value.trim(); const source = activeDatabaseSource(); const schema = activeDatabaseSchema(source); if (!/^\d+$/.test(eventTypeId)) { setQueryState('请选择正确的事件类型', 'error', 'eventType'); return; } if (!isDatabaseSourceConnected('udal')) { setQueryState('请先连接 MySQL / UDAL 读取配置定义', 'error', 'eventType'); renderConnectionList(); openDialog('connectionDialog'); return; }
+  event?.preventDefault(); const eventTypeId = $('#eventTypeInput').value.trim(); const source = activeDatabaseSource(); const schema = activeDatabaseSchema(source); if (!/^\d+$/.test(eventTypeId)) { setQueryState('请选择正确的事件类型', 'error', 'eventType'); return; } if (!isDatabaseSourceConnected(source === 'voyage' ? 'voyage' : 'udal')) { setQueryState(source === 'voyage' ? '请先连接工程环境 Voyage' : '请先连接 MySQL / UDAL 读取配置定义', 'error', 'eventType'); renderConnectionList(); openDialog('connectionDialog'); return; }
   const request = state.gates.eventType.next(); state.eventTypeQuery.running = true; state.eventTypeQuery.result = null; $('#btnEventTypeQuery').disabled = true; $('#btnEventTypeCancel').classList.remove('hidden'); setQueryState('正在查询事件类型配置与关联档案…', '', 'eventType'); queryResultRoot('eventType').replaceChildren(el('div', { class: 'query-empty' }, el('strong', { text: '查询中' }), el('span', { text: `${databaseSourceName(source)} · 正在读取套餐与实例关联` })));
   try { const response = await postJson('/api/query/event-type', { eventTypeId, ...querySourcePayload(source, schema) }, { signal: request.signal, timeout: 60000 }); if (!request.isCurrent()) return; renderEventTypeResult(response.result); const hasFailedSteps = response.result.steps?.some((step) => step.status === 'error'); setQueryState(response.result.status === 'partial' ? (hasFailedSteps ? '查询部分完成，请查看失败步骤' : '查询完成，结果已按上限抽样') : response.result.status === 'empty' ? '没有找到事件类型配置' : '查询完成', response.result.status === 'complete' || (response.result.status === 'partial' && !hasFailedSteps) ? 'success' : '', 'eventType'); }
   catch (error) { if (!request.isCurrent() || error.code === 'REQUEST_ABORTED') return; setQueryState(error.message, 'error', 'eventType'); queryResultRoot('eventType').replaceChildren(el('div', { class: 'query-empty' }, el('strong', { text: '查询失败' }), el('span', { text: error.message })));
@@ -1171,10 +1207,12 @@ async function submitRedisQuery(event) {
   catch (error) { if (!request.isCurrent() || error.code === 'REQUEST_ABORTED') return; setRedisState(error.message, 'error'); $('#redisResults').replaceChildren(el('div', { class: 'query-empty' }, el('strong', { text: '查询失败' }), el('span', { text: error.message })));
   } finally { if (request.isCurrent()) { state.redisQuery.running = false; $('#btnRedisQuery').disabled = false; $('#btnRedisCancel').classList.add('hidden'); } }
 }
-function switchQueryTab(query) { state.activeQuery = QUERY_NAMES.includes(query) ? query : 'phone'; $$('[data-query-tab]').forEach((button) => { const active = button.dataset.queryTab === state.activeQuery; button.classList.toggle('active', active); button.setAttribute('aria-selected', String(active)); }); $$('[data-query-pane]').forEach((pane) => pane.classList.toggle('hidden', pane.dataset.queryPane !== state.activeQuery)); syncActiveQueryView(); }
+function switchQueryTab(query) { state.activeQuery = QUERY_NAMES.includes(query) ? query : 'phone'; $$('[data-query-tab]').forEach((button) => { const active = button.dataset.queryTab === state.activeQuery; button.classList.toggle('active', active); button.setAttribute('aria-selected', String(active)); }); $$('[data-query-pane]').forEach((pane) => pane.classList.toggle('hidden', pane.dataset.queryPane !== state.activeQuery)); syncQuerySchemaControl(); syncActiveQueryView(); }
 document.querySelector('[data-open-connection-settings]')?.addEventListener('click', () => { renderConnectionList(); openDialog('connectionDialog'); });
 $$('[data-connection-connect]').forEach((button) => button.addEventListener('click', () => void connectSource(button.dataset.connectionConnect)));
 $('#voyageTokenInput')?.addEventListener('input', () => { state.connectionErrors.voyage = ''; renderConnectionList(); });
+$('#querySourceSelect').addEventListener('change', () => { syncQuerySchemaControl(); clearQueryResult({ all: true }); });
+$('#querySchemaSelect').addEventListener('change', () => { voyageQuerySchema = $('#querySchemaSelect').value; syncQuerySchemaControl(); clearQueryResult({ all: true }); });
 document.querySelector('[data-connection-use-ssh]')?.addEventListener('click', () => void useSshBigdataMode());
 $$('[data-query-tab]').forEach((button) => button.addEventListener('click', () => switchQueryTab(button.dataset.queryTab)));
 $('#phoneQueryForm').addEventListener('submit', submitPhoneQuery); $('#btnPhoneCancel').addEventListener('click', () => { state.gates.phone.cancel(); state.phoneQuery.running = false; $('#btnPhoneQuery').disabled = false; $('#btnPhoneCancel').classList.add('hidden'); setQueryState('查询已取消', '', 'phone'); });
@@ -1187,16 +1225,19 @@ $('#relationsQueryForm').addEventListener('submit', submitRelationsQuery);
 $('#btnRelationsCancel').addEventListener('click', () => { state.gates.relations.cancel(); state.relationsQuery.running = false; $('#btnRelationsQuery').disabled = false; $('#btnRelationsCancel').classList.add('hidden'); setQueryState('查询已取消', '', 'relations'); });
 $('#relationModeInput').addEventListener('change', syncRelationInputs);
 syncRelationInputs();
+syncQuerySchemaControl();
 clearQueryResult({ all: true });
 renderRedisEmpty();
-initRedisSync({
+const redisActions = {
   refresh: () => submitRedisQuery(),
   openConnections: () => { renderConnectionList(); openDialog('connectionDialog'); },
   confirm: (target, message, action) => {
     state.pendingConfirm = { action }; setText($('#confirmTitle'), '确认 Redis 档案操作');
     setText($('#confirmMessage'), message); setText($('#confirmTarget'), target); openDialog('confirmDialog', $('#btnConfirmAction'));
   },
-});
+};
+initRedisSync(redisActions);
+initRedisIndexes(redisActions);
 
 async function checkStatus() { if (document.hidden || state.statusRunning) return; state.statusRunning = true; try { const [sshStatus, bigdataStatus, dbStatus, voyageStatus] = await Promise.all([getJson('/api/status'), getJson('/api/bigdata/status'), getJson('/api/db/status'), getJson('/api/voyage/status')]); if (state.connected && !sshStatus.connected) { setConnected(false); toast('远程连接已断开', 'err'); } state.bigdata = { connected: Boolean(bigdataStatus.connected), mode: bigdataStatus.mode || 'ssh', config: bigdataStatus.config || state.bigdata.config }; for (const source of ['udal', 'doris', 'pg']) { const item = dbStatus.sources?.[source]; if (item) { state.databases[source].connected = Boolean(item.connected); state.databases[source].config = item.config || state.databases[source].config; } } state.voyage = { connected: Boolean(voyageStatus.connected), config: voyageStatus.config || state.voyage.config }; renderBigdataSource(); renderDbStatus(); renderConnectionList(); } catch (error) { if (state.connected) { setConnected(false); toast('本地桥接服务不可用', 'err'); } } finally { state.statusRunning = false; if (!document.hidden) state.statusTimer = setTimeout(checkStatus, 5000); } }
 document.addEventListener('visibilitychange', () => { clearTimeout(state.statusTimer); if (!document.hidden) checkStatus(); });
@@ -1212,6 +1253,7 @@ renderBreadcrumbs($('#crumbs'), state.cwd, state.home, (value) => navigateResour
     state.favorites = loadFavoritesForCurrentServer(); renderFavorites(); updateFavoriteButtons(); renderBigdataSource(); renderConnectionList();
   } catch (_) {}
   await Promise.all([restoreDatabaseStatus(), restoreVoyageStatus(), restoreBigdataStatus()]);
+  if (!state.databases.pg.connected && state.voyage.connected) { $('#querySourceSelect').value = 'voyage'; syncQuerySchemaControl(); clearQueryResult({ all: true }); }
   await restoreSession();
   checkStatus();
 })();

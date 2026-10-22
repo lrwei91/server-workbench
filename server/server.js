@@ -21,10 +21,12 @@ const { manager: bigdata } = require('./bigdata-client');
 const { DcosLogs } = require('./dcos-logs');
 const { RedisArchiveService } = require('./redis-archive');
 const { PgRedisSync, TABLES: SYNC_TABLES } = require('./pg-redis-sync');
+const { RedisIndexes } = require('./redis-indexes');
 const voyage = new VoyageManager(config.voyage);
 const dcos = new DcosLogs(config.dcos, { logDir: path.join(config.resolveLogDir(), 'dcos') });
 const redisArchive = new RedisArchiveService(config.redisArchive);
 const redisSync = new PgRedisSync({ database, redis: redisArchive, backupDir: path.join(config.resolveLogDir(), 'pg-redis-sync') });
+const redisIndexes = new RedisIndexes({ database, redis: redisArchive, auditDir: path.join(config.resolveLogDir(), 'redis-indexes') });
 
 const ROOT = path.join(__dirname, '..');
 const PUBLIC_DIR = path.join(ROOT, 'public');
@@ -120,8 +122,8 @@ function requireString(value, name, { allowEmpty = false } = {}) {
 function requireQuerySource(value) {
   const source = value === undefined ? 'pg' : requireString(value, 'source').toLowerCase();
   if (!['pg', 'udal', 'voyage'].includes(source)) throw new RequestError(400, 'INVALID_INPUT', 'source 必须是 pg、udal 或 voyage');
-  // 兼容旧客户端参数，但固定查询不再按客户端选择改变档案/配置来源。
-  return 'pg';
+  // 工程环境复用 Voyage；旧 UDAL 档案参数仍兼容到测试 PG。
+  return source === 'voyage' ? 'voyage' : 'pg';
 }
 function requireQuerySchema(value, source) {
   if (source === 'pg') {
@@ -308,7 +310,22 @@ async function handle(req, res) {
     const body = await readBody(req); assertObject(body, []); await voyage.disconnect(); return sendJson(res, 200, { ok: true, ...voyage.status() });
   }
   if (req.method === 'GET' && p === '/api/redis/status') return sendJson(res, 200, { ok: true, config: redisArchive.defaults() });
-  if (req.method === 'GET' && p === '/api/redis-sync/status') return sendJson(res, 200, { ok: true, tables: SYNC_TABLES.map(({ table, group }) => ({ table, group })), schema: 'bill_inmemory', mode: 'existing-record-fields' });
+  if (req.method === 'POST' && p === '/api/redis-index/lookup') {
+    const body = await readBody(req); assertObject(body, ['inputType', 'value']);
+    const result = await runQueryRequest(req, res, (signal) => redisIndexes.lookup(body.inputType, body.value, { signal }));
+    return sendJson(res, 200, { ok: true, result });
+  }
+  if (req.method === 'POST' && p === '/api/redis-index/preview') {
+    const body = await readBody(req); assertObject(body, ['productInstanceId']);
+    const result = await runQueryRequest(req, res, (signal) => redisIndexes.preview(requireString(body.productInstanceId, 'productInstanceId'), { signal }));
+    return sendJson(res, 200, { ok: true, result });
+  }
+  if (req.method === 'POST' && p === '/api/redis-index/apply') {
+    requireSameOrigin(req); const body = await readBody(req); assertObject(body, ['previewId', 'confirmed']);
+    const result = await runQueryRequest(req, res, (signal) => redisIndexes.apply(requireString(body.previewId, 'previewId'), body.confirmed, { signal }));
+    return sendJson(res, 200, { ok: true, result });
+  }
+  if (req.method === 'GET' && p === '/api/redis-sync/status') return sendJson(res, 200, { ok: true, tables: SYNC_TABLES.map(({ table, group }) => ({ table, group })), schema: 'bill_inmemory', mode: 'fields-and-direct-subscriptions' });
   if (req.method === 'POST' && p === '/api/redis-sync/preview') {
     const body = await readBody(req); assertObject(body, ['key', 'tables', 'timestampZone']);
     const result = await runQueryRequest(req, res, (signal) => redisSync.preview(requireString(body.key, 'key'), { tables: body.tables, timestampZone: body.timestampZone }, { signal }));

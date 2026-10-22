@@ -192,9 +192,9 @@ test('HTTP errors have real status and normalized shape', async () => {
     const invalidVoyageSchema = await request(server, 'POST', '/api/query/phone', { phone: '13338297988', source: 'voyage', schema: 'other' });
     assert.equal(invalidVoyageSchema.status, 400); assert.equal(invalidVoyageSchema.body.error.code, 'INVALID_INPUT');
     const disconnectedVoyage = await request(server, 'POST', '/api/query/phone', { phone: '13338297988', source: 'voyage' });
-    assert.equal(disconnectedVoyage.status, 409); assert.equal(disconnectedVoyage.body.error.code, 'PG_NOT_CONNECTED');
+    assert.equal(disconnectedVoyage.status, 409); assert.equal(disconnectedVoyage.body.error.code, 'VOYAGE_NOT_CONNECTED');
     const disconnectedVoyageInstance = await request(server, 'POST', '/api/query/product-instance', { productInstanceId: '48243980', source: 'voyage' });
-    assert.equal(disconnectedVoyageInstance.status, 409); assert.equal(disconnectedVoyageInstance.body.error.code, 'PG_NOT_CONNECTED');
+    assert.equal(disconnectedVoyageInstance.status, 409); assert.equal(disconnectedVoyageInstance.body.error.code, 'VOYAGE_NOT_CONNECTED');
     for (const [method, endpoint] of [['GET', '/api/archive/status'], ['POST', '/api/archive/connect'], ['POST', '/api/archive/disconnect'], ['POST', '/api/query/archive']]) {
       assert.equal((await request(server, method, endpoint, method === 'POST' ? {} : undefined)).status, 404);
     }
@@ -266,14 +266,14 @@ test('log queue writes asynchronously and paginates newest entries', async () =>
 test('fixed query panel replaces command and log interactions', () => {
   const html = fs.readFileSync(path.join(__dirname, '../../public/index.html'), 'utf8');
   const source = fs.readFileSync(path.join(__dirname, '../../public/js/main.js'), 'utf8');
-  assert.match(html, /<h1>数据库查询<\/h1>/); assert.match(html, /号码查产品/); assert.match(html, /实例查档案/); assert.match(html, /id="productInstanceQueryForm"/); assert.match(html, /查询套餐/); assert.match(html, /查询事件类型/); assert.match(html, /id="offerQueryForm"/); assert.match(html, /<input id="offerInput"[^>]*inputmode="numeric"/); assert.match(html, /id="eventTypeQueryForm"/); assert.match(html, /value="206080000" selected/); assert.match(html, /阈值查询/); assert.match(html, /Voyage 在线数据库/); assert.match(html, /档案：PostgreSQL · bill_inmemory/); assert.match(html, /配置：MySQL/); assert.doesNotMatch(html, /id="querySourceSelect"|id="querySchemaSelect"/); assert.match(html, /id="relationsQueryForm"/); assert.match(html, /id="connectionDialog"/);
+  assert.match(html, /<h1>数据库查询<\/h1>/); assert.match(html, /号码查产品/); assert.match(html, /实例查档案/); assert.match(html, /id="productInstanceQueryForm"/); assert.match(html, /查询套餐/); assert.match(html, /查询事件类型/); assert.match(html, /id="offerQueryForm"/); assert.match(html, /<input id="offerInput"[^>]*inputmode="numeric"/); assert.match(html, /id="eventTypeQueryForm"/); assert.match(html, /value="206080000" selected/); assert.match(html, /阈值查询/); assert.match(html, /Voyage 在线数据库/); assert.match(html, /测试档案：PostgreSQL · bill_inmemory/); assert.match(html, /配置：MySQL/); assert.match(html, /id="querySourceSelect"/); assert.match(html, /id="querySchemaSelect"/); assert.match(html, /id="relationsQueryForm"/); assert.match(html, /id="connectionDialog"/);
   assert.match(html, /id="insertDialog"/); assert.match(html, /id="insertSqlCopy"/); assert.match(html, /一键复制/);
   assert.match(html, /data-primary-page="redis">Redis 档案/); assert.match(html, /id="redisPage"[^>]*data-primary-panel="redis"/); assert.match(html, /id="redisQueryForm"/); assert.match(html, /id="btnRedisQuery"/);
   assert.doesNotMatch(html, /data-query-tab="redis"|data-tab="redis"/);
   assert.doesNotMatch(html, /cacheRedis|data-cache-/);
   assert.doesNotMatch(html, /id="cmdInput"|id="logFlow"|id="btnCmds"|id="commandsDialog"/);
   assert.match(source, /postJson\('\/api\/query\/phone'/); assert.match(source, /postJson\('\/api\/query\/product-instance'/); assert.match(source, /postJson\('\/api\/query\/offer'/); assert.match(source, /postJson\('\/api\/query\/event-type'/); assert.match(source, /postJson\('\/api\/query\/threshold'/); assert.match(source, /postJson\('\/api\/query\/redis'/); assert.match(source, /postJson\('\/api\/voyage\/connect'/); assert.match(source, /generateInsertScript\(result, \{ target \}\)/); assert.match(html, /id="insertTargetSelect"/); assert.match(source, /\/api\/hdfs\/preview/);
-  assert.match(source, /querySourcePayload\(source, schema\)/); assert.match(source, /function querySourcePayload\(\) \{ return \{ source: 'pg', schema: 'bill_inmemory' \}/);
+  assert.match(source, /querySourcePayload\(source, schema\)/); assert.match(source, /function querySourcePayload\(source = activeDatabaseSource\(\), schema = activeDatabaseSchema\(source\)\)/);
   assert.match(source, /resultSection\('销售品实例关系'/); assert.match(source, /resultSection\('关联销售品实例'/); assert.match(source, /resultSection\('销售品实例费用属性'/);
   assert.match(source, /resultSection\('销售品关联对象'/); assert.match(source, /resultSection\('销售品关联资源'/); assert.match(source, /resultSection\('增值业务订购关系'/);
   assert.match(source, /resultSection\('订购用户汇总'/); assert.match(source, /resultSection\('拥有套餐的产品实例'/); assert.match(source, /text: '查看档案'/); assert.match(html, /反查订购用户/);
@@ -282,11 +282,13 @@ test('fixed query panel replaces command and log interactions', () => {
   assert.doesNotMatch(source, /postJson\('\/api\/exec'|postJson\('\/api\/log\/append'|\/api\/log\/list/);
 });
 
-test('phone query loading describes PG archives and MySQL configuration, not obsolete CRM routing', async () => {
+test('phone query loading and payload follow selected PG or Voyage schema', async () => {
   const source = fs.readFileSync(path.join(__dirname, '../../public/js/main.js'), 'utf8');
   const submit = source.slice(source.indexOf('async function submitPhoneQuery('), source.indexOf('async function submitProductInstanceQuery('));
   for (const [environment, schema, expected] of [
     ['pg', 'bill_inmemory', 'PostgreSQL · Schema bill_inmemory · 正在读取档案；配置由 MySQL 补充'],
+    ['voyage', 'bill_inmemory', '工程环境 · Voyage · Schema bill_inmemory · 正在读取档案'],
+    ['voyage', 'crmv3', '工程环境 · Voyage · Schema crmv3 · 正在读取档案'],
   ]) {
     let loading; let payload;
     const controls = { '#phoneInput': { value: '13800000000' }, '#btnPhoneQuery': {}, '#btnPhoneCancel': { classList: { remove() {}, add() {} } } };
@@ -299,7 +301,7 @@ test('phone query loading describes PG archives and MySQL configuration, not obs
       setQueryState() {}, renderQueryResult() {},
       queryResultRoot: () => ({ replaceChildren: (node) => { loading = node; } }),
       el: (tag, attrs, ...children) => ({ tag, ...attrs, children }),
-      querySourcePayload: () => ({ source: 'pg', schema: 'bill_inmemory' }),
+      querySourcePayload: () => ({ source: environment, schema }),
       postJson: async (_url, body) => { payload = body; return { result: { status: 'complete' } }; },
     };
     await require('node:vm').runInNewContext(`${submit}\nsubmitPhoneQuery();`, context);
@@ -307,6 +309,57 @@ test('phone query loading describes PG archives and MySQL configuration, not obs
     assert.equal(payload.source, environment);
     assert.equal(payload.schema, schema);
     assert.doesNotMatch(loading.children[1].text, /CRM3DB/);
+  }
+});
+
+test('instance HTTP queries route to connected Voyage without PG and propagate both engineering schemas', async () => {
+  const { VoyageManager } = require('../../server/voyage');
+  const original = VoyageManager.prototype.query; const calls = [];
+  VoyageManager.prototype.query = async function (source, database, sql, values, options) {
+    calls.push({ source, schema: options.schema, sql });
+    return /FROM prod_inst\b/i.test(sql) ? [{ prod_inst_id: values[0], his_id: '0' }] : [];
+  };
+  const server = createServer(); await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  try {
+    for (const schema of ['bill_inmemory', 'crmv3']) {
+      calls.length = 0;
+      const result = await request(server, 'POST', '/api/query/product-instance', { productInstanceId: '38852790', source: 'voyage', schema });
+      assert.equal(result.status, 200); assert.equal(result.body.result.source, 'voyage'); assert.equal(result.body.result.schema, schema);
+      assert.equal(result.body.result.data.productInstances[0].prod_inst_id, '38852790');
+      assert.ok(calls.length); assert.ok(calls.every((call) => call.source === 'voyage' && call.schema === schema));
+    }
+    const pg = await request(server, 'POST', '/api/query/product-instance', { productInstanceId: '38852790', source: 'pg' });
+    assert.equal(pg.body.error.code, 'PG_NOT_CONNECTED');
+    assert.equal((await request(server, 'POST', '/api/query/product-instance', { productInstanceId: '38852790', source: 'voyage', schema: 'other' })).status, 400);
+  } finally { VoyageManager.prototype.query = original; await new Promise((resolve) => server.close(resolve)); }
+});
+
+test('selected environment connection and payload helpers use Voyage status instead of PG status', () => {
+  const source = fs.readFileSync(path.join(__dirname, '../../public/js/main.js'), 'utf8');
+  const helpers = source.slice(source.indexOf('function activeDatabaseSource('), source.indexOf('function databaseSourceName('));
+  const controls = { '#querySourceSelect': { value: 'voyage' }, '#querySchemaSelect': { value: 'crmv3' } };
+  const context = { $: (selector) => controls[selector], state: { voyage: { connected: true }, databases: { pg: { connected: false } } } };
+  const vm = require('node:vm'); vm.createContext(context); vm.runInContext(helpers, context);
+  assert.equal(vm.runInContext('isDatabaseSourceConnected()', context), true);
+  assert.equal(vm.runInContext('JSON.stringify(querySourcePayload())', context), JSON.stringify({ source: 'voyage', schema: 'crmv3' }));
+  controls['#querySourceSelect'].value = 'pg';
+  assert.equal(vm.runInContext('isDatabaseSourceConnected()', context), false);
+  assert.equal(vm.runInContext('JSON.stringify(querySourcePayload())', context), JSON.stringify({ source: 'pg', schema: 'bill_inmemory' }));
+  assert.match(source, /querySourceSelect'\)\.addEventListener\('change', .*clearQueryResult\(\{ all: true \}\)/);
+});
+
+test('environment switch cancels lazy customer/account results before they can repopulate another environment', async () => {
+  const source = fs.readFileSync(path.join(__dirname, '../../public/js/main.js'), 'utf8');
+  const helpers = source.slice(source.indexOf('async function loadCustomerProducts('), source.indexOf('async function restoreDatabaseStatus('));
+  for (const call of ["loadCustomerProducts('1', 'voyage', 'phone', 'crmv3')", "loadAccountCandidates('1', '2', 'voyage', 'phone', 'crmv3')"]) {
+    let current = true, complete, appended = 0; const signal = new AbortController().signal;
+    const context = { state: { gates: { phone: { next: () => ({ signal, isCurrent: () => current }) } } },
+      querySourcePayload: (source, schema) => ({ source, schema }), setQueryState() {},
+      postJson: (_route, body, options) => { assert.equal(body.source, 'voyage'); assert.equal(body.schema, 'crmv3'); assert.equal(options.signal, signal); return new Promise((resolve) => { complete = resolve; }); },
+      queryResultRoot: () => ({ append: () => { appended++; } }) };
+    const pending = require('node:vm').runInNewContext(`${helpers}\n${call};`, context);
+    current = false; complete({ result: { rows: [] } }); await pending;
+    assert.equal(appended, 0);
   }
 });
 

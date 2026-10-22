@@ -95,8 +95,26 @@ test('time interpretation is explicit and independent of host timezone', () => {
   assert.equal(convertPgValue('1970-01-01 08:00:00', 0, 'timestamp without time zone', 'Z'), 28800000);
   assert.equal(convertPgValue('1970-01-01 00:00:00+00', 0, 'timestamp with time zone', '+08:00'), 0);
   assert.throws(() => convertPgValue('infinity', 0, 'timestamp without time zone', '+08:00'), { code: 'FIELD_TIME' });
-  assert.throws(() => convertPgValue('1970-01-01 08:00:00.000001', 0, 'timestamp without time zone', '+08:00'), { code: 'FIELD_TIME' });
+  assert.equal(convertPgValue('1970-01-01 08:00:00.000001', 0, 'timestamp without time zone', '+08:00'), 0);
   assert.throws(() => convertPgValue('9007199254740993.01', 0, 'numeric', '+08:00'), { code: 'FIELD_PRECISION' });
+});
+
+test('PG microseconds truncate to milliseconds with original value evidence and strict calendar/timezone validation', () => {
+  const adjustments = [];
+  for (const [fraction, expected] of [['1', 100], ['1230', 123], ['123000', 123], ['123456', 123], ['000001', 0], ['999999', 999]]) {
+    assert.equal(convertPgValue(`1970-01-01 08:00:00.${fraction}`, 0, 'timestamp without time zone', '+08:00', (item) => adjustments.push(item)), expected);
+  }
+  assert.equal(adjustments.length, 3);
+  assert.equal(adjustments[0].rawValue, '1970-01-01 08:00:00.123456');
+  assert.equal(adjustments[0].normalizedValue, '1970-01-01T08:00:00.123+08:00');
+  assert.equal(convertPgValue('1969-12-31 23:59:59.999999+00', 0, 'timestamp with time zone', '+08:00'), -1);
+  for (const offset of ['+08', '+0800', '+08:00']) assert.equal(convertPgValue(`1970-01-01 08:00:00.007267${offset}`, 0, 'timestamp with time zone', '+08:00'), 7);
+  assert.equal(convertPgValue('1970-01-01T00:00:00.007267Z', '', 'timestamp with time zone', '+08:00'), '7');
+  assert.equal(convertPgValue('0001-01-01 00:00:00', 0, 'timestamp without time zone', 'Z'), Date.parse('0001-01-01T00:00:00Z'));
+  assert.equal(convertPgValue('1884-03-10 00:00:00', 0, 'timestamp without time zone', '+08:00'), -2707977600000);
+  assert.ok(Number.isSafeInteger(convertPgValue('2024-02-29 00:00:00', 0, 'timestamp without time zone', 'Z')));
+  for (const value of ['2024-02-30 00:00:00', '2023-02-29 00:00:00', '2024-13-01 00:00:00', '2024-01-01 24:00:00', '2024-01-01 00:00:00.1234567', '2024-01-01 00:00:00 trailing', 'infinity', '']) assert.throws(() => convertPgValue(value, 0, 'timestamp without time zone', '+08:00'), { code: 'FIELD_TIME' });
+  assert.throws(() => convertPgValue('2024-01-01 00:00:00', 0, 'timestamp with time zone', '+08:00'), { code: 'FIELD_TIME' });
 });
 
 test('raw LZ4 encoder handles literals, overlap, long sequences and 64KiB windows', () => {
@@ -156,8 +174,9 @@ test('preview is read-only, apply backs up first, verifies bytes, restores and p
   assert.equal((await sync.history('42'))[0].status, 'restored');
 });
 
-test('record comparison discovers new subscriptions without Redis IDs and never appends them on apply', async (t) => {
-  const { sync, state } = await fixture(t);
+async function subscriptionFixture(t) {
+  const result = await fixture(t, { ttl: 60000 });
+  const { state } = result;
   const rows = (columns, rows = []) => ({ columns: Object.fromEntries(columns.map((name) => [name, 'bigint'])), rows });
   state.rows.offer_prod_inst_rel = rows(['offer_prod_inst_rel_id', 'prod_inst_id', 'prod_offer_inst_id', 'his_id'], [
     { offer_prod_inst_rel_id: '990000038852791', prod_inst_id: '42', prod_offer_inst_id: '990000038852790', his_id: '0' },
@@ -169,21 +188,116 @@ test('record comparison discovers new subscriptions without Redis IDs and never 
     { prod_offer_inst_id: '999', his_id: '0' },
   ]);
   state.rows.prod_offer_inst_rel = rows(['prod_offer_inst_rel_id', 'rela_prod_offer_inst_id', 'related_prod_offer_inst_id', 'his_id']);
-  state.raw = encodeArchive({ ...original, offerInstsSecondStep: [{ prodOfferInstId: 990000038852790, hisId: 0 }] }, prefix);
+  for (const table of ['offer_prod_inst_rel', 'prod_offer_inst']) {
+    Object.assign(state.rows[table].columns, { dcs_status_cd: 'character varying', eff_date: 'timestamp without time zone', exp_date: 'timestamp without time zone', status_date: 'timestamp without time zone' });
+    for (const row of state.rows[table].rows) Object.assign(row, { dcs_status_cd: '1000', eff_date: '2026-06-01 00:00:00', exp_date: '2026-07-01 00:00:00', status_date: '2026-06-01 00:00:00' });
+  }
+  state.rows.prod_offer_inst.columns.offer_id = 'bigint';
+  state.rows.prod_offer_inst.rows.forEach((row) => { row.offer_id = '905856378'; });
+  state.rows.prod_inst.rows[0].account = 'before';
+  state.raw = encodeArchive({ ...original, offerInstsSecondStep: [{ prodOfferInstId: 888, hisId: 0, parentProdInstId: 99 }], offerProdInstRelsFirstStep: [] }, prefix);
   const options = { tables: ['prod_inst', 'prod_offer_inst', 'offer_prod_inst_rel'] };
   state.rows.prod_inst_rel = rows(['prod_inst_rel_id', 'prod_inst_a_id', 'prod_inst_z_id', 'his_id']);
-  let preview = await sync.preview('42', options);
+  return { ...result, options };
+}
+
+test('addition-only preview writes complete direct subscriptions, retains versions and restores bytes/TTL', async (t) => {
+  const { sync, state, options } = await subscriptionFixture(t);
+  const before = Buffer.from(state.raw), expiry = state.expiresAt;
+  const preview = await sync.preview('42', options);
   assert.equal(preview.recordComparison.complete, true);
-  assert.deepEqual(preview.recordComparison.pgOnlyRecords.map((row) => [row.id, row.hisId]), [['990000038852791', '0'], ['990000038852790', '1']]);
+  assert.equal(preview.changedFields, 0); assert.equal(preview.addedRecords, 3); assert.equal(preview.canApply, true);
+  assert.deepEqual(preview.additions.map((row) => row.targetGroup), ['offerProdInstRelsFirstStep', 'offerInstsFirstStep', 'offerInstsFirstStep']);
+  assert.equal(preview.additions[1].record.prodOfferId, 905856378);
+  assert.equal(preview.additions[1].record.parentProdInstId, 42);
+  assert.equal(preview.additions[1].record.effDate, Date.parse('2026-06-01T00:00:00+08:00'));
+  assert.equal(preview.additions[1].record.dcsStatusCd, '1000');
   assert.equal(state.writes, 0);
-  await sync.apply(preview.previewId, true);
-  assert.deepEqual(decodeArchive(state.raw).data.offerInstsSecondStep, [{ prodOfferInstId: 990000038852790, hisId: 0 }]);
-  assert.equal(decodeArchive(state.raw).data.offerProdInstRels, undefined);
-  state.rows.prod_inst.rows[0].account = 'after';
+  const applied = await sync.apply(preview.previewId, true);
+  assert.equal(applied.addedRecords, 3); assert.equal(state.expiresAt, expiry);
+  const decoded = decodeArchive(state.raw).data;
+  assert.deepEqual(decoded.offerInstsSecondStep, [{ prodOfferInstId: 888, hisId: 0, parentProdInstId: 99 }]);
+  assert.equal(decoded.offerProdInstRelsFirstStep[0].prodInstId, 42);
+  assert.deepEqual(decoded.offerInstsFirstStep.map((row) => row.hisId), [0, 1]);
+  const again = await sync.preview('42', options);
+  assert.equal(again.recordComparison.pgOnlyCount, 0); assert.equal(again.addedRecords, 0); assert.equal(again.canApply, false);
+  assert.equal((await sync.history('42'))[0].addedRecords, 3);
+  await sync.restore(applied.backupId, true);
+  assert.deepEqual(state.raw, before); assert.equal(state.expiresAt, expiry);
+});
+
+test('new subscription values and membership changing after preview stop the write', async (t) => {
+  const { sync, state, options } = await subscriptionFixture(t);
+  let preview = await sync.preview('42', options);
+  state.rows.prod_offer_inst.rows[0].offer_id = '123';
+  await assert.rejects(sync.apply(preview.previewId, true), { code: 'PG_CHANGED' });
   preview = await sync.preview('42', options);
-  assert.equal(preview.changedFields, 0);
-  assert.equal(preview.recordComparison.pgOnlyCount, 2);
-  assert.equal(preview.canApply, false);
+  state.rows.prod_offer_inst.rows.push({ ...state.rows.prod_offer_inst.rows[0], his_id: '2' });
+  await assert.rejects(sync.apply(preview.previewId, true), { code: 'PG_CHANGED' });
+  assert.equal(state.writes, 0);
+});
+
+test('new subscriptions accept actual PG update timestamp .007267 and expose conversion evidence', async (t) => {
+  const { sync, state, options } = await subscriptionFixture(t);
+  for (const name of ['offer_prod_inst_rel', 'prod_offer_inst']) {
+    Object.assign(state.rows[name].columns, { rec_update_date: 'timestamp without time zone', update_date: 'timestamp without time zone' });
+    for (const row of state.rows[name].rows) Object.assign(row, { rec_update_date: '2026-10-16 16:40:18.007267', update_date: '2026-10-16 16:40:18.007267' });
+  }
+  const preview = await sync.preview('42', options);
+  assert.equal(preview.canApply, true); assert.equal(preview.blockers.length, 0);
+  assert.equal(preview.timeAdjustmentCount, 6);
+  assert.equal(preview.timeAdjustments[0].column, 'rec_update_date');
+  assert.equal(preview.timeAdjustments[0].rawValue, '2026-10-16 16:40:18.007267');
+  await sync.apply(preview.previewId, true);
+  assert.equal(decodeArchive(state.raw).data.offerInstsFirstStep[0].updateDate, Date.parse('2026-10-16T16:40:18.007+08:00'));
+  const again = await sync.preview('42', options);
+  assert.equal(again.addedRecords, 0); assert.equal(again.changedFields, 0); assert.equal(again.blockers.length, 0);
+  assert.equal(again.timeAdjustmentCount, 6);
+});
+
+test('subscription additions respect table dependencies, reject conflicts and unknown template context', async (t) => {
+  const { sync, state, options } = await subscriptionFixture(t);
+  let preview = await sync.preview('42', { tables: ['offer_prod_inst_rel'] });
+  assert.equal(preview.canApply, false); assert.match(preview.blockers.join(), /同时选择/);
+  preview = await sync.preview('42', { tables: ['prod_offer_inst'] });
+  assert.equal(preview.canApply, false); assert.match(preview.blockers.join(), /同时选择/);
+  state.rows.prod_offer_inst.rows.push({ ...state.rows.prod_offer_inst.rows[0], offer_id: '123' });
+  preview = await sync.preview('42', options);
+  assert.equal(preview.canApply, false); assert.match(preview.blockers.join(), /冲突/);
+  state.rows.prod_offer_inst.rows.pop();
+  const data = decodeArchive(state.raw).data; data.offerInstsSecondStep[0].unknownContext = 'never copy'; state.raw = encodeArchive(data, prefix);
+  preview = await sync.preview('42', options);
+  assert.equal(preview.canApply, false); assert.match(preview.blockers.join(), /unknownContext/);
+  assert.equal(state.writes, 0);
+});
+
+test('new subscriptions preserve unsafe IDs and null historical versions', async (t) => {
+  const { sync, state, options } = await subscriptionFixture(t);
+  state.rows.offer_prod_inst_rel.rows[0].prod_offer_inst_id = '9223372036854775801';
+  state.rows.prod_offer_inst.rows = [{ ...state.rows.prod_offer_inst.rows[0], prod_offer_inst_id: '9223372036854775801', his_id: null }];
+  const preview = await sync.preview('42', options);
+  assert.equal(preview.canApply, true);
+  assert.equal(preview.additions[1].record.prodOfferInstId, '9223372036854775801');
+  await sync.apply(preview.previewId, true);
+  assert.equal(decodeArchive(state.raw).data.offerInstsFirstStep[0].prodOfferInstId, 9223372036854775801n);
+  assert.equal(decodeArchive(state.raw).data.offerInstsFirstStep[0].hisId, null);
+  const again = await sync.preview('42', options);
+  assert.equal(again.addedRecords, 0); assert.equal(again.blockers.length, 0);
+});
+
+test('plain archive uses base groups and SixthStepZ instances are not duplicated', async (t) => {
+  const { sync, state, options } = await subscriptionFixture(t);
+  state.raw = encodeArchive({ ...original, offerInsts: [], offerProdInstRels: [] }, prefix);
+  let preview = await sync.preview('42', options);
+  assert.equal(preview.canApply, true);
+  assert.deepEqual(preview.additions.map((row) => row.targetGroup), ['offerProdInstRels', 'offerInsts', 'offerInsts']);
+  const row = { prodOfferInstId: 990000038852790, hisId: 0 };
+  state.raw = encodeArchive({ ...original, offerInstsSixthStepZ: [row] }, prefix);
+  preview = await sync.preview('42', options);
+  assert.equal(preview.additions.filter((row) => row.table === 'prod_offer_inst').length, 1);
+  assert.equal(preview.additions.find((row) => row.table === 'prod_offer_inst').hisId, '1');
+  await sync.apply(preview.previewId, true);
+  assert.deepEqual(decodeArchive(state.raw).data.offerInstsSixthStepZ, [row]);
 });
 
 test('record comparison reports incomplete schema and caps displayed records', async (t) => {

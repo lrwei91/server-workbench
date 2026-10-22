@@ -16,7 +16,7 @@ test('sync HTTP validates scope, confirmation, same origin and unknown fields', 
     return { status: result.status, body: await result.json() };
   };
   const status = await fetch(`${base}/api/redis-sync/status`).then((result) => result.json());
-  assert.equal(status.tables.length, 9); assert.equal(status.schema, 'bill_inmemory'); assert.equal(status.mode, 'existing-record-fields');
+  assert.equal(status.tables.length, 9); assert.equal(status.schema, 'bill_inmemory'); assert.equal(status.mode, 'fields-and-direct-subscriptions');
   for (const [route, body, code] of [
     ['preview', { key: 'arbitrary:key' }, 'INVALID_REDIS_KEY'],
     ['preview', { key: '42', tables: ['pg_authid'] }, 'INVALID_SYNC_TABLES'],
@@ -64,5 +64,5 @@ test('sync UI uses server previews, explicit confirmation and no browser persist
   assert.match(source, /confirm\(selected\.key/); assert.match(source, /previewId: selected\.previewId, confirmed: true/);
   assert.match(source, /data-restore-allowed/); assert.doesNotMatch(source, /localStorage|sessionStorage|innerHTML/);
   assert.match(source, /PG 有、Redis 无/); assert.match(source, /comparison\.pgOnlyRecords/);
-  assert.match(source, /记录级比对覆盖不完整/); assert.match(source, /不自动追加到 Redis/);
+  assert.match(source, /记录级比对覆盖不完整/); assert.match(source, /selected\.addedRecords/); assert.match(source, /item\.record/);
 });

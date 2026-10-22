@@ -9,7 +9,7 @@ const moduleUrl = `data:text/javascript;base64,${Buffer.from(source).toString('b
 test('Voyage results generate table-mapped INSERT statements without losing source values', async () => {
   const { generateInsertScript } = await import(moduleUrl);
   const sql = generateInsertScript({
-    source: 'voyage', phone: '18900000000', data: {
+    source: 'voyage', schema: 'bill_inmemory', phone: '18900000000', data: {
       productInstances: [
         { prod_inst_id: '9007199254740993', remark: "O'Reilly\\测试", nullable: null, create_date: '2026-09-16T07:14:18Z', display_name: '修复值', display_name__RAW: '原始值' },
         { prod_inst_id: '2', remark: '第二行', extra_col: 'x' },
@@ -19,7 +19,7 @@ test('Voyage results generate table-mapped INSERT statements without losing sour
   }, { generatedAt: '2026-09-16T16:00:00.000+08:00' });
   assert.match(sql, /-- 目标：PostgreSQL 数据库 bill_cnos_jftest，Schema bill_inmemory/);
   assert.match(sql, /\nBEGIN;\n/); assert.match(sql, /\nCOMMIT;\n/);
-  assert.match(sql, /-- 来源逻辑库：CRM3DB \| 表：prod_inst \| 2 行/);
+  assert.match(sql, /-- 来源：工程环境 Voyage \| Schema：bill_inmemory \| 表：prod_inst \| 2 行/);
   assert.match(sql, /INSERT INTO "bill_inmemory"\."prod_inst" \("prod_inst_id", "remark", "nullable", "create_date", "display_name", "extra_col"\) VALUES/);
   assert.match(sql, /'9007199254740993'/);
   assert.match(sql, /E'O''Reilly\\\\测试'/);
@@ -28,7 +28,8 @@ test('Voyage results generate table-mapped INSERT statements without losing sour
   assert.match(sql, /'原始值'/);
   assert.doesNotMatch(sql, /display_name__RAW|修复值/);
   assert.match(sql, /\('2', '第二行', NULL, NULL, NULL, 'x'\);/);
-  assert.match(sql, /-- 来源逻辑库：CONFIGDB_CNOS_JF_TEST \| 表：offer_ces \| 1 行/);
+  assert.match(sql, /-- 来源：工程环境 Voyage \| Schema：bill_inmemory \| 表：offer_ces \| 1 行/);
+  assert.doesNotMatch(sql, /来源逻辑库|CRM3DB|CONFIGDB_CNOS_JF_TEST/);
   assert.doesNotMatch(sql, /`/);
 });
 
@@ -44,6 +45,11 @@ test('INSERT export rejects test-source results and explains empty Voyage result
   assert.equal(sqlLiteral('a\\b'), "E'a\\\\b'");
   const mysql = generateInsertScript({ source: 'voyage', data: { productInstances: [{ prod_inst_id: '1' }] } }, { target: 'mysql', generatedAt: 'TIME' });
   assert.match(mysql, /INSERT INTO `prod_inst` \(`prod_inst_id`\) VALUES/);
+  assert.match(mysql, /-- 目标逻辑库：CRM3DB \| 表：prod_inst \| 1 行/);
+  const postgres = generateInsertScript({ source: 'voyage', schema: 'crmv3', data: { productInstances: [{ prod_inst_id: '1' }] } }, { generatedAt: 'TIME' });
+  assert.match(postgres, /-- 来源：工程环境 Voyage \| Schema：crmv3 \| 表：prod_inst \| 1 行/);
+  const withoutSchema = generateInsertScript({ source: 'voyage', data: { productInstances: [{ prod_inst_id: '1' }] } }, { generatedAt: 'TIME' });
+  assert.match(withoutSchema, /-- 来源：工程环境 Voyage \| 表：prod_inst \| 1 行/);
   assert.equal(sqlLiteral(true, 'mysql'), '1');
 });
 
