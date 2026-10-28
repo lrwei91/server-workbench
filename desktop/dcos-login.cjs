@@ -1,7 +1,7 @@
 'use strict';
 
 // 远端页面不加载 preload；平台 Cookie 只在主进程与本地后端之间传递。
-function createDcosLogin({ BrowserWindow, session, parent, getStatus, connect }) {
+function createDcosLogin({ BrowserWindow, session, parent, getStatus, connect, fetchImpl = fetch }) {
   let pending = null, loginWindow = null;
   return async function login() {
     if (pending) { loginWindow?.focus(); return pending; }
@@ -10,6 +10,18 @@ function createDcosLogin({ BrowserWindow, session, parent, getStatus, connect })
       if (!status.configured) return { ok: false, message: '请先配置云翼平台地址和集群。' };
       const base = new URL(status.baseUrl);
       if (!['http:', 'https:'].includes(base.protocol) || base.username || base.password) return { ok: false, message: '云翼平台地址格式无效。' };
+      // 门户与认证服务可能使用不同端口；仅信任配置平台返回的 loginUrl，不放开任意站点。
+      const allowedOrigins = new Set([base.origin]);
+      try {
+        const response = await fetchImpl(new URL('/cloudportal/iam/users/current', base), { headers: { Accept: 'application/json' }, redirect: 'error', signal: AbortSignal.timeout(15000) });
+        if (response.status === 401) {
+          const payload = await response.json();
+          if (typeof payload.loginUrl !== 'string' || !payload.loginUrl.trim()) throw new Error('missing loginUrl');
+          const target = new URL(payload.loginUrl, base);
+          if (!['http:', 'https:'].includes(target.protocol) || target.username || target.password) throw new Error('invalid loginUrl');
+          allowedOrigins.add(target.origin);
+        } else if (!response.ok) throw new Error('login discovery failed');
+      } catch (_) { return { ok: false, message: '读取平台登录地址失败，请检查网络或使用手动 Cookie 连接。' }; }
       const platformSession = session.fromPartition('dcos-login', { cache: false });
       platformSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
       platformSession.setPermissionCheckHandler(() => false);
@@ -20,10 +32,16 @@ function createDcosLogin({ BrowserWindow, session, parent, getStatus, connect })
         loginWindow = window;
         window.setMenuBarVisibility(false);
         window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
-        // 只允许该平台来源导航，不把登录会话交给其他站点。
-        const guard = (event, url) => {
-          try { if (new URL(url).origin === base.origin) return; } catch (_) { /* 非 URL 导航同样拦截。 */ }
+        // 只允许门户与其声明的认证来源；兼容 Electron 当前 details.url 事件形式。
+        const guard = (event, legacyUrl) => {
+          if (event.isMainFrame === false) return;
+          let target;
+          try {
+            target = new URL(event.url || legacyUrl);
+            if (['http:', 'https:'].includes(target.protocol) && !target.username && !target.password && allowedOrigins.has(target.origin)) return;
+          } catch (_) { /* 非 URL 导航同样拦截。 */ }
           event.preventDefault();
+          finish({ ok: false, message: `平台登录跳转被拦截${target?.origin && target.origin !== 'null' ? `（${target.origin}）` : ''}，请检查平台登录地址配置。` });
         };
         window.webContents.on('will-navigate', guard);
         window.webContents.on('will-redirect', guard);
@@ -49,8 +67,14 @@ function createDcosLogin({ BrowserWindow, session, parent, getStatus, connect })
         const timer = setInterval(() => void check(), 2000);
         platformSession.cookies.on('changed', check);
         window.webContents.on('did-finish-load', check);
+        window.webContents.on('did-fail-load', (_event, code, _description, _url, isMainFrame) => {
+          // ERR_ABORTED 是重定向/页面接管导致的正常取消，不中断后续登录。
+          if (isMainFrame && code !== -3) finish({ ok: false, message: `平台登录页加载失败（${code}），请检查地址和网络。` });
+        });
         window.on('closed', () => finish({ ok: false, message: '已关闭登录窗口，尚未连接。' }));
-        window.loadURL(new URL('/paas/cloudportal/site', base).href).catch(() => finish({ ok: false, message: '平台登录页加载失败，请检查地址和网络。' }));
+        window.loadURL(new URL('/paas/cloudportal/site', base).href).catch((error) => {
+          if (error.code !== 'ERR_ABORTED' && error.errno !== -3) finish({ ok: false, message: '平台登录页加载失败，请检查地址和网络。' });
+        });
         void check();
       });
     })();

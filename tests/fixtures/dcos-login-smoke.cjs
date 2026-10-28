@@ -11,6 +11,10 @@ let upstream, backend;
 const listen = (server) => new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve(`http://127.0.0.1:${server.address().port}`)));
 app.whenReady().then(async () => {
   upstream = http.createServer((req, res) => {
+    if (req.url === '/cloudportal/iam/users/current') {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ loginUrl: '/paas/cloudportal/site' }));
+    }
     if (req.url === '/paas/cloudportal/site') {
       res.setHeader('Content-Type', 'text/html;charset=utf-8');
       return res.end('<h1>云翼模拟登录</h1><p>此页仅用于本地验收，无真实账号或密码。</p><form action="/login" method="post"><button>完成模拟登录</button></form>');

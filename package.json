@@ -1,6 +1,6 @@
 {
   "name": "server-workbench",
-  "version": "1.0.9",
+  "version": "1.0.10",
   "private": true,
   "description": "Windows-first SSH/SFTP/HDFS and CDR workbench",
   "type": "commonjs",
