@@ -1,5 +1,5 @@
 'use strict';
-const { app, BrowserWindow, Menu, dialog, shell, utilityProcess, session } = require('electron');
+const { app, BrowserWindow, Menu, dialog, shell, utilityProcess, session, ipcMain } = require('electron');
 const { autoUpdater } = require('electron-updater');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -7,6 +7,7 @@ const { spawn } = require('node:child_process');
 const { randomBytes } = require('node:crypto');
 const runtime = require('./runtime.cjs');
 const { configureUpdates } = require('./updates.cjs');
+const { createDcosLogin } = require('./dcos-login.cjs');
 const { parseEnv } = require('../server/config-loader');
 
 // 与安装版分离，避免开发运行污染用户的正式配置和收藏。
@@ -133,7 +134,22 @@ async function start() {
   // 保留现有复制功能，只允许本站写剪贴板，其他设备/读取权限拒绝。
   browserSession.setPermissionRequestHandler((contents, permission, callback) => callback(permission === 'clipboard-sanitized-write' && contents.getURL().startsWith(`${origin}/`)));
   browserSession.setPermissionCheckHandler((_contents, permission, requestingOrigin) => permission === 'clipboard-sanitized-write' && requestingOrigin === origin);
-  win = new BrowserWindow({ width: 1366, height: 768, minWidth: 1024, minHeight: 600, show: false, backgroundColor: '#ffffff', title: 'Server Workbench', webPreferences: { session: browserSession, nodeIntegration: false, contextIsolation: true, sandbox: true } });
+  win = new BrowserWindow({ width: 1366, height: 768, minWidth: 1024, minHeight: 600, show: false, backgroundColor: '#ffffff', title: 'Server Workbench', webPreferences: { preload: path.join(__dirname, 'preload.cjs'), session: browserSession, nodeIntegration: false, contextIsolation: true, sandbox: true } });
+  const localDcos = async (route, options = {}) => {
+    const timeout = AbortSignal.timeout(20000);
+    const response = await fetch(`${origin}/api/dcos/${route}`, { ...options, headers: { 'x-workbench-token': workbenchToken, 'Content-Type': 'application/json' }, signal: options.signal ? AbortSignal.any([options.signal, timeout]) : timeout });
+    const result = await response.json();
+    if (!response.ok || !result.ok) throw new Error('云翼平台会话验证失败');
+    return result;
+  };
+  const loginDcos = createDcosLogin({ BrowserWindow, session, parent: win, getStatus: () => localDcos('status'), connect: (cookie, signal) => localDcos('connect', { method: 'POST', body: JSON.stringify({ cookie }), signal }) });
+  ipcMain.handle('dcos:login', async (event) => {
+    try {
+      if (event.sender !== win.webContents || event.senderFrame !== win.webContents.mainFrame || new URL(event.senderFrame.url).origin !== origin) return { ok: false, message: '登录请求来源无效。' };
+      return await loginDcos();
+    }
+    catch (_) { return { ok: false, message: '登录连接失败，请检查本地服务与平台配置。' }; }
+  });
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   const guard = (event, url) => { if (new URL(url).origin !== origin) event.preventDefault(); };
   win.webContents.on('will-navigate', guard);

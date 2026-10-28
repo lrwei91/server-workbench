@@ -8,19 +8,56 @@ export function initDcosLogs() {
   const isActive = () => !page.classList.contains('hidden');
   const gates = { namespaces: createRequestGate(), workloads: createRequestGate(), pods: createRequestGate(), logs: createRequestGate() };
   const confirmDialog = new DialogController($('#confirmDialog'));
-  const state = { connected: false, configured: false, clusters: [], pageNow: 1, total: 0, pageSize: 50, timer: null, loadingLogs: false, pods: null, pendingAction: null, runningAction: false };
+  const state = { connected: false, configured: false, clusters: [], pageNow: 1, total: 0, pageSize: 50, timer: null, loadingLogs: false, pods: null, pendingAction: null, runningAction: false, workloads: [], searching: null, loginPending: false, activeOption: -1 };
+  const search = $('#dcosWorkloadSearch');
+  const list = $('#dcosWorkloadOptions');
+  const desktopLogin = window.workbenchDesktop?.loginDcos;
+
+  function closePicker() { list.hidden = true; search.setAttribute('aria-expanded', 'false'); search.removeAttribute('aria-activedescendant'); state.activeOption = -1; }
+  function openPicker() {
+    if (search.disabled) return;
+    const rect = search.getBoundingClientRect();
+    const width = Math.min(Math.max(rect.width, 440), window.innerWidth - 32);
+    const below = window.innerHeight - rect.bottom - 16;
+    const above = below < 140 && rect.top > below;
+    const height = Math.min(260, Math.max(80, above ? rect.top - 16 : below));
+    list.style.width = `${width}px`; list.style.left = `${Math.max(16, Math.min(rect.left, window.innerWidth - width - 16))}px`;
+    list.style.top = `${above ? Math.max(16, rect.top - height) : rect.bottom}px`; list.style.maxHeight = `${height}px`;
+    list.hidden = false; search.setAttribute('aria-expanded', 'true');
+  }
+  function renderPicker(message = '没有匹配的工作负载') {
+    list.replaceChildren(); state.activeOption = -1; search.removeAttribute('aria-activedescendant');
+    state.workloads.forEach((item, index) => {
+      const option = document.createElement('div');
+      option.id = `dcos-workload-option-${index}`; option.setAttribute('role', 'option'); option.setAttribute('aria-selected', 'false');
+      option.textContent = `${item.name} · ${item.kind === 'Deployment' ? '无状态' : '有状态'} ${item.kind} · ${item.runningPodNum ?? '—'} Pod`;
+      option.title = option.textContent;
+      option.addEventListener('pointerdown', (event) => event.preventDefault());
+      option.addEventListener('click', () => {
+        $('#dcosWorkload').value = `${item.kind}/${item.name}`; search.value = item.name; search.title = `${item.name} · ${item.kind}`; closePicker();
+        $('#dcosWorkload').dispatchEvent(new Event('change'));
+      });
+      list.append(option);
+    });
+    if (!state.workloads.length) { const empty = document.createElement('div'); empty.textContent = message; list.append(empty); }
+  }
 
   function note(message, tone = 'info') { const node = $('#dcosLogState'); node.dataset.tone = tone; setText(node, message); }
   function clearTimer() { clearTimeout(state.timer); state.timer = null; }
   function cancelLogRequest() { gates.logs.cancel(); state.loadingLogs = false; clearTimer(); }
-  function cancelRequests() { Object.values(gates).forEach((gate) => gate.cancel()); clearTimer(); state.loadingLogs = false; }
+  function cancelRequests() { Object.values(gates).forEach((gate) => gate.cancel()); clearTimeout(state.searching); closePicker(); clearTimer(); state.loadingLogs = false; }
   function options(node, values, placeholder) {
     node.replaceChildren(new Option(placeholder, ''));
     for (const item of values) node.add(new Option(item.label, item.value));
     node.value = ''; node.disabled = !values.length;
   }
-  function resetFrom(index) { for (const selector of selectors.slice(index)) options($(selector), [], '请先选择上一级'); $('#dcosRefresh').disabled = true; updateWorkloadButtons(); }
-  // 启停按钮状态：以当前 StatefulSet 的 Pod 列表为准——有 Pod 可停止、无 Pod 可启动、未知（加载中）时两者禁用
+  function resetFrom(index, { keepSearch = false } = {}) {
+    for (const selector of selectors.slice(index)) options($(selector), [], '请先选择上一级');
+    if (index <= 2) { clearTimeout(state.searching); state.workloads = []; state.total = 0; pageInfo(); renderPicker(); search.title = ''; if (!keepSearch) search.value = ''; search.disabled = !$('#dcosNamespace').value; closePicker(); }
+    if (index <= 3) state.pods = null;
+    $('#dcosRefresh').disabled = true; updateWorkloadButtons();
+  }
+  // 按所选工作负载的 Pod 列表启用按钮；未知（加载中）时两者禁用。
   function updateWorkloadButtons() {
     const selectedWorkload = $('#dcosWorkload').value;
     const pods = Array.isArray(state.pods) ? state.pods : null;
@@ -28,19 +65,21 @@ export function initDcosLogs() {
     $('#dcosStopWorkload').disabled = state.runningAction || !selectedWorkload || pods === null || pods.length === 0;
     for (const selector of selectors) if (state.runningAction) $(selector).disabled = true;
     renderConnection();
-    $('#dcosWorkloadSearch').disabled = state.runningAction;
+    $('#dcosWorkloadSearch').disabled = state.runningAction || !$('#dcosNamespace').value;
     $('#dcosSearchButton').disabled = state.runningAction;
-    if (state.runningAction) { $('#dcosPrevPage').disabled = true; $('#dcosNextPage').disabled = true; }
+    if (state.runningAction) { closePicker(); $('#dcosPrevPage').disabled = true; $('#dcosNextPage').disabled = true; }
   }
   function renderConnection(message = '') {
     setText($('#dcosConnectionStatus'), state.connected ? '已连接' : state.configured ? '未连接' : '待配置');
     $('#dcosConnectionDot').classList.toggle('on', state.connected);
-    $('#dcosConnect').disabled = state.runningAction || !state.configured || !$('#dcosCookieInput').value.trim();
-    $('#dcosDisconnect').disabled = state.runningAction || !state.connected;
-    $('#dcosCookieInput').disabled = state.runningAction;
+    $('#dcosConnect').disabled = state.runningAction || state.loginPending || !state.configured || !$('#dcosCookieInput').value.trim();
+    $('#dcosDisconnect').disabled = state.runningAction || state.loginPending || !state.connected;
+    $('#dcosCookieInput').disabled = state.runningAction || state.loginPending;
+    $('#dcosBrowserLogin').hidden = !desktopLogin;
+    $('#dcosBrowserLogin').disabled = state.runningAction || !state.configured || state.loginPending;
     setText($('#dcosBaseUrl'), state.configured ? state.baseUrl : '待配置');
     setText($('#dcosClusters'), state.clusters.map((cluster) => `${cluster.name} (${cluster.id})`).join('、') || '—');
-    setText($('#dcosConnectionError'), message || (state.configured ? 'Cookie 仅保存在本次 Node 进程内存；过期后重新粘贴。' : '请在本机 .env 设置 DCOS_BASE_URL。'));
+    setText($('#dcosConnectionError'), message || (state.configured ? (desktopLogin ? '点击「网页登录并连接」，在独立窗口登录后自动接入；会话仅留在本次应用内存，也可手动输入 Cookie。' : '浏览器版使用手动 Cookie；桌面版支持网页登录后自动接入。会话仅留在本次 Node 进程内存。') : '请在本机 .env 设置 DCOS_BASE_URL。'));
   }
   function applyStatus(result, message = '') {
     state.connected = Boolean(result.connected); state.configured = Boolean(result.configured);
@@ -51,7 +90,7 @@ export function initDcosLogs() {
     resetFrom(1); renderConnection(message);
   }
   async function loadStatus() {
-    try { applyStatus(await getJson('/api/dcos/status')); if (isActive()) note(state.connected ? '请选择集群。' : state.configured ? '请先在此页粘贴云翼平台 Cookie。' : '请先配置云翼平台连接。'); }
+    try { applyStatus(await getJson('/api/dcos/status')); if (isActive()) note(state.connected ? '请选择集群。' : state.configured ? '请先在此页连接云翼平台。' : '请先配置云翼平台连接。'); }
     catch (error) { renderConnection(error.message); }
   }
   function schedule() {
@@ -59,7 +98,10 @@ export function initDcosLogs() {
     if (!$('#dcosAutoRefresh').checked || !isActive() || document.hidden || !$('#dcosContainer').value) return;
     state.timer = setTimeout(() => { void loadLogs(); }, 5000);
   }
-  function selected() { return { clusterId: $('#dcosCluster').value, namespaceName: $('#dcosNamespace').value, workloadName: $('#dcosWorkload').value, podName: $('#dcosPod').value, containerName: $('#dcosContainer').value }; }
+  function selected() {
+    const item = state.workloads.find((item) => `${item.kind}/${item.name}` === $('#dcosWorkload').value);
+    return { clusterId: $('#dcosCluster').value, namespaceName: $('#dcosNamespace').value, workloadName: item?.name || '', workloadKind: item?.kind || '', podName: $('#dcosPod').value, containerName: $('#dcosContainer').value };
+  }
   async function loadNamespaces() {
     gates.namespaces.cancel(); gates.workloads.cancel(); gates.pods.cancel(); cancelLogRequest();
     resetFrom(1); setText($('#dcosLogText'), '');
@@ -79,30 +121,33 @@ export function initDcosLogs() {
     $('#dcosNextPage').disabled = state.pageNow >= pages;
   }
   async function loadWorkloads() {
-    gates.workloads.cancel(); gates.pods.cancel(); cancelLogRequest(); resetFrom(2); setText($('#dcosLogText'), '');
+    gates.workloads.cancel(); gates.pods.cancel(); cancelLogRequest(); resetFrom(2, { keepSearch: true }); setText($('#dcosLogText'), '');
     const { clusterId, namespaceName } = selected();
     if (!namespaceName) return note('请选择命名空间。');
-    const request = gates.workloads.next(); note('正在读取 StatefulSet…');
+    const request = gates.workloads.next(); note('正在读取有状态和无状态工作负载…'); renderPicker('正在读取…');
+    if (document.activeElement === search) openPicker();
     try {
       const result = await getJson(q('/api/dcos/workloads', { clusterId, namespaceName, pageNow: state.pageNow, pageSize: state.pageSize, search: $('#dcosWorkloadSearch').value.trim() }), { signal: request.signal });
       if (!request.isCurrent()) return;
       state.total = result.total; state.pageNow = result.pageNow; pageInfo();
-      options($('#dcosWorkload'), result.records.map((item) => ({ label: `${item.name} (${item.runningPodNum ?? '—'} Pod)`, value: item.name })), '选择 StatefulSet');
-      note(result.records.length ? '请选择 StatefulSet。' : '当前页没有匹配的 StatefulSet。');
-    } catch (error) { if (request.isCurrent() && error.code !== 'REQUEST_ABORTED') handleError(error); }
+      state.workloads = result.records;
+      options($('#dcosWorkload'), result.records.map((item) => ({ label: item.name, value: `${item.kind}/${item.name}` })), '选择工作负载');
+      renderPicker(); if (document.activeElement === search) openPicker();
+      note(result.records.length ? '请选择工作负载，可在下拉框输入名称模糊搜索。' : '当前没有匹配的工作负载。');
+    } catch (error) { if (request.isCurrent() && error.code !== 'REQUEST_ABORTED') { renderPicker('读取失败，请刷新重试'); handleError(error); } }
   }
   async function loadPods() {
     gates.pods.cancel(); cancelLogRequest(); resetFrom(3); setText($('#dcosLogText'), '');
     state.pods = null; updateWorkloadButtons();
-    const { clusterId, namespaceName, workloadName } = selected();
-    if (!workloadName) return note('请选择 StatefulSet。');
+    const { clusterId, namespaceName, workloadName, workloadKind } = selected();
+    if (!workloadName) return note('请选择工作负载。');
     const request = gates.pods.next(); note('正在读取 Pod…');
     try {
-      const result = await getJson(q('/api/dcos/pods', { clusterId, namespaceName, workloadName }), { signal: request.signal });
+      const result = await getJson(q('/api/dcos/pods', { clusterId, namespaceName, workloadName, workloadKind }), { signal: request.signal });
       if (!request.isCurrent()) return;
       state.pods = result.pods; updateWorkloadButtons();
       options($('#dcosPod'), result.pods.map((pod) => ({ label: `${pod.name}${pod.status ? ` (${pod.status})` : ''}`, value: pod.name })), '选择 Pod');
-      note(result.pods.length ? '请选择 Pod。' : '该 StatefulSet 没有 Pod。');
+      note(result.pods.length ? '请选择 Pod。' : '该工作负载没有 Pod。');
     } catch (error) { if (request.isCurrent() && error.code !== 'REQUEST_ABORTED') handleError(error); }
   }
   function selectPod() {
@@ -113,7 +158,7 @@ export function initDcosLogs() {
     note(pod.containers.length ? '请选择容器。' : '该 Pod 没有可用容器。');
   }
   function handleError(error) {
-    if (error.code === 'DCOS_SESSION_EXPIRED') { state.connected = false; renderConnection(error.message); cancelRequests(); }
+    if (error.code === 'DCOS_SESSION_EXPIRED') { state.connected = false; renderConnection(error.message); cancelRequests(); resetFrom(1); $('#dcosConnectionCard').open = true; }
     note(error.message, 'error');
   }
   async function loadLogs() {
@@ -137,25 +182,26 @@ export function initDcosLogs() {
     finally { if (request.isCurrent()) { state.loadingLogs = false; schedule(); } }
   }
   function confirmWorkloadAction(action) {
-    const { clusterId, namespaceName, workloadName } = selected();
-    if (!workloadName) return note('请先选择 StatefulSet。');
+    const { clusterId, namespaceName, workloadName, workloadKind } = selected();
+    if (!workloadName) return note('请先选择工作负载。');
     const verb = action === 'stop' ? '停止' : '启动';
-    state.pendingAction = { action, clusterId, namespaceName, workloadName };
-    setText($('#confirmTitle'), `确认${verb} StatefulSet`);
+    state.pendingAction = { action, clusterId, namespaceName, workloadName, workloadKind };
+    setText($('#confirmTitle'), `确认${verb} ${workloadKind}`);
     setText($('#confirmMessage'), action === 'stop'
-      ? '停止后该 StatefulSet 的全部 Pod 会下线，可能影响测试环境数据处理，请确认目标正确。'
-      : '启动后平台会重新拉起该 StatefulSet 的全部 Pod，请确认目标正确。');
-    setText($('#confirmTarget'), `${clusterId}:${namespaceName} / ${workloadName}`);
+      ? '停止后该工作负载的全部 Pod 会下线，可能影响该环境数据处理，请确认目标正确。'
+      : '启动后平台会重新拉起该工作负载的全部 Pod，请确认目标正确。');
+    setText($('#confirmTarget'), `${clusterId}:${namespaceName} / ${workloadKind} / ${workloadName}`);
     confirmDialog.open($('#btnConfirmAction'));
   }
-  async function runWorkloadAction({ action, clusterId, namespaceName, workloadName }) {
+  async function runWorkloadAction({ action, clusterId, namespaceName, workloadName, workloadKind }) {
     if (state.runningAction) return;
     state.runningAction = true; updateWorkloadButtons();
     note(`${action === 'stop' ? '正在停止' : '正在启动'} ${workloadName}…`);
     try {
-      await postJson(`/api/dcos/workload/${action}`, { clusterId, namespaceName, workloadName }, { timeout: 30000 });
+      await postJson(`/api/dcos/workload/${action}`, { clusterId, namespaceName, workloadName, workloadKind }, { timeout: 30000 });
       note(`${action === 'stop' ? '已停止' : '已启动'} ${workloadName}，正在刷新 Pod 列表…`, 'success');
-      await loadPods();
+      const current = selected();
+      if (current.clusterId === clusterId && current.namespaceName === namespaceName && current.workloadName === workloadName && current.workloadKind === workloadKind) await loadPods();
     } catch (error) { handleError(error); updateWorkloadButtons(); }
     finally {
       state.runningAction = false;
@@ -165,12 +211,29 @@ export function initDcosLogs() {
   }
 
   $('#dcosCookieInput').addEventListener('input', () => renderConnection());
+  $('#dcosBrowserLogin').addEventListener('click', async (event) => {
+    event.preventDefault(); event.stopPropagation();
+    if (state.runningAction || state.loginPending) return;
+    state.loginPending = true; renderConnection('请在打开的云翼窗口完成登录，成功后会自动连接。');
+    try {
+      const result = await desktopLogin();
+      if (result.ok) { cancelRequests(); applyStatus(result.status, '网页登录成功，云翼平台已连接。'); note('请选择集群。'); }
+      else renderConnection(result.message);
+    } catch (_) { renderConnection('网页登录失败，请重试或使用手动 Cookie。'); }
+    finally {
+      state.loginPending = false;
+      $('#dcosBrowserLogin').disabled = state.runningAction || !state.configured;
+      $('#dcosDisconnect').disabled = state.runningAction || !state.connected;
+      $('#dcosCookieInput').disabled = state.runningAction;
+      $('#dcosConnect').disabled = state.runningAction || !state.configured || !$('#dcosCookieInput').value.trim();
+    }
+  });
   $('#dcosConnect').addEventListener('click', async (event) => {
     event.preventDefault(); event.stopPropagation(); // 折叠卡片内的按钮不应触发 summary 展开/收起
     if (state.runningAction) return;
     const cookie = $('#dcosCookieInput').value;
     $('#dcosConnect').disabled = true; setText($('#dcosConnectionError'), '正在验证会话…');
-    try { applyStatus(await postJson('/api/dcos/connect', { cookie }, { timeout: 30000 }), '云翼平台会话已连接。'); note('请选择集群。'); }
+    try { cancelRequests(); applyStatus(await postJson('/api/dcos/connect', { cookie }, { timeout: 30000 }), '云翼平台会话已连接。'); note('请选择集群。'); }
     catch (error) { renderConnection(error.message); }
     finally { $('#dcosCookieInput').value = ''; renderConnection(); }
   });
@@ -181,12 +244,36 @@ export function initDcosLogs() {
     catch (error) { renderConnection(error.message); }
   });
   $('#dcosCluster').addEventListener('change', () => { void loadNamespaces(); });
-  $('#dcosNamespace').addEventListener('change', () => { state.pageNow = 1; void loadWorkloads(); });
+  $('#dcosNamespace').addEventListener('change', () => { state.pageNow = 1; search.value = ''; void loadWorkloads(); });
   $('#dcosWorkload').addEventListener('change', () => { void loadPods(); });
   $('#dcosPod').addEventListener('change', selectPod);
   $('#dcosContainer').addEventListener('change', () => { cancelLogRequest(); $('#dcosRefresh').disabled = !$('#dcosContainer').value; setText($('#dcosLogText'), ''); if ($('#dcosContainer').value) void loadLogs(); });
   $('#dcosSearchButton').addEventListener('click', () => { state.pageNow = 1; void loadWorkloads(); });
-  $('#dcosWorkloadSearch').addEventListener('keydown', (event) => { if (event.key === 'Enter') { event.preventDefault(); $('#dcosSearchButton').click(); } });
+  search.addEventListener('focus', () => { search.select(); openPicker(); });
+  search.addEventListener('click', openPicker);
+  search.addEventListener('blur', closePicker);
+  window.addEventListener('resize', closePicker);
+  page.querySelector('.process-log-body').addEventListener('scroll', closePicker);
+  page.querySelector('.log-targets').addEventListener('scroll', closePicker);
+  search.addEventListener('input', () => {
+    gates.workloads.cancel(); gates.pods.cancel(); cancelLogRequest(); resetFrom(2, { keepSearch: true }); setText($('#dcosLogText'), '');
+    state.pageNow = 1; renderPicker('正在搜索…'); openPicker();
+    state.searching = setTimeout(() => void loadWorkloads(), 250);
+  });
+  search.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' || event.key === 'Tab') { closePicker(); return; }
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault(); openPicker();
+      const count = state.workloads.length; if (!count) return;
+      state.activeOption = (state.activeOption + (event.key === 'ArrowDown' ? 1 : -1) + count) % count;
+      [...list.children].forEach((node, index) => node.setAttribute('aria-selected', String(index === state.activeOption)));
+      const option = list.children[state.activeOption]; search.setAttribute('aria-activedescendant', option.id); option.scrollIntoView({ block: 'nearest' });
+    } else if (event.key === 'Enter') {
+      event.preventDefault();
+      if (!list.hidden && state.activeOption >= 0) list.children[state.activeOption].click();
+      else { state.pageNow = 1; void loadWorkloads(); }
+    }
+  });
   $('#dcosPrevPage').addEventListener('click', () => { if (state.pageNow > 1) { state.pageNow--; void loadWorkloads(); } });
   $('#dcosNextPage').addEventListener('click', () => { if (state.pageNow * state.pageSize < state.total) { state.pageNow++; void loadWorkloads(); } });
   $('#dcosLines').addEventListener('change', () => { cancelLogRequest(); if ($('#dcosContainer').value) void loadLogs(); });
@@ -210,7 +297,7 @@ export function initDcosLogs() {
   void loadStatus();
   return {
     activate() {
-      if (!state.connected) { note('请先在此页粘贴云翼平台 Cookie。'); return; }
+      if (!state.connected) { note('请先在此页连接云翼平台。'); return; }
       if (state.runningAction) return;
       if ($('#dcosCluster').value && $('#dcosNamespace').options.length <= 1) void loadNamespaces();
       else if ($('#dcosNamespace').value && $('#dcosWorkload').options.length <= 1) void loadWorkloads();

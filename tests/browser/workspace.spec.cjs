@@ -168,16 +168,23 @@ test('CDR delayed preview cannot survive changed inputs and unsaved record editi
 });
 
 async function mockLogs(page) {
-  const calls = { logs: 0 };
+  const calls = { logs: 0, kinds: [] };
   await page.route('**/api/dcos/status', route => fulfill(route, { configured: true, connected: true, baseUrl: 'https://logs.example.invalid', clusters: [{ id: 321, name: '测试集群' }] }));
   await page.route('**/api/dcos/namespaces?*', route => fulfill(route, { namespaces: [{ name: 'bill-cnos-jf' }] }));
-  await page.route('**/api/dcos/workloads?*', route => fulfill(route, { records: [{ name: 'billing-test', runningPodNum: 1 }], total: 1, pageNow: 1 }));
-  await page.route('**/api/dcos/pods?*', route => fulfill(route, { pods: [{ name: 'billing-test-0', status: 'Running', containers: ['billing'] }] }));
+  await page.route('**/api/dcos/workloads?*', route => {
+    const term = new URL(route.request().url()).searchParams.get('search').toLowerCase();
+    const records = [{ name: 'billing-test', kind: 'StatefulSet', runningPodNum: 1 }, { name: 'billing-backend-test', kind: 'Deployment', runningPodNum: 1 }].filter(item => item.name.toLowerCase().includes(term));
+    return fulfill(route, { records, total: records.length, pageNow: 1 });
+  });
+  await page.route('**/api/dcos/pods?*', route => { calls.kinds.push(new URL(route.request().url()).searchParams.get('workloadKind')); return fulfill(route, { pods: [{ name: 'billing-test-0', status: 'Running', containers: ['billing'] }] }); });
   await page.route('**/api/dcos/logs?*', route => { calls.logs++; return fulfill(route, { lines: Array.from({ length: 150 }, (_, i) => `2026-10-22 20:00:${String(i % 60).padStart(2,'0')} [INFO] 测试日志第 ${i} 行`), readAt: '2026-10-22T12:00:00Z' }); });
   return calls;
 }
 async function selectLogTarget(page) {
-  await page.locator('#dcosCluster').selectOption('321'); await page.locator('#dcosNamespace').selectOption('bill-cnos-jf'); await page.locator('#dcosWorkload').selectOption('billing-test'); await page.locator('#dcosPod').selectOption('billing-test-0'); await page.locator('#dcosContainer').selectOption('billing');
+  await page.locator('#dcosCluster').selectOption('321'); await page.locator('#dcosNamespace').selectOption('bill-cnos-jf');
+  await page.locator('#dcosWorkloadSearch').click();
+  await page.getByRole('option', { name: 'billing-test · 有状态 StatefulSet · 1 Pod', exact: true }).click();
+  await page.locator('#dcosPod').selectOption('billing-test-0'); await page.locator('#dcosContainer').selectOption('billing');
 }
 test('log follow pauses when scrolling up; leaving the page stops polling and returning resumes it', async ({ page }) => {
   const calls = await mockLogs(page); await page.clock.install(); await page.goto('/#/logs'); await selectLogTarget(page);
@@ -188,7 +195,8 @@ test('log follow pauses when scrolling up; leaving the page stops polling and re
   await page.locator('#dcosAutoRefresh').check(); await page.getByRole('button', { name: '资源浏览', exact: true }).click();
   const before = calls.logs; await page.clock.runFor(6000); expect(calls.logs).toBe(before);
   await page.getByRole('button', { name: '进程日志', exact: true }).click(); await page.clock.runFor(5100); await expect.poll(() => calls.logs).toBe(before + 1);
-  await expect(page.locator('#dcosWorkload')).toHaveValue('billing-test');
+  await expect(page.locator('#dcosWorkload')).toHaveValue('StatefulSet/billing-test');
+  await expect(page.locator('#dcosWorkloadSearch')).toHaveValue('billing-test');
 });
 
 async function mockResources(page) {
@@ -256,13 +264,13 @@ test('cancelled file deletion cannot leak into a later workload confirmation; ru
   const held = new Promise(resolve => { release = resolve; });
   await page.route('**/api/sftp/delete', route => { deletions++; return fulfill(route, { ok: true }); });
   await page.route('**/api/dcos/pods?*', route => fulfill(route, { pods: stopped ? [] : [{ name: 'billing-test-0', containers: ['billing'] }] }));
-  await page.route('**/api/dcos/workload/stop', async route => { stops++; expect(route.request().postDataJSON().workloadName).toBe('billing-test'); await held; stopped = true; await fulfill(route, { ok: true }); });
+  await page.route('**/api/dcos/workload/stop', async route => { stops++; expect(route.request().postDataJSON().workloadName).toBe('billing-test'); expect(route.request().postDataJSON().workloadKind).toBe('StatefulSet'); await held; stopped = true; await fulfill(route, { ok: true }); });
   await page.goto('/'); await expect(page.locator('#fileList .resource-row')).toHaveCount(50);
   await page.locator('#fileList .resource-row').first().getByRole('button', { name: /^更多操作/ }).click();
   await page.locator('.row-action-menu:popover-open').getByRole('button', { name: '删除', exact: true }).click();
   await page.locator('#confirmDialog [data-dialog-close]').last().click();
   await page.getByRole('button', { name: '进程日志', exact: true }).click(); await selectLogTarget(page);
-  await page.locator('#dcosStopWorkload').click(); await expect(page.locator('#confirmTarget')).toHaveText('321:bill-cnos-jf / billing-test');
+  await page.locator('#dcosStopWorkload').click(); await expect(page.locator('#confirmTarget')).toHaveText('321:bill-cnos-jf / StatefulSet / billing-test');
   await page.locator('#btnConfirmAction').click(); await expect(page.locator('#dcosCluster')).toBeDisabled(); await expect(page.locator('#dcosDisconnect')).toBeDisabled();
   expect(deletions).toBe(0); expect(stops).toBe(1);
   await page.getByRole('button', { name: '资源浏览', exact: true }).click(); release();
@@ -317,5 +325,21 @@ test('log target selection resumes after leaving during a cancelled namespace re
   await page.getByRole('button', { name: '资源浏览', exact: true }).click(); release();
   await page.getByRole('button', { name: '进程日志', exact: true }).click();
   await expect(page.locator('#dcosNamespace')).toBeEnabled(); await expect.poll(() => reads).toBe(2);
-  await page.locator('#dcosNamespace').selectOption('bill-cnos-jf'); await expect(page.locator('#dcosWorkload')).toBeEnabled();
+  await page.locator('#dcosNamespace').selectOption('bill-cnos-jf'); await expect(page.locator('#dcosWorkloadSearch')).toBeEnabled();
+});
+
+test('workload combobox searches both kinds without case sensitivity and clears stale selection', async ({ page }) => {
+  const calls = await mockLogs(page);
+  await page.goto('/#/logs'); await selectLogTarget(page);
+  const search = page.locator('#dcosWorkloadSearch');
+  await search.fill('BACKEND');
+  await expect(page.locator('#dcosWorkload')).toHaveValue('');
+  await expect(page.locator('#dcosStopWorkload')).toBeDisabled();
+  await expect(page.getByRole('option', { name: 'billing-backend-test · 无状态 Deployment · 1 Pod', exact: true })).toBeVisible();
+  await search.press('ArrowDown'); await search.press('Enter');
+  await expect(page.locator('#dcosWorkload')).toHaveValue('Deployment/billing-backend-test');
+  await expect.poll(() => calls.kinds.at(-1)).toBe('Deployment');
+  await search.fill('no-matching-workload');
+  await expect(page.locator('#dcosWorkloadOptions')).toContainText('没有匹配的工作负载');
+  await expect(page.locator('#dcosPod')).toBeDisabled();
 });

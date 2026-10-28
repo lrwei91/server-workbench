@@ -1,6 +1,6 @@
 {
   "name": "server-workbench",
-  "version": "1.0.8",
+  "version": "1.0.9",
   "private": true,
   "description": "Windows-first SSH/SFTP/HDFS and CDR workbench",
   "type": "commonjs",
@@ -16,7 +16,7 @@
     "test:python": "python -m unittest discover -s tests/python -p \"test_*.py\"",
     "test": "npm run check && npm run desktop:check && npm run test:node && npm run test:python",
     "desktop:start": "electron .",
-    "desktop:check": "node --check desktop/main.cjs && node --check desktop/backend.cjs && node --check desktop/runtime.cjs && node --check desktop/updates.cjs && node --check desktop/build-cdr.cjs && node --check desktop/build-app.cjs && node --check electron-builder.cjs",
+    "desktop:check": "node --check desktop/main.cjs && node --check desktop/dcos-login.cjs && node --check desktop/preload.cjs && node --check desktop/backend.cjs && node --check desktop/runtime.cjs && node --check desktop/updates.cjs && node --check desktop/build-cdr.cjs && node --check desktop/build-app.cjs && node --check electron-builder.cjs",
     "desktop:build-cdr": "node desktop/build-cdr.cjs",
     "desktop:pack": "npm run desktop:build-cdr && node desktop/build-app.cjs --dir",
     "desktop:dist": "npm run desktop:build-cdr && node desktop/build-app.cjs",

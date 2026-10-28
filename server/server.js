@@ -243,7 +243,8 @@ async function handle(req, res) {
     const clusterId = requireString(url.searchParams.get('clusterId'), 'clusterId');
     const namespaceName = requireString(url.searchParams.get('namespaceName'), 'namespaceName');
     const workloadName = requireString(url.searchParams.get('workloadName'), 'workloadName');
-    const result = await runAbortableRequest(req, res, (signal) => dcos.pods(clusterId, namespaceName, workloadName, { signal }), { timeoutMs: config.dcos.timeoutMs });
+    const workloadKind = url.searchParams.get('workloadKind') ?? 'StatefulSet';
+    const result = await runAbortableRequest(req, res, (signal) => dcos.pods(clusterId, namespaceName, workloadName, { signal, workloadKind }), { timeoutMs: config.dcos.timeoutMs });
     return sendJson(res, 200, { ok: true, pods: result });
   }
   if (req.method === 'GET' && p === '/api/dcos/logs') {
@@ -256,12 +257,12 @@ async function handle(req, res) {
     return sendJson(res, 200, { ok: true, ...result });
   }
   if (req.method === 'POST' && (p === '/api/dcos/workload/start' || p === '/api/dcos/workload/stop')) {
-    const body = await readBody(req); assertObject(body, ['clusterId', 'namespaceName', 'workloadName']);
+    const body = await readBody(req); assertObject(body, ['clusterId', 'namespaceName', 'workloadName', 'workloadKind']);
     const action = p.endsWith('/stop') ? 'stop' : 'start';
     const clusterId = requireString(body.clusterId, 'clusterId');
     const namespaceName = requireString(body.namespaceName, 'namespaceName');
     const workloadName = requireString(body.workloadName, 'workloadName');
-    const result = await runAbortableRequest(req, res, (signal) => dcos.workloadAction(action, clusterId, namespaceName, workloadName, { signal }), { timeoutMs: config.dcos.timeoutMs });
+    const result = await runAbortableRequest(req, res, (signal) => dcos.workloadAction(action, clusterId, namespaceName, workloadName, { signal, workloadKind: body.workloadKind }), { timeoutMs: config.dcos.timeoutMs });
     return sendJson(res, 200, { ok: true, ...result });
   }
   if (req.method === 'GET' && p === '/api/bigdata/status') return sendJson(res, 200, { ok: true, ...bigdata.status() });

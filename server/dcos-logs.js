@@ -7,6 +7,12 @@ const ROOT = nodePath.join(__dirname, '..');
 const LOG_DIR = nodePath.join(ROOT, 'logs', 'dcos');
 const LOG_MAX_BYTES = 20 * 1024 * 1024; // 单个目标文件上限，超过后轮转一次为 .1.log
 const LOG_SEED_BYTES = 64 * 1024; // 进程重启后回读文件尾部用于去重
+const WORKLOAD_KINDS = ['StatefulSet', 'Deployment'];
+
+function workloadKind(value = 'StatefulSet') {
+  if (!WORKLOAD_KINDS.includes(value)) throw new DcosError(400, 'DCOS_INVALID_KIND', '工作负载类型只支持 StatefulSet 和 Deployment');
+  return value;
+}
 
 class DcosError extends Error {
   constructor(status, code, message, retryable = false) {
@@ -78,6 +84,7 @@ class DcosLogs {
     const nextCookie = cookie.trim().replace(/^Cookie:\s*/i, '');
     this.cookie = '';
     await this.request('/dcos/cluster/namespace/list', { query: { clusterId: this.config.clusters[0].id }, cookie: nextCookie, signal });
+    if (signal?.aborted) throw new DcosError(499, 'DCOS_CANCELLED', '请求已取消');
     this.cookie = nextCookie;
     return this.status();
   }
@@ -86,7 +93,7 @@ class DcosLogs {
 
   async request(path, { query, method = 'GET', body, cookie = this.cookie, signal } = {}) {
     if (!this.config.baseUrl) throw new DcosError(503, 'DCOS_NOT_CONFIGURED', '请在本机配置云翼平台地址');
-    if (!cookie) throw new DcosError(409, 'DCOS_NOT_CONNECTED', '请先在进程日志页面输入云翼平台 Cookie');
+    if (!cookie) throw new DcosError(409, 'DCOS_NOT_CONNECTED', '请先在进程日志页面连接云翼平台');
     const url = new URL(path, `${this.config.baseUrl}/`);
     for (const [key, value] of Object.entries(query || {})) if (value !== undefined) url.searchParams.set(key, String(value));
     const controller = new AbortController();
@@ -103,7 +110,7 @@ class DcosLogs {
       });
       if (response.status === 401 || response.status === 403) {
         if (cookie === this.cookie) this.cookie = '';
-        throw new DcosError(401, 'DCOS_SESSION_EXPIRED', '云翼平台会话已失效，请重新粘贴 Cookie');
+        throw new DcosError(401, 'DCOS_SESSION_EXPIRED', '云翼平台会话已失效，请重新网页登录或输入 Cookie');
       }
       if (!response.ok) throw new DcosError(502, 'DCOS_UPSTREAM_HTTP', `云翼平台请求失败（HTTP ${response.status}）`, true);
       const raw = await response.text();
@@ -132,26 +139,34 @@ class DcosLogs {
 
   async workloads(clusterId, namespaceName, { pageNow = 1, pageSize = 50, search = '', signal } = {}) {
     const cluster = this.cluster(clusterId);
-    const records = [];
-    let remotePages = 1;
-    for (let remotePage = 1; remotePage <= remotePages; remotePage++) {
-      const data = await this.request(`/dcos/workload/page/cluster/${cluster.id}/namespace/${encodeURIComponent(namespaceName)}`, {
-        method: 'POST', query: { pageNow: remotePage, pageSize: 100 },
-        body: { workloadKind: 'StatefulSet', appName: '', workloadNames: ['test'] }, signal,
-      });
-      if (!data || !Array.isArray(data.records) || !Number.isFinite(Number(data.total))) throw new DcosError(502, 'DCOS_INVALID_RESPONSE', '工作负载响应格式错误');
-      remotePages = Math.max(1, Math.ceil(Number(data.total) / 100));
-      records.push(...data.records);
-    }
+    const groups = await Promise.all(WORKLOAD_KINDS.map(async (kind) => {
+      const records = [];
+      let remotePages = 1;
+      for (let remotePage = 1; remotePage <= remotePages; remotePage++) {
+        const data = await this.request(`/dcos/workload/page/cluster/${cluster.id}/namespace/${encodeURIComponent(namespaceName)}`, {
+          method: 'POST', query: { pageNow: remotePage, pageSize: 100 },
+          body: { workloadKind: kind, appName: '', workloadNames: [] }, signal,
+        });
+        if (!data || !Array.isArray(data.records) || !Number.isFinite(Number(data.total))) throw new DcosError(502, 'DCOS_INVALID_RESPONSE', '工作负载响应格式错误');
+        remotePages = Math.max(1, Math.ceil(Number(data.total) / 100));
+        records.push(...data.records);
+      }
+      return records;
+    }));
     const term = search.trim().toLowerCase();
-    const filtered = records.map((item) => ({ name: item.workloadName, kind: item.workloadKind, runningPodNum: item.runningPodNum }))
-      .filter((item) => item.kind === 'StatefulSet' && typeof item.name === 'string' && item.name.split('-').includes('test') && item.name.toLowerCase().includes(term));
+    const unique = new Map();
+    for (const item of groups.flat()) {
+      if (WORKLOAD_KINDS.includes(item.workloadKind) && typeof item.workloadName === 'string' && item.workloadName.toLowerCase().includes(term)) {
+        unique.set(`${item.workloadKind}/${item.workloadName}`, { name: item.workloadName, kind: item.workloadKind, runningPodNum: item.runningPodNum });
+      }
+    }
+    const filtered = [...unique.values()].sort((a, b) => a.name.localeCompare(b.name) || a.kind.localeCompare(b.kind));
     return { records: filtered.slice((pageNow - 1) * pageSize, pageNow * pageSize), total: filtered.length, pageNow, pageSize };
   }
 
-  async pods(clusterId, namespaceName, workloadName, { signal } = {}) {
+  async pods(clusterId, namespaceName, workloadName, { signal, workloadKind: kind = 'StatefulSet' } = {}) {
     const cluster = this.cluster(clusterId);
-    const data = await this.request('/dcos/workload/pods/', { query: { clusterId: cluster.id, namespaceName, workloadName, workloadKind: 'StatefulSet' }, signal });
+    const data = await this.request('/dcos/workload/pods/', { query: { clusterId: cluster.id, namespaceName, workloadName, workloadKind: workloadKind(kind) }, signal });
     if (!Array.isArray(data)) throw new DcosError(502, 'DCOS_INVALID_RESPONSE', 'Pod 响应格式错误');
     return data.map((item) => ({ name: item.podName, status: item.podStatus, containers: (Array.isArray(item.containers) ? item.containers : []).map((container) => container.name).filter((name) => typeof name === 'string') })).filter((item) => typeof item.name === 'string');
   }
@@ -203,12 +218,13 @@ class DcosLogs {
     }
   }
 
-  // 云翼平台启停接口是 StatefulSet（工作负载）级别：/dcos/workload/{start|stop}/{clusterId}/namespace/{ns}/workloadKind/StatefulSet/workloadName/{name}
-  async workloadAction(action, clusterId, namespaceName, workloadName, { signal } = {}) {
+  // 启停作用于所选类型的整个工作负载。
+  async workloadAction(action, clusterId, namespaceName, workloadName, { signal, workloadKind: kind = 'StatefulSet' } = {}) {
     const cluster = this.cluster(clusterId);
     if (!['start', 'stop'].includes(action)) throw new DcosError(400, 'DCOS_INVALID_ACTION', '工作负载操作只支持 start 和 stop');
-    const data = await this.request(`/dcos/workload/${action}/${cluster.id}/namespace/${encodeURIComponent(namespaceName)}/workloadKind/StatefulSet/workloadName/${encodeURIComponent(workloadName)}`, { method: 'POST', signal });
-    return { action, clusterId: cluster.id, namespaceName, workloadName, respondedAt: new Date().toISOString(), detail: data ?? null };
+    kind = workloadKind(kind);
+    const data = await this.request(`/dcos/workload/${action}/${cluster.id}/namespace/${encodeURIComponent(namespaceName)}/workloadKind/${kind}/workloadName/${encodeURIComponent(workloadName)}`, { method: 'POST', signal });
+    return { action, clusterId: cluster.id, namespaceName, workloadName, workloadKind: kind, respondedAt: new Date().toISOString(), detail: data ?? null };
   }
 }
 

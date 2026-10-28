@@ -28,7 +28,10 @@ test('云翼日志链路映射并仅在服务端保存 Cookie', async () => {
     if (url.pathname.includes('/workload/page/')) {
       let body = ''; req.on('data', (part) => { body += part; });
       return req.on('end', () => {
-        assert.deepEqual(JSON.parse(body), { workloadKind: 'StatefulSet', appName: '', workloadNames: ['test'] });
+        const payload = JSON.parse(body);
+        assert.ok(['StatefulSet', 'Deployment'].includes(payload.workloadKind));
+        assert.deepEqual(payload, { workloadKind: payload.workloadKind, appName: '', workloadNames: [] });
+        if (payload.workloadKind === 'Deployment') return json(res, { code: 0, data: { records: [], total: 0 } });
         json(res, { code: 0, data: { records: [{ workloadName: 'idis-prep-ss', workloadKind: 'StatefulSet', runningPodNum: 1 }, { workloadName: 'idis-test-prep-ss', workloadKind: 'StatefulSet', runningPodNum: 1 }], total: 2, current: 1 } });
       });
     }
@@ -43,7 +46,7 @@ test('云翼日志链路映射并仅在服务端保存 Cookie', async () => {
     assert.equal(connected.connected, true);
     assert.equal(JSON.stringify(connected).includes('JSESSIONID'), false);
     assert.deepEqual(await service.namespaces(321), [{ name: 'bill-cnos-jf', clusterId: 321 }]);
-    assert.deepEqual(await service.workloads(321, 'bill-cnos-jf', { pageNow: 1, pageSize: 10, search: 'prep' }), { records: [{ name: 'idis-test-prep-ss', kind: 'StatefulSet', runningPodNum: 1 }], total: 1, pageNow: 1, pageSize: 10 });
+    assert.deepEqual(await service.workloads(321, 'bill-cnos-jf', { pageNow: 1, pageSize: 10, search: 'prep' }), { records: [{ name: 'idis-prep-ss', kind: 'StatefulSet', runningPodNum: 1 }, { name: 'idis-test-prep-ss', kind: 'StatefulSet', runningPodNum: 1 }], total: 2, pageNow: 1, pageSize: 10 });
     assert.deepEqual(await service.pods(321, 'bill-cnos-jf', 'prep-ss'), [{ name: 'prep-ss-0', status: 'Running', containers: ['container1'] }]);
     const logs = await service.logs(321, 'bill-cnos-jf', 'prep-ss-0', 'container1', 100);
     assert.deepEqual(logs.lines, ['first line', 'second line']);
@@ -90,7 +93,7 @@ test('命名空间列表兼容平台直接数组、列表包装和空结果', as
   });
 });
 
-test('StatefulSet 筛选跨上游分页后再计算搜索结果总数', async () => {
+test('两类工作负载跨上游分页后合并去重，再计算模糊搜索及本地分页', async () => {
   const pages = [];
   await fixture((req, res) => {
     const url = new URL(req.url, 'http://localhost');
@@ -102,7 +105,7 @@ test('StatefulSet 筛选跨上游分页后再计算搜索结果总数', async ()
   }, async (baseUrl) => {
     const service = new DcosLogs(config(baseUrl)); service.cookie = 'JSESSIONID=test';
     const result = await service.workloads(321, 'bill-cnos-jf', { pageNow: 1, pageSize: 1, search: 'prep' });
-    assert.deepEqual(pages, [1, 2]);
+    assert.deepEqual(pages.sort(), [1, 1, 2, 2]);
     assert.equal(result.total, 1);
     assert.deepEqual(result.records.map((item) => item.name), ['idis-test-prep']);
   });
@@ -118,6 +121,32 @@ test('云翼请求支持超时和主动取消', async () => {
     controller.abort();
     await assert.rejects(cancelled, { code: 'DCOS_CANCELLED' });
   });
+});
+
+test('有状态和无状态全部名称可查询，同名类型独立，Deployment Pod 与启停透传类型', async () => {
+  const calls = [];
+  const service = new DcosLogs(config('http://fixture.test'), { fetchImpl: async (url, options) => {
+    calls.push({ url, options });
+    let data = null;
+    if (url.pathname.includes('/workload/page/')) {
+      const { workloadKind, workloadNames } = JSON.parse(options.body);
+      assert.deepEqual(workloadNames, []);
+      data = { records: [{ workloadName: 'rating-dev', workloadKind, runningPodNum: 1 }], total: 1 };
+    } else if (url.pathname.endsWith('/pods/')) data = [{ podName: 'rating-dev-hash', containers: [{ name: 'main' }] }];
+    return { ok: true, status: 200, text: async () => JSON.stringify({ code: 0, data }) };
+  } });
+  service.cookie = 'fixture';
+  const result = await service.workloads(321, 'bill-cnos-jf', { search: 'RATING-D', pageSize: 1, pageNow: 2 });
+  assert.equal(result.total, 2); assert.equal(result.records.length, 1);
+  assert.equal(result.records[0].name, 'rating-dev');
+  await service.pods(321, 'bill-cnos-jf', 'rating-dev', { workloadKind: 'Deployment' });
+  assert.equal(calls.at(-1).url.searchParams.get('workloadKind'), 'Deployment');
+  await service.workloadAction('stop', 321, 'bill-cnos-jf', 'rating-dev', { workloadKind: 'Deployment' });
+  assert.match(calls.at(-1).url.pathname, /workloadKind\/Deployment\/workloadName\/rating-dev$/);
+  const count = calls.length;
+  await assert.rejects(service.pods(321, 'ns', 'name', { workloadKind: 'DaemonSet' }), { code: 'DCOS_INVALID_KIND' });
+  await assert.rejects(service.workloadAction('start', 321, 'ns', 'name', { workloadKind: '../Deployment' }), { code: 'DCOS_INVALID_KIND' });
+  assert.equal(calls.length, count);
 });
 
 test('容器日志去重后追加到本地文件，进程重启后按文件尾部续接', async () => {
