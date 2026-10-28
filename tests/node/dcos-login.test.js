@@ -74,6 +74,21 @@ test('无效认证地址或发现接口失败明确提示，不打开空白窗�
   }
 });
 
+test('完整 CAS 三来源链放行 service 回调，不放开同主机其他端口', async () => {
+  const loginUrl = 'http://platform.test:9001/auth/login?service=' + encodeURIComponent('http://platform.test:8787/cas?client_name=it_paas');
+  const f = fixture(async () => ({ connected: false }), { loginUrl });
+  const pending = f.login(); await tick();
+  let blocked = false;
+  for (const url of [loginUrl, 'http://platform.test:8787/cas?ticket=fixture', 'http://platform.test:8081/paas/cloudportal/console/#/overview']) {
+    f.windows[0].webContents.emit('will-redirect', { url, isMainFrame: true, preventDefault() { blocked = true; } });
+  }
+  assert.equal(blocked, false);
+  f.windows[0].webContents.emit('will-navigate', { url: 'http://platform.test:8788/cas', isMainFrame: true, preventDefault() { blocked = true; } });
+  assert.equal((await pending).ok, false); assert.equal(blocked, true);
+  const invalid = fixture(async () => ({ connected: true }), { loginUrl: 'http://platform.test:9001/auth/login?service=javascript%3Aalert(1)' });
+  assert.equal((await invalid.login()).ok, false); assert.equal(invalid.windows.length, 0);
+});
+
 test('独立认证站点仅按平台返回地址放行，Cookie 仍仅读取门户 API 适用范围', async () => {
   const f = fixture(async () => ({ connected: true }), { loginUrl: 'https://identity.test/auth/login?redirect=portal' });
   const pending = f.login(); await tick();

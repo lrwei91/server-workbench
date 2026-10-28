@@ -32,8 +32,9 @@ app.whenReady().then(async () => {
     if (req.url.startsWith('/dcos/workload/containerLogs')) return send(['本地模拟日志：登录桥接与工作负载选择验收成功']);
     res.writeHead(404); res.end();
   });
-  process.env.DCOS_BASE_URL = await listen(upstream);
-  process.env.DCOS_CLUSTERS = '321:smoke-cluster';
+  const fixtureOrigin = await listen(upstream);
+  process.env.DCOS_BASE_URL = process.env.WORKBENCH_DCOS_DEBUG_BASE || fixtureOrigin;
+  process.env.DCOS_CLUSTERS = process.env.WORKBENCH_DCOS_DEBUG_BASE ? '321:ccse-xyha-01' : '321:smoke-cluster';
   process.env.WORKBENCH_CONFIG_DIR = directory;
   process.env.WORKBENCH_DATA_DIR = directory;
   backend = require('../../server/server').createServer({ token: 'smoke-token' });
@@ -51,8 +52,9 @@ app.whenReady().then(async () => {
     if (event.sender !== win.webContents || event.senderFrame !== win.webContents.mainFrame) return { ok: false };
     return login();
   });
-  await win.loadURL(origin);
+  await win.loadURL(`${origin}/#/logs`);
   win.show();
+  win.focus();
   console.log('DCOS_LOGIN_SMOKE_READY');
 });
 app.on('window-all-closed', () => { backend?.closeAllConnections(); backend?.close(); upstream?.closeAllConnections(); upstream?.close(); app.quit(); });

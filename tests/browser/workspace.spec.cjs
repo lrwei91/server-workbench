@@ -186,6 +186,68 @@ async function selectLogTarget(page) {
   await page.getByRole('option', { name: 'billing-test · 有状态 StatefulSet · 1 Pod', exact: true }).click();
   await page.locator('#dcosPod').selectOption('billing-test-0'); await page.locator('#dcosContainer').selectOption('billing');
 }
+for (const size of [{ width: 1366, height: 768, label: '1366' }, { width: 1024, height: 768, label: '1024' }, { width: 683, height: 384, label: '1366-at-200' }]) {
+  test(`compact log sidebar keeps connection and target controls accessible at ${size.label}`, async ({ page }) => {
+    await page.setViewportSize(size);
+    await page.addInitScript(() => { window.workbenchDesktop = { loginDcos: async () => ({ ok: false, message: '登录已取消，请重试。' }) }; });
+    await mockLogs(page);
+    await page.route('**/api/dcos/status', route => fulfill(route, { configured: true, connected: false, baseUrl: 'https://logs.example.invalid', clusters: [{ id: 321, name: '测试集群' }] }));
+    await page.goto('/#/logs');
+    await expect(page.locator('#dcosConnectionStatus')).toHaveText('未连接');
+    await expect(page.locator('#dcosConnectionCard')).not.toHaveAttribute('open');
+    await expect(page.locator('#dcosConnectionError')).toBeHidden();
+    await expect(page.locator('#dcosDisconnect')).toBeHidden();
+    await expect(page.locator('#dcosBrowserLogin')).toBeVisible();
+    await expect(page.locator('#dcosPrevPage')).toBeHidden();
+    await expect(page.locator('#dcosSearchButton')).toBeDisabled();
+    const path = require('node:path'); const fs = require('node:fs'); const directory = path.resolve('outputs/log-sidebar'); fs.mkdirSync(directory, { recursive: true });
+    await page.screenshot({ path: path.join(directory, `disconnected-${size.label}.png`) });
+    await page.locator('#dcosBrowserLogin').click();
+    await expect(page.locator('#dcosConnectionError')).toHaveText('登录已取消，请重试。');
+    await page.locator('#dcosConnectionCard > summary').click();
+    await page.locator('.dcos-manual-login > summary').click();
+    await page.locator('#dcosCookieInput').fill('fixture=session');
+    await expect(page.locator('#dcosConnect')).toBeEnabled();
+    await expect(page.locator('#dcosCookieInput')).toHaveCSS('grid-column', 'auto');
+    expect((await page.locator('#dcosCookieInput').boundingBox()).width).toBeGreaterThan(140);
+    for (const selector of ['#dcosCookieInput', '#dcosConnect', '#dcosStartWorkload', '#dcosStopWorkload']) {
+      await page.locator(selector).scrollIntoViewIfNeeded();
+      const box = await page.locator(selector).boundingBox();
+      expect(box.x).toBeGreaterThanOrEqual(0); expect(box.x + box.width).toBeLessThanOrEqual(size.width);
+      expect(box.y).toBeGreaterThanOrEqual(0); expect(box.y + box.height).toBeLessThanOrEqual(size.height);
+    }
+    await page.unroute('**/api/dcos/status'); await mockLogs(page); await page.reload();
+    await selectLogTarget(page);
+    await expect(page.locator('#dcosLogState')).toContainText('已读取 150 行');
+    await expect(page.locator('#dcosConnectionStatus')).toHaveClass('connected');
+    await expect(page.locator('#dcosDisconnect')).toBeVisible();
+    await expect(page.locator('#dcosPageInfo')).toHaveText('2 个工作负载');
+    await expect(page.locator('#dcosPrevPage')).toBeHidden();
+    await page.screenshot({ path: path.join(directory, `connected-${size.label}.png`) });
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  });
+}
+test('compact log sidebar preserves browser Cookie access and multi-page navigation', async ({ page }) => {
+  await mockLogs(page);
+  await page.route('**/api/dcos/status', route => fulfill(route, { configured: true, connected: false, baseUrl: 'https://logs.example.invalid', clusters: [{ id: 321, name: '测试集群' }] }));
+  await page.route('**/api/dcos/connect', route => fulfill(route, { configured: true, connected: true, baseUrl: 'https://logs.example.invalid', clusters: [{ id: 321, name: '测试集群' }] }));
+  await page.route('**/api/dcos/workloads?*', route => {
+    const pageNow = Number(new URL(route.request().url()).searchParams.get('pageNow'));
+    return fulfill(route, { records: [{ name: `billing-page-${pageNow}`, kind: 'Deployment', runningPodNum: 1 }], total: 70, pageNow });
+  });
+  await page.goto('/#/logs');
+  await expect(page.locator('#dcosConnectionCard')).toHaveAttribute('open');
+  await expect(page.locator('#dcosBrowserLogin')).toBeHidden();
+  await page.locator('.dcos-manual-login > summary').click();
+  await page.locator('#dcosCookieInput').fill('fixture=session'); await page.locator('#dcosConnect').click();
+  await expect(page.locator('#dcosConnectionStatus')).toHaveText('已连接');
+  await page.locator('#dcosCluster').selectOption('321'); await page.locator('#dcosNamespace').selectOption('bill-cnos-jf');
+  await expect(page.locator('#dcosPageInfo')).toHaveText('70 个工作负载 · 1/2');
+  await expect(page.locator('#dcosPrevPage')).toBeDisabled(); await page.locator('#dcosNextPage').click();
+  await expect(page.locator('#dcosPageInfo')).toHaveText('70 个工作负载 · 2/2');
+  await expect(page.locator('#dcosNextPage')).toBeDisabled(); await page.locator('#dcosPrevPage').click();
+  await expect(page.locator('#dcosPageInfo')).toHaveText('70 个工作负载 · 1/2');
+});
 test('log follow pauses when scrolling up; leaving the page stops polling and returning resumes it', async ({ page }) => {
   const calls = await mockLogs(page); await page.clock.install(); await page.goto('/#/logs'); await selectLogTarget(page);
   await expect(page.locator('#dcosLogState')).toContainText('已读取 150 行'); await expect(page.locator('#dcosConnectionCard')).not.toHaveAttribute('open');

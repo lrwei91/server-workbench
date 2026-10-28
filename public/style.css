@@ -279,18 +279,12 @@ body {
 }
 .dcos-connection-card {
   flex: 0 0 auto;
-  margin-bottom: 16px;
-  background: var(--wb-surface-subtle);
-}
-.dcos-connection-card .connection-list-heading {
-  grid-template-columns: auto minmax(0, 1fr) auto auto auto auto;
-}
-.dcos-connection-card dl {
-  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+  margin: 0;
+  background: transparent;
 }
 .dcos-connection-card .connection-secret-field {
   display: grid;
-  grid-template-columns: 140px minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   align-items: center;
   gap: 10px;
   margin-top: 10px;
@@ -1875,7 +1869,7 @@ dialog.wb-dialog.preview-dialog[open] {
 .log-targets {
   overflow-y: auto;
   min-height: 0;
-  padding: 12px;
+  padding: 16px;
   border-right: 1px solid var(--wb-border);
   background: #fafaf8;
 }
@@ -1890,12 +1884,13 @@ dialog.wb-dialog.preview-dialog[open] {
   display: flex;
   flex-direction: column;
   padding: 0;
-  gap: 12px;
+  gap: 16px;
+  margin: 0;
 }
 .log-targets .dcos-toolbar {
-  flex-wrap: wrap;
-  padding: 12px 0;
-  gap: 8px;
+  display: block;
+  padding: 0;
+  margin: 0;
 }
 .dcos-search-label {
   min-width: 0;
@@ -1904,13 +1899,17 @@ dialog.wb-dialog.preview-dialog[open] {
 }
 .dcos-page-nav, .dcos-workload-actions {
   width: 100%;
-  justify-content: space-between;
 }
+.dcos-page-nav { min-height: 32px; gap: 4px; }
+.dcos-page-nav .dialog-note { flex: 1; font-size: 11px; white-space: normal; }
+.dcos-page-nav .wb-button { min-height: 26px; width: 26px; padding: 0; font-size: 18px; }
 .dcos-workload-actions {
-  margin-top: 12px;
+  margin: 16px 0 0;
+  border-left: 0;
   border-top: 1px solid var(--wb-border);
-  padding-top: 12px;
+  padding: 16px 0 0;
 }
+.dcos-workload-actions .wb-button { flex: 1; }
 .log-context {
   display: flex;
   flex-wrap: wrap;
@@ -1926,45 +1925,77 @@ dialog.wb-dialog.preview-dialog[open] {
   display: block;
   margin-top: 4px;
 }
-.log-targets .dcos-connection-card {
-  margin: 0 0 14px;
-  padding: 10px;
-  background: white;
+.dcos-connection-panel {
+  margin-bottom: 22px;
+  padding: 12px;
+  border: 1px solid var(--wb-border);
+  border-radius: 8px;
+  background: var(--wb-surface);
 }
-.log-targets .dcos-connection-card .connection-list-heading {
+.log-targets .dcos-connection-card > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0;
+  border: 0;
+}
+.dcos-connection-title {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+#dcosConnectionStatus {
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: #f2f3f4;
+  color: var(--wb-text-secondary);
+  font-size: 10px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+#dcosConnectionStatus.connected { background: #e9f5ee; color: #247447; }
+.log-targets .dcos-connection-card > summary .card-toggle::after {
+  content: '';
+  display: block;
+  width: 5px;
+  height: 5px;
+  border-right: 1px solid currentColor;
+  border-bottom: 1px solid currentColor;
+  transform: rotate(45deg);
+}
+.log-targets .dcos-connection-card[open] > summary .card-toggle::after { transform: rotate(225deg); }
+.dcos-connect-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 7px;
-}
-.log-targets .connection-list-heading > div {
-  flex: 1 1 140px;
-}
-.log-targets .connection-list-heading h3 {
-  font-size: 12px;
-}
-.log-targets .connection-list-heading p {
-  display: none;
-}
-.log-targets .connection-list-heading button {
-  min-height: 28px;
-  padding: 0 7px;
-  font-size: 11px;
-}
-.log-targets .dcos-connection-body {
-  padding: 8px 0 0;
-}
-.log-targets .connection-secret-field {
-  display: block;
-}
-.log-targets .connection-list-item dl {
-  grid-template-columns: 1fr;
   gap: 8px;
 }
-.log-targets .connection-list-item dd {
-  overflow-wrap: anywhere;
+.dcos-connect-actions .wb-button { flex: 1 1 auto; margin-top: 12px; }
+.log-targets .dcos-connection-body {
+  padding: 12px 0 0;
 }
-.log-targets .wb-status {
-  font-size: 11px;
+.dcos-endpoint { display: grid; gap: 4px; font-size: 11px; color: var(--wb-text-secondary); }
+#dcosBaseUrl { overflow-wrap: anywhere; }
+.dcos-manual-login { margin-top: 12px; font-size: 12px; }
+.dcos-manual-login > summary { cursor: pointer; color: var(--wb-text-secondary); }
+.log-targets .connection-secret-field { display: grid; gap: 4px; margin: 10px 0 8px; }
+.dcos-manual-login > .wb-button { width: 100%; }
+.log-targets .wb-field { min-height: 36px; font-size: 12px; border-radius: 5px; }
+.log-targets .wb-button { font-size: 12px; min-height: 32px; border-radius: 5px; }
+.dcos-target-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+.dcos-target-heading h2 { margin: 0; font-size: 12px; font-weight: 600; }
+.dcos-target-heading .wb-button { min-height: 26px; padding: 0 6px; font-size: 11px; }
+#dcosConnectionError:empty { display: none; }
+#dcosConnectionError { margin: 10px 0 0; min-height: 0; font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
+@media (max-width: 800px) {
+  .log-targets { padding: 10px; }
+  .dcos-connection-panel { padding: 10px; }
+  .log-targets .dcos-connection-card > summary { gap: 5px; }
 }
 .dcos-log-bar {
   flex: 0 0 auto;

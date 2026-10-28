@@ -20,6 +20,13 @@ function createDcosLogin({ BrowserWindow, session, parent, getStatus, connect, f
           const target = new URL(payload.loginUrl, base);
           if (!['http:', 'https:'].includes(target.protocol) || target.username || target.password) throw new Error('invalid loginUrl');
           allowedOrigins.add(target.origin);
+          // CAS 在 loginUrl.service 声明登录成功后的回调，端口可能与门户/认证均不同。
+          const service = target.searchParams.get('service');
+          if (service) {
+            const callback = new URL(service);
+            if (!['http:', 'https:'].includes(callback.protocol) || callback.username || callback.password) throw new Error('invalid CAS service');
+            allowedOrigins.add(callback.origin);
+          }
         } else if (!response.ok) throw new Error('login discovery failed');
       } catch (_) { return { ok: false, message: '读取平台登录地址失败，请检查网络或使用手动 Cookie 连接。' }; }
       const platformSession = session.fromPartition('dcos-login', { cache: false });

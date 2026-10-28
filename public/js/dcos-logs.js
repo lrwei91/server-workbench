@@ -66,27 +66,28 @@ export function initDcosLogs() {
     for (const selector of selectors) if (state.runningAction) $(selector).disabled = true;
     renderConnection();
     $('#dcosWorkloadSearch').disabled = state.runningAction || !$('#dcosNamespace').value;
-    $('#dcosSearchButton').disabled = state.runningAction;
+    $('#dcosSearchButton').disabled = state.runningAction || !$('#dcosNamespace').value;
     if (state.runningAction) { closePicker(); $('#dcosPrevPage').disabled = true; $('#dcosNextPage').disabled = true; }
   }
   function renderConnection(message = '') {
     setText($('#dcosConnectionStatus'), state.connected ? '已连接' : state.configured ? '未连接' : '待配置');
     $('#dcosConnectionDot').classList.toggle('on', state.connected);
+    $('#dcosConnectionStatus').classList.toggle('connected', state.connected);
     $('#dcosConnect').disabled = state.runningAction || state.loginPending || !state.configured || !$('#dcosCookieInput').value.trim();
     $('#dcosDisconnect').disabled = state.runningAction || state.loginPending || !state.connected;
+    $('#dcosDisconnect').hidden = !state.connected;
     $('#dcosCookieInput').disabled = state.runningAction || state.loginPending;
     $('#dcosBrowserLogin').hidden = !desktopLogin;
     $('#dcosBrowserLogin').disabled = state.runningAction || !state.configured || state.loginPending;
     setText($('#dcosBaseUrl'), state.configured ? state.baseUrl : '待配置');
-    setText($('#dcosClusters'), state.clusters.map((cluster) => `${cluster.name} (${cluster.id})`).join('、') || '—');
-    setText($('#dcosConnectionError'), message || (state.configured ? (desktopLogin ? '点击「网页登录并连接」，在独立窗口登录后自动接入；会话仅留在本次应用内存，也可手动输入 Cookie。' : '浏览器版使用手动 Cookie；桌面版支持网页登录后自动接入。会话仅留在本次 Node 进程内存。') : '请在本机 .env 设置 DCOS_BASE_URL。'));
+    setText($('#dcosConnectionError'), message || (state.configured ? '' : '请在本机 .env 设置 DCOS_BASE_URL。'));
   }
   function applyStatus(result, message = '') {
     state.connected = Boolean(result.connected); state.configured = Boolean(result.configured);
     state.baseUrl = result.baseUrl || ''; state.clusters = result.clusters || [];
     options($('#dcosCluster'), state.clusters.map((cluster) => ({ label: `${cluster.name} (${cluster.id})`, value: String(cluster.id) })), '选择集群');
-    // 已连接时收起连接卡片，把纵向空间让给日志区；需要重粘 Cookie 时点标题展开
-    $('#dcosConnectionCard').open = !state.connected;
+    // 桌面版默认隐藏连接细节；浏览器版展开手动连接入口。
+    $('#dcosConnectionCard').open = !desktopLogin && !state.connected;
     resetFrom(1); renderConnection(message);
   }
   async function loadStatus() {
@@ -116,7 +117,9 @@ export function initDcosLogs() {
   }
   function pageInfo() {
     const pages = Math.ceil(state.total / state.pageSize);
-    setText($('#dcosPageInfo'), pages ? `第 ${state.pageNow}/${pages} 页 · 共 ${state.total} 个` : '无匹配工作负载');
+    setText($('#dcosPageInfo'), pages ? `${state.total} 个工作负载${pages > 1 ? ` · ${state.pageNow}/${pages}` : ''}` : $('#dcosNamespace').value ? '无匹配工作负载' : '');
+    $('#dcosPrevPage').hidden = pages <= 1;
+    $('#dcosNextPage').hidden = pages <= 1;
     $('#dcosPrevPage').disabled = state.pageNow <= 1;
     $('#dcosNextPage').disabled = state.pageNow >= pages;
   }
