@@ -257,7 +257,8 @@ export function initDcosLogs() {
   search.addEventListener('blur', closePicker);
   window.addEventListener('resize', closePicker);
   page.querySelector('.process-log-body').addEventListener('scroll', closePicker);
-  page.querySelector('.log-targets').addEventListener('scroll', closePicker);
+  // 搜索框在窄窗口聚焦时会自动滚入可视区，保持弹层跟随而不是提前关闭。
+  page.querySelector('.log-targets').addEventListener('scroll', () => { if (!list.hidden) openPicker(); });
   search.addEventListener('input', () => {
     gates.workloads.cancel(); gates.pods.cancel(); cancelLogRequest(); resetFrom(2, { keepSearch: true }); setText($('#dcosLogText'), '');
     state.pageNow = 1; renderPicker('正在搜索…'); openPicker();
