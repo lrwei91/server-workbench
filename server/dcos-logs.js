@@ -133,8 +133,14 @@ class DcosLogs {
     // 平台不同版本可能直接返回数组，也可能把列表包在分页/列表对象中。
     const items = Array.isArray(data) ? data : [data?.records, data?.list, data?.namespaces, data?.namespaceList, data?.items, data?.content].find(Array.isArray);
     if (!items && data != null) throw new DcosError(502, 'DCOS_INVALID_RESPONSE', `命名空间响应格式错误（字段：${Object.keys(data).slice(0, 8).join('、') || '无'}）`);
-    return (items || []).map((item) => ({ name: item?.namespaceName || item?.name, clusterId: item?.clusterId ?? cluster.id }))
-      .filter((item) => item.name === 'bill-cnos-jf');
+    const namespaces = new Map();
+    for (const item of items || []) {
+      const name = typeof item === 'string' ? item : item?.namespaceName || item?.name;
+      if (typeof name !== 'string' || !name.trim()) continue;
+      namespaces.set(name.trim(), { name: name.trim(), clusterId: cluster.id });
+    }
+    if (items?.length && !namespaces.size) throw new DcosError(502, 'DCOS_INVALID_RESPONSE', '命名空间列表中缺少有效名称，请检查平台响应格式');
+    return [...namespaces.values()];
   }
 
   async workloads(clusterId, namespaceName, { pageNow = 1, pageSize = 50, search = '', signal } = {}) {

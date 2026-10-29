@@ -3,7 +3,7 @@
 ## 交付范围
 
 - Windows 10/11 x64；Electron 窗口 + 独立 Node 服务 + PyInstaller onedir CDR 服务。
-- 目标机器无需安装 Node/Python。现有 `start.bat` / 浏览器开发方式保留。
+- 目标机器无需安装 Node/Python。
 - 安装包使用 NSIS，默认按用户安装；自动更新来自 `lrwei91/server-workbench` 的公开 GitHub Releases。
 - 首版不包含新版启动失败自动回退；问题版本采用更高版本号修复发布。
 

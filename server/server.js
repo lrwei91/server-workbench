@@ -495,13 +495,4 @@ async function shutdownServices() {
   ssh.disconnect();
   await Promise.allSettled([database.closeAll(), voyage.disconnect()]);
 }
-const server = createServer();
-if (require.main === module) {
-  const errors = config.validate();
-  if (errors.length) console.warn('[配置提示]', errors.join('；'));
-  server.listen(config.workbench.port, config.workbench.host, () => console.log(`远程服务器管理工作台已启动: http://${config.workbench.host}:${config.workbench.port}`));
-  server.on('error', (error) => { console.error('[服务错误]', error); process.exitCode = 1; });
-  const shutdown = () => { bigdata.disconnect(); void Promise.allSettled([database.closeAll(), voyage.disconnect()]).finally(() => server.close(() => process.exit(0))); };
-  process.once('SIGINT', shutdown); process.once('SIGTERM', shutdown);
-}
 module.exports = { createServer, shutdownServices, handle, RequestError, asRequestError, MAX_BODY_BYTES, voyage, bigdata };

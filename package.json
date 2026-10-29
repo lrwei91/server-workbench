@@ -1,6 +1,6 @@
 {
   "name": "server-workbench",
-  "version": "1.0.12",
+  "version": "1.0.13",
   "private": true,
   "description": "Windows-first SSH/SFTP/HDFS and CDR workbench",
   "type": "commonjs",
@@ -10,7 +10,6 @@
     "node": ">=18"
   },
   "scripts": {
-    "start": "node server/server.js",
     "check": "node --check server/server.js && node --check server/config-loader.js && node --check server/dcos-logs.js && node --check server/bigdata-client.js && node --check server/redis-archive.js && node --check server/archive-codec.js && node --check server/redis-indexes.js && node --check server/pg-redis-sync.js && node --check server/voyage.js && node --check server/ssh.js && node --check server/sftp.js && node --check server/hdfs.js && node --check server/hbase.js && node --check server/database.js && node --check server/encoding.js && node --check server/phone-query.js && node --check server/archive-relations.js && node --check server/proxy.js && node --input-type=module --check < shared/ui.js && node --input-type=module --check < public/js/hbase-scan-format.js && node --input-type=module --check < public/js/redis-labels.js && node --input-type=module --check < public/js/redis-sync.js && node --input-type=module --check < public/js/redis-indexes.js && node --input-type=module --check < public/js/insert-export.js && node --input-type=module --check < public/js/dcos-logs.js && node --input-type=module --check < public/js/main.js && node --input-type=module --check < cdr/static/js/main.js && node --input-type=module --check < public/js/navigation.js && node --input-type=module --check < public/js/resource-ui.js && node --input-type=module --check < public/js/redis-ui.js && node --input-type=module --check < public/js/connections.js && node --input-type=module --check < public/js/query-results.js && python -m compileall -q cdr",
     "test:node": "node --test tests/node/*.test.js",
     "test:python": "python -m unittest discover -s tests/python -p \"test_*.py\"",

@@ -8,7 +8,7 @@ Windows 桌面交付层使用 Electron + NSIS，主进程管理 Node utilityProc
 
 ```mermaid
 graph TD
-  B["浏览器（PC）"] --> N["Node server/server.js :17755"]
+  B["Electron 桌面窗口"] --> N["本地 Node 服务（动态端口）"]
   N --> P["public/ + shared/"]
   N --> S["SSH / SFTP + HDFS/HBase 双后端适配"]
   S --> S1["显式 SSH 命令链路：逐次 hadoop fs / hbase shell"]
@@ -21,14 +21,14 @@ graph TD
   F2 --> E["cdr/engine.py（最多 100,000 条内存记录）"]
 ```
 
-`start.bat` 只从 PATH 查找 `node`、`python`/`py`，不包含个人绝对路径。`.env.example` 展示连接结构，复制成未纳入 Git 的 `.env` 后填写真实连接信息。Node 启动时会报告配置缺失，接口仅返回掩码后的连接状态。
+桌面 App 管理本地 Node 与 CDR 子进程。`.env.example` 展示连接结构，复制成未纳入 Git 的 `.env` 后填写真实连接信息。Node 启动时会报告配置缺失，接口仅返回掩码后的连接状态。
 
 ## 前端架构
 
 - `shared/tokens.css` 是纯白工具覆盖：画布/表面白、黑墨层级、荧光黄主操作与选中、蓝色焦点、独立状态色，视觉旋钮按 4/3/6 控制密度、圆角和阴影。
 - `shared/ui.js` 提供统一请求错误模型、可区分的超时/主动取消、DOM 节点创建、状态播报、格式化和原生 `dialog` 焦点进入/恢复。
 - `shared/icons.svg` 为图标精灵。主工作台和 CDR 前端均使用 `textContent`/节点构造渲染远端数据，不把文件名、路径、字段值拼入 `innerHTML`。
-- 主工作台采用资源浏览、数据库查询、Redis 档案、进程日志、话单工具五个独立工作区。`navigation.js` 管理仅含枚举的 hash 路由，`connections.js` 管理相关源状态与右侧连接抽屉，`resource-ui.js` 管理路径编辑、面包屑与行操作菜单，`query-results.js` 管理表格及结果分组，`redis-ui.js` 管理 Redis 子页。页面节点和 CDR iframe 在切页时保留；只有日志页处于前台时恢复其轮询。收藏、备注沿用原存储格式，查询数据与预览不持久化。
+- 主工作台采用资源浏览、数据库查询、Redis 档案、进程日志、话单工具五个独立工作区。`navigation.js` 管理仅含枚举的 hash 路由，`connections.js` 管理相关源状态与右侧连接抽屉，`resource-ui.js` 管理路径编辑、面包屑与行操作菜单，`query-results.js` 管理表格及结果分组，`redis-ui.js` 管理 Redis 子页。页面节点和 CDR iframe 在切页时保留；选定容器后持续后台采集日志；页面自动刷新仅控制显示。收藏、备注沿用原存储格式，查询数据与预览不持久化。
 - 数据库查询页保留环境选择：测试环境档案查 PostgreSQL `bill_inmemory`、配置查 MySQL/UDAL `CONFIGDB_CNOS_JF_TEST`；工程环境经 Voyage 查询，可选择 `bill_inmemory` / `crmv3`。前端按所选源检查连接并传递 source/schema，切换时取消旧请求并清空结果。号码不等于产品实例 ID，同一号码可能含多个实例/历史；bill_inmemory 实例档案保留 `his_id` 与一跳关系，crmv3 沿用工程档案查询路径。关系链固定 PG/MySQL、Redis 同步固定 PG，不受环境选择影响。
 - PG查询复用逻辑到物理表/字段映射：`prod_inst_acct_rel → prod_inst_acct`、`offer_inst → prod_offer_inst`、`offer_inst_rel → prod_offer_inst_rel`、`acc_num → acc_nbr`、销售品关系A/Z字段等；保留物理原值并提供逻辑兼容字段。配置查询不套用该映射，套餐定义读取MySQL `offer`。新增独立“关系链查询”覆盖产品/销售品正反向、功能产品、群主、三类非产品群及对端成员诊断；结果是带履历/状态/角色的原始候选，详见 [档案查询与关系链](./docs/archive-relations.md)。
 - “查询套餐”按规格offer_id读取MySQL定义和定价，从PG反查订购销售品实例、产品关系及产品实例。“查询事件类型”保留MySQL事件格式、入库路由、定价策略/组合查询，订购实例与产品关联转查PG。每一步记录实际来源，单分支失败保留已成功数据。
@@ -49,14 +49,14 @@ graph TD
 - `/api/query/redis` 只接收产品实例 ID 或 `rate:cpp:{数字ID}`，逐次认证、选择配置的 DB、GET 并解码 LZ4/JSON。单次连接与查询默认 15 秒，解压长度默认不超过 16 MiB，密码不进入接口响应。
 - `/api/redis-index/lookup|preview|apply` 补建根产品号码索引：实例直接定位 CPP；手机号先读 Redis accNbr，缺失时查测试 PG `prod_inst.acc_nbr`，最多 100 个候选。预览从所选 CPP 根 `prodInsts` 分别取 `account` 与 `accNbr`，历史成员去重后编码为二进制 SET。确认后 Lua 核对源字节与全部目标仍缺失，只新增缺失 key，不改已有 key/成员/TTL。写前本地操作记录、写后回读；响应异常保留 uncertain，不自动重放。仅覆盖所选实例，详见 [号码索引补建](./docs/redis-indexes.md)。
 - `/api/redis-sync/preview|apply|history|restore` 从 PG 按 `ID + his_id` 更新既有 Redis 档案字段，并追加根产品直接订购关系及销售品实例；其他新增类型仅核对，缺失/未知内容保留，既有记录关联端点变更阻断。新增记录与字段共用候选编码、预览重算、整条备份及恢复；编码重算 Kryo String 字符长度并生成 raw LZ4 block，Redis Lua CAS 写入保留 TTL 并回读验证。恢复绑定连接和同步后的摘要、原绝对过期时间，避免覆盖后续修改；具体边界见 [PG → Redis 同步](./docs/pg-redis-sync.md)。
-- `/api/dcos/status|connect|disconnect` 管理临时平台 Cookie，仅在 Node 内存保存且状态不返回凭据。桌面主窗口通过窄 IPC `dcos:login` 打开隔离内存会话的平台登录窗口（不加载 preload），主进程读取适用平台 API 地址的 Cookie 并交本地后端验证，不把凭据交业务页面；IPC 检查主窗口及主 frame 来源，远端窗口先从配置平台的 `/cloudportal/iam/users/current` 响应读取 `loginUrl`，仅允许门户与其明确声明的认证来源导航，支持认证服务跨端口；跳转拦截和加载失败会显示提示。浏览器版继续手动连接。`/api/dcos/namespaces|workloads|pods|logs` 映射平台固定只读接口，工作负载分别分页获取 StatefulSet / Deployment，按类型和名称合并去重，再搜索分页；不限制名称环境段。Pod 和启停契约携带 `workloadKind`（仅允许这两类，旧调用默认 StatefulSet）。`/api/dcos/workload/start|stop` 转发页面确认后的工作负载级启停（POST 空体），按钮可用性以当前 Pod 列表推断。会话过期返回独立错误。日志按目标去重追加到 `logs/dcos/<集群>__<命名空间>__<Pod>__<容器>.log`（已被 `.gitignore` 覆盖，写盘失败不影响页面读取）；重启回读尾部续接去重，超过 20 MiB 轮转为 `.1.log`。平台只有末尾快照接口，两次拉取之间滚出窗口的行仍会缺失。
+- `/api/dcos/status|connect|disconnect` 管理临时平台 Cookie，仅在 Node 内存保存且状态不返回凭据。桌面主窗口通过窄 IPC `dcos:login` 打开隔离内存会话的平台登录窗口（不加载 preload），主进程读取适用平台 API 地址的 Cookie 并交本地后端验证，不把凭据交业务页面；IPC 检查主窗口及主 frame 来源，远端窗口先从配置平台的 `/cloudportal/iam/users/current` 响应读取 `loginUrl`，仅允许门户与其明确声明的认证来源导航，支持认证服务跨端口；跳转拦截和加载失败会显示提示。手动 Cookie 连接作为桌面应用内的备用入口。`/api/dcos/namespaces|workloads|pods|logs` 映射平台固定只读接口，工作负载分别分页获取 StatefulSet / Deployment，按类型和名称合并去重，再搜索分页；不限制名称环境段。Pod 和启停契约携带 `workloadKind`（仅允许这两类，旧调用默认 StatefulSet）。`/api/dcos/workload/start|stop` 转发页面确认后的工作负载级启停（POST 空体），按钮可用性以当前 Pod 列表推断。会话过期返回独立错误。日志按目标去重追加到 `logs/dcos/<集群>__<命名空间>__<Pod>__<容器>.log`（已被 `.gitignore` 覆盖，写盘失败不影响页面读取）；重启回读尾部续接去重，超过 20 MiB 轮转为 `.1.log`。平台只有末尾快照接口，两次拉取之间滚出窗口的行仍会缺失。
 - UDAL 按逻辑库建立 `utf8mb4` 连接，不在查询中写库名前缀；结果中的大整数、金额和日期保留字符串。可无损识别的 UTF-8/GB18030 历史错码业务名称恢复显示并保留原始值。分支失败、关联缺失与空结果分别返回，跨库结果不表示同一事务快照。
 - 浏览器日期格式化、查询元数据、SFTP 修改时间和 CDR 生成时间均显式使用 UTC+8；数据库业务日期字符串保持原值并标注 UTC+8，不做二次偏移。
 - `/api/sftp/list|preview|mkdir|touch|delete|download` 使用结构化 SFTP；删除区分 file/空 dir，根路径保护。
 - `/api/bigdata/status|connect|use-ssh` 独立管理 HDFS/HBase 常驻客户端来源。客户端仅监听内网机器环回地址，Node 通过已建立 SSH 会话为每个请求创建 `forwardOut` 加密通道；Token 不进入响应或日志。切换来源会取消旧请求并清空已加载资源，故障不静默切换。
 - `/api/hdfs/list|preview|download|upload|mkdir|touch|delete` 和 `/api/hbase/list|scan` 保持页面契约；上传在客户端模式使用常驻 `FileSystem.copyFromLocalFile`，删除只允许文件或空目录且必须二次确认，不执行递归删除。`mkdir|touch` 只接受「当前目录 + 单层名称」，由 Node 拼路径后走 SSH 命令链路（常驻客户端服务未提供这两个接口），同名目标不覆盖、父目录缺失和权限不足分别单独报错。客户端模式额外返回 `source/cached/readAt/durationMs`。HDFS 与 HBase 数据读取默认实时，仅命名空间和表列表缓存 30 秒，手动刷新绕过缓存。`/api/hbase/get` 提供 RowKey 精确查询；扫描最多 200 行，预览最多 256 KiB。
 - 命令 stdout/stderr 共用 2 MiB 预算并返回 `truncated`；参数化路径统一使用单引号 shell 转义，交互式命令和根目录递归强删在执行层拦截。
-- 目录刷新、HDFS 刷新和自动刷新有 AbortController/代际门禁；页面隐藏时暂停，单个刷新请求不会重入。
+- 目录刷新、HDFS 刷新和自动刷新有 AbortController/代际门禁；日志采集在应用后台继续，单个刷新请求不会重入。
 
 ### CDR
 

@@ -86,8 +86,8 @@ export function initDcosLogs() {
     state.connected = Boolean(result.connected); state.configured = Boolean(result.configured);
     state.baseUrl = result.baseUrl || ''; state.clusters = result.clusters || [];
     options($('#dcosCluster'), state.clusters.map((cluster) => ({ label: `${cluster.name} (${cluster.id})`, value: String(cluster.id) })), '选择集群');
-    // 桌面版默认隐藏连接细节；浏览器版展开手动连接入口。
-    $('#dcosConnectionCard').open = !desktopLogin && !state.connected;
+    // 默认隐藏连接细节，需要时可展开使用手动 Cookie。
+    $('#dcosConnectionCard').open = false;
     resetFrom(1); renderConnection(message);
   }
   async function loadStatus() {
@@ -96,8 +96,8 @@ export function initDcosLogs() {
   }
   function schedule() {
     clearTimer();
-    if (!$('#dcosAutoRefresh').checked || !isActive() || document.hidden || !$('#dcosContainer').value) return;
-    state.timer = setTimeout(() => { void loadLogs(); }, 5000);
+    if (!state.connected || !$('#dcosContainer').value) return;
+    state.timer = setTimeout(() => { void loadLogs({ silent: true }); }, 5000);
   }
   function selected() {
     const item = state.workloads.find((item) => `${item.kind}/${item.name}` === $('#dcosWorkload').value);
@@ -164,15 +164,16 @@ export function initDcosLogs() {
     if (error.code === 'DCOS_SESSION_EXPIRED') { state.connected = false; renderConnection(error.message); cancelRequests(); resetFrom(1); $('#dcosConnectionCard').open = true; }
     note(error.message, 'error');
   }
-  async function loadLogs() {
+  async function loadLogs({ silent = false } = {}) {
     clearTimer();
-    if (state.loadingLogs || !isActive() || document.hidden) return;
+    if (state.loadingLogs) return;
     const { clusterId, namespaceName, podName, containerName } = selected();
     if (!containerName) return note('请选择容器。');
-    const request = gates.logs.next(); state.loadingLogs = true; note('正在读取容器日志…');
+    const request = gates.logs.next(); state.loadingLogs = true; if (!silent) note('正在读取容器日志…');
     try {
       const result = await getJson(q('/api/dcos/logs', { clusterId, namespaceName, podName, containerName, tailingLines: $('#dcosLines').value }), { signal: request.signal, timeout: 30000 });
       if (!request.isCurrent()) return;
+      if (silent && (!isActive() || document.hidden || !$('#dcosAutoRefresh').checked)) return;
       const log = $('#dcosLogText');
       const position = log.scrollTop;
       setText(log, result.lines.length ? result.lines.join('\n') : '当前没有日志。');
@@ -297,7 +298,7 @@ export function initDcosLogs() {
     const log = $('#dcosLogText');
     if (log.scrollHeight - log.scrollTop - log.clientHeight > 24) $('#dcosFollow').checked = false;
   });
-  document.addEventListener('visibilitychange', () => { if (document.hidden) cancelLogRequest(); else if (isActive() && $('#dcosAutoRefresh').checked) void loadLogs(); });
+  document.addEventListener('visibilitychange', () => { if (!document.hidden && isActive() && $('#dcosAutoRefresh').checked) void loadLogs(); });
   void loadStatus();
   return {
     activate() {
@@ -309,6 +310,6 @@ export function initDcosLogs() {
       else if ($('#dcosContainer').value && !$('#dcosLogText').textContent) void loadLogs();
       else schedule();
     },
-    deactivate() { cancelRequests(); },
+    deactivate() { gates.namespaces.cancel(); gates.workloads.cancel(); gates.pods.cancel(); clearTimeout(state.searching); closePicker(); },
   };
 }

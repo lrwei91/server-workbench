@@ -1,5 +1,5 @@
 'use strict';
-const { app, BrowserWindow, Menu, dialog, shell, utilityProcess, session, ipcMain } = require('electron');
+const { app, BrowserWindow, Menu, dialog, shell, utilityProcess, session, ipcMain, safeStorage } = require('electron');
 const { autoUpdater } = require('electron-updater');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -134,7 +134,7 @@ async function start() {
   // 保留现有复制功能，只允许本站写剪贴板，其他设备/读取权限拒绝。
   browserSession.setPermissionRequestHandler((contents, permission, callback) => callback(permission === 'clipboard-sanitized-write' && contents.getURL().startsWith(`${origin}/`)));
   browserSession.setPermissionCheckHandler((_contents, permission, requestingOrigin) => permission === 'clipboard-sanitized-write' && requestingOrigin === origin);
-  win = new BrowserWindow({ width: 1366, height: 768, minWidth: 1024, minHeight: 600, show: false, backgroundColor: '#ffffff', title: 'Server Workbench', webPreferences: { preload: path.join(__dirname, 'preload.cjs'), session: browserSession, nodeIntegration: false, contextIsolation: true, sandbox: true } });
+  win = new BrowserWindow({ width: 1366, height: 768, minWidth: 1024, minHeight: 600, show: false, backgroundColor: '#ffffff', title: 'Server Workbench', webPreferences: { preload: path.join(__dirname, 'preload.cjs'), session: browserSession, nodeIntegration: false, contextIsolation: true, sandbox: true, backgroundThrottling: false } });
   const localDcos = async (route, options = {}) => {
     const timeout = AbortSignal.timeout(20000);
     const response = await fetch(`${origin}/api/dcos/${route}`, { ...options, headers: { 'x-workbench-token': workbenchToken, 'Content-Type': 'application/json' }, signal: options.signal ? AbortSignal.any([options.signal, timeout]) : timeout });
@@ -142,7 +142,13 @@ async function start() {
     if (!response.ok || !result.ok) throw new Error('云翼平台会话验证失败');
     return result;
   };
-  const loginDcos = createDcosLogin({ BrowserWindow, session, parent: win, getStatus: () => localDcos('status'), connect: (cookie, signal) => localDcos('connect', { method: 'POST', body: JSON.stringify({ cookie }), signal }) });
+  const loginDcos = createDcosLogin({ BrowserWindow, session, parent: win, getStatus: () => localDcos('status'), connect: (cookie, signal) => localDcos('connect', { method: 'POST', body: JSON.stringify({ cookie }), signal }), getCredentials: (platformOrigin) => {
+    if (!safeStorage.isEncryptionAvailable()) return null;
+    try {
+      const saved = JSON.parse(safeStorage.decryptString(fs.readFileSync(path.join(directory, 'dcos-credentials.bin'))));
+      return saved.origin === platformOrigin ? saved : null;
+    } catch (_) { return null; }
+  } });
   ipcMain.handle('dcos:login', async (event) => {
     try {
       if (event.sender !== win.webContents || event.senderFrame !== win.webContents.mainFrame || new URL(event.senderFrame.url).origin !== origin) return { ok: false, message: '登录请求来源无效。' };

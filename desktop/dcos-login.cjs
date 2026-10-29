@@ -1,7 +1,7 @@
 'use strict';
 
 // 远端页面不加载 preload；平台 Cookie 只在主进程与本地后端之间传递。
-function createDcosLogin({ BrowserWindow, session, parent, getStatus, connect, fetchImpl = fetch }) {
+function createDcosLogin({ BrowserWindow, session, parent, getStatus, connect, getCredentials = () => null, fetchImpl = fetch }) {
   let pending = null, loginWindow = null;
   return async function login() {
     if (pending) { loginWindow?.focus(); return pending; }
@@ -12,6 +12,7 @@ function createDcosLogin({ BrowserWindow, session, parent, getStatus, connect, f
       if (!['http:', 'https:'].includes(base.protocol) || base.username || base.password) return { ok: false, message: '云翼平台地址格式无效。' };
       // 门户与认证服务可能使用不同端口；仅信任配置平台返回的 loginUrl，不放开任意站点。
       const allowedOrigins = new Set([base.origin]);
+      let authenticationUrl;
       try {
         const response = await fetchImpl(new URL('/cloudportal/iam/users/current', base), { headers: { Accept: 'application/json' }, redirect: 'error', signal: AbortSignal.timeout(15000) });
         if (response.status === 401) {
@@ -20,6 +21,7 @@ function createDcosLogin({ BrowserWindow, session, parent, getStatus, connect, f
           const target = new URL(payload.loginUrl, base);
           if (!['http:', 'https:'].includes(target.protocol) || target.username || target.password) throw new Error('invalid loginUrl');
           allowedOrigins.add(target.origin);
+          authenticationUrl = target;
           // CAS 在 loginUrl.service 声明登录成功后的回调，端口可能与门户/认证均不同。
           const service = target.searchParams.get('service');
           if (service) {
@@ -74,6 +76,26 @@ function createDcosLogin({ BrowserWindow, session, parent, getStatus, connect, f
         const timer = setInterval(() => void check(), 2000);
         platformSession.cookies.on('changed', check);
         window.webContents.on('did-finish-load', check);
+        window.webContents.on('did-finish-load', async () => {
+          if (!authenticationUrl || finished) return;
+          try {
+            const current = new URL(window.webContents.getURL());
+            if (current.origin !== authenticationUrl.origin || current.pathname !== authenticationUrl.pathname) return;
+            const credentials = await getCredentials(base.origin);
+            if (!credentials?.username || !credentials?.password || finished) return;
+            // 仅填充门户声明的认证页；不提交、不覆盖已输入内容、不持有远端 preload。
+            await window.webContents.executeJavaScript(`(() => {
+              if (location.origin !== ${JSON.stringify(authenticationUrl.origin)} || location.pathname !== ${JSON.stringify(authenticationUrl.pathname)}) return;
+              const user = document.querySelector('input[name="username"], input#username');
+              const password = document.querySelector('input[type="password"][name="password"], input[type="password"]#password');
+              if (!user || !password || user.value || password.value) return;
+              const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+              for (const [input, value] of [[user, ${JSON.stringify(credentials.username)}], [password, ${JSON.stringify(credentials.password)}]]) {
+                set.call(input, value); input.dispatchEvent(new Event('input', { bubbles: true })); input.dispatchEvent(new Event('change', { bubbles: true }));
+              }
+            })()`);
+          } catch (_) { /* 自动填充不可用时保留手动登录，不输出凭据。 */ }
+        });
         window.webContents.on('did-fail-load', (_event, code, _description, _url, isMainFrame) => {
           // ERR_ABORTED 是重定向/页面接管导致的正常取消，不中断后续登录。
           if (isMainFrame && code !== -3) finish({ ok: false, message: `平台登录页加载失败（${code}），请检查地址和网络。` });

@@ -4,7 +4,7 @@ const { EventEmitter } = require('node:events');
 const { createDcosLogin } = require('../../desktop/dcos-login.cjs');
 
 const tick = () => new Promise((resolve) => setImmediate(resolve));
-function fixture(connect, { loginUrl = 'http://platform.test:9001/auth/login', discoveryStatus = 401 } = {}) {
+function fixture(connect, { loginUrl = 'http://platform.test:9001/auth/login', discoveryStatus = 401, getCredentials } = {}) {
   const windows = [], partitions = [], urls = [], discovery = [];
   let values = [];
   const cookies = new EventEmitter();
@@ -19,10 +19,29 @@ function fixture(connect, { loginUrl = 'http://platform.test:9001/auth/login', d
     focus() { this.focused = true; }
   }
   const login = createDcosLogin({ BrowserWindow: Window, session: { fromPartition(name) { partitions.push(name); return platform; } }, parent: {}, getStatus: async () => ({ configured: true, baseUrl: 'http://platform.test:8081' }), connect,
+    getCredentials,
     fetchImpl: async (url, options) => { discovery.push({ url, options }); return { status: discoveryStatus, ok: discoveryStatus === 200, json: async () => ({ loginUrl }) }; },
   });
   return { login, windows, partitions, urls, cookies, platform, discovery, setCookies(next) { values = next; cookies.emit('changed'); } };
 }
+
+test('自动填充只进入声明的认证路径，不提交表单或向门户页传递凭据', async () => {
+  const origins = [], scripts = [];
+  const f = fixture(async () => ({ connected: false }), { getCredentials: origin => { origins.push(origin); return { username: 'fixture-user', password: 'fixture-password' }; } });
+  const pending = f.login(); await tick();
+  const contents = f.windows[0].webContents;
+  contents.executeJavaScript = async script => scripts.push(script);
+  for (const url of ['http://platform.test:8081/paas/cloudportal/site', 'http://platform.test:9001/other']) {
+    contents.getURL = () => url; contents.emit('did-finish-load'); await tick();
+  }
+  assert.equal(scripts.length, 0); assert.equal(origins.length, 0);
+  contents.getURL = () => 'http://platform.test:9001/auth/login'; contents.emit('did-finish-load'); await tick();
+  assert.deepEqual(origins, ['http://platform.test:8081']); assert.equal(scripts.length, 1);
+  assert.match(scripts[0], /user.value \|\| password.value/);
+  assert.equal(scripts[0].includes('.submit('), false);
+  assert.equal(scripts[0].includes('.click('), false);
+  f.windows[0].close(); await pending;
+});
 
 test('网页登录隔离内存会话，只将平台适用的 Cookie 交本地验证，成功自动关闭', async () => {
   const calls = [];

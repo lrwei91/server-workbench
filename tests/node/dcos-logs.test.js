@@ -45,7 +45,7 @@ test('云翼日志链路映射并仅在服务端保存 Cookie', async () => {
     const connected = await service.connect('Cookie: JSESSIONID=test; SESSION=test');
     assert.equal(connected.connected, true);
     assert.equal(JSON.stringify(connected).includes('JSESSIONID'), false);
-    assert.deepEqual(await service.namespaces(321), [{ name: 'bill-cnos-jf', clusterId: 321 }]);
+    assert.deepEqual(await service.namespaces(321), [{ name: 'other', clusterId: 321 }, { name: 'bill-cnos-jf', clusterId: 321 }]);
     assert.deepEqual(await service.workloads(321, 'bill-cnos-jf', { pageNow: 1, pageSize: 10, search: 'prep' }), { records: [{ name: 'idis-prep-ss', kind: 'StatefulSet', runningPodNum: 1 }, { name: 'idis-test-prep-ss', kind: 'StatefulSet', runningPodNum: 1 }], total: 2, pageNow: 1, pageSize: 10 });
     assert.deepEqual(await service.pods(321, 'bill-cnos-jf', 'prep-ss'), [{ name: 'prep-ss-0', status: 'Running', containers: ['container1'] }]);
     const logs = await service.logs(321, 'bill-cnos-jf', 'prep-ss-0', 'container1', 100);
@@ -84,12 +84,25 @@ test('命名空间列表兼容平台直接数组、列表包装和空结果', as
     await fixture((_req, res) => json(res, { code: 0, data: payload }), async (baseUrl) => {
       const service = new DcosLogs(config(baseUrl)); service.cookie = 'JSESSIONID=test';
       const result = await service.namespaces(321);
-      assert.deepEqual(result, payload === null ? [] : [{ name: 'bill-cnos-jf', clusterId: 321 }]);
+      const items = Array.isArray(payload) ? payload : payload?.records || payload?.list || [];
+      assert.deepEqual(result, items.map(item => ({ name: item.namespaceName || item.name, clusterId: 321 })));
     });
   }
   await fixture((_req, res) => json(res, { code: 0, data: { unexpected: true } }), async (baseUrl) => {
     const service = new DcosLogs(config(baseUrl)); service.cookie = 'JSESSIONID=test';
     await assert.rejects(service.namespaces(321), { code: 'DCOS_INVALID_RESPONSE' });
+  });
+});
+
+test('命名空间保留非固定名称，兼容字符串并去重，格式错误不伪装为空列表', async () => {
+  let data = [' bill-cnos-jf-test ', 'default', 'default'];
+  await fixture((_req, res) => json(res, { code: 0, data }), async baseUrl => {
+    const service = new DcosLogs(config(baseUrl)); service.cookie = 'fixture';
+    assert.deepEqual(await service.namespaces(321), [{ name: 'bill-cnos-jf-test', clusterId: 321 }, { name: 'default', clusterId: 321 }]);
+    data = [{ unexpected: 'value' }];
+    await assert.rejects(service.namespaces(321), { code: 'DCOS_INVALID_RESPONSE' });
+    data = [];
+    assert.deepEqual(await service.namespaces(321), []);
   });
 });
 
