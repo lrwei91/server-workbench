@@ -8,6 +8,7 @@ const { randomBytes } = require('node:crypto');
 const runtime = require('./runtime.cjs');
 const { configureUpdates } = require('./updates.cjs');
 const { createDcosLogin } = require('./dcos-login.cjs');
+const { readDcosCredentials } = require('./dcos-credentials.cjs');
 const { parseEnv } = require('../server/config-loader');
 
 // 与安装版分离，避免开发运行污染用户的正式配置和收藏。
@@ -143,11 +144,7 @@ async function start() {
     return result;
   };
   const loginDcos = createDcosLogin({ BrowserWindow, session, parent: win, getStatus: () => localDcos('status'), connect: (cookie, signal) => localDcos('connect', { method: 'POST', body: JSON.stringify({ cookie }), signal }), getCredentials: (platformOrigin) => {
-    if (!safeStorage.isEncryptionAvailable()) return null;
-    try {
-      const saved = JSON.parse(safeStorage.decryptString(fs.readFileSync(path.join(directory, 'dcos-credentials.bin'))));
-      return saved.origin === platformOrigin ? saved : null;
-    } catch (_) { return null; }
+    return readDcosCredentials(directory, platformOrigin, safeStorage);
   } });
   ipcMain.handle('dcos:login', async (event) => {
     try {

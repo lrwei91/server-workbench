@@ -53,10 +53,11 @@ async function readFileTail(file, maxLines) {
 }
 
 class DcosLogs {
-  constructor(config, { fetchImpl = fetch, logDir = LOG_DIR } = {}) {
+  constructor(config, { fetchImpl = fetch, logDir = LOG_DIR, now = () => new Date() } = {}) {
     this.config = config;
     this.fetchImpl = fetchImpl;
     this.logDir = logDir;
+    this.now = now;
     this.cookie = '';
     this.tails = new Map(); // 每个目标上一次落盘的尾部，用于跨轮询去重
     this.writes = new Map(); // 每个目标的写盘串行队列
@@ -189,24 +190,28 @@ class DcosLogs {
   // 容器日志按目标落盘到 logs/dcos/（已被 .gitignore 覆盖），写盘失败不影响页面读取
   // 自动刷新与手动刷新可能同时命中同一目标：按目标串行，避免重复追加和 Windows 并发写 EBUSY
   async persistLogs(clusterId, namespaceName, podName, containerName, lines) {
+    // 按本次采集时间（北京时间）归档，不解析上游日志正文中的时间。
+    const day = new Date(this.now().getTime() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
     const key = [clusterId, namespaceName, podName, containerName].join('|');
     const pending = this.writes.get(key) || Promise.resolve();
-    const next = pending.catch(() => {}).then(() => this.writeLogFile(clusterId, namespaceName, podName, containerName, lines));
+    const next = pending.catch(() => {}).then(() => this.writeLogFile(clusterId, namespaceName, podName, containerName, lines, day));
     this.writes.set(key, next.catch(() => {}));
     return next;
   }
 
-  async writeLogFile(clusterId, namespaceName, podName, containerName, lines) {
+  async writeLogFile(clusterId, namespaceName, podName, containerName, lines, day) {
     const key = [clusterId, namespaceName, podName, containerName].join('|');
-    const file = nodePath.join(this.logDir, `${safeSegment(clusterId)}__${safeSegment(namespaceName)}__${safeSegment(podName)}__${safeSegment(containerName)}.log`);
+    const directory = nodePath.join(this.logDir, day);
+    const file = nodePath.join(directory, `${safeSegment(clusterId)}__${safeSegment(namespaceName)}__${safeSegment(podName)}__${safeSegment(containerName)}.log`);
     const display = nodePath.relative(ROOT, file).replace(/\\/g, '/');
     try {
       // 进程重启后内存没有上次尾部，用文件尾部兜底，避免重启后整段重复追加
-      const previous = this.tails.get(key) || await readFileTail(file, lines.length);
+      const cached = this.tails.get(key);
+      const previous = cached?.day === day ? cached.lines : await readFileTail(file, lines.length);
       const fresh = newLinesAfter(previous, lines);
       let rotated = false;
       if (fresh.length) {
-        await fs.mkdir(this.logDir, { recursive: true });
+        await fs.mkdir(directory, { recursive: true });
         const stat = await fs.stat(file).catch(() => null);
         if (stat && stat.size > LOG_MAX_BYTES) {
           const backup = file.replace(/\.log$/, '.1.log');
@@ -216,7 +221,7 @@ class DcosLogs {
         }
         await fs.appendFile(file, fresh.map((line) => `${line}\n`).join(''), 'utf8');
       }
-      this.tails.set(key, lines);
+      this.tails.set(key, { day, lines });
       const stat = await fs.stat(file).catch(() => null);
       return { path: display, appended: fresh.length, bytes: stat ? stat.size : 0, rotated };
     } catch (error) {

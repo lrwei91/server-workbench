@@ -176,7 +176,7 @@ test('容器日志去重后追加到本地文件，进程重启后按文件尾�
     payload = ['b', 'c', 'd'];
     const second = await service.logs(321, 'bill-cnos-jf', 'prep-ss-0', 'container1', 100);
     assert.equal(second.saved.appended, 1); // 只有 d 是新增
-    const content = fsSync.readFileSync(nodePath.join(dir, nodePath.basename(first.saved.path)), 'utf8');
+    const content = fsSync.readFileSync(nodePath.resolve(__dirname, '../..', first.saved.path), 'utf8');
     assert.equal(content, 'a\nb\nc\nd\n');
     // 新实例（模拟重启）：内存无尾部，回读文件尾部继续去重
     const restarted = new DcosLogs(config(baseUrl), { logDir: dir });
@@ -184,7 +184,7 @@ test('容器日志去重后追加到本地文件，进程重启后按文件尾�
     payload = ['c', 'd', 'e'];
     const third = await restarted.logs(321, 'bill-cnos-jf', 'prep-ss-0', 'container1', 100);
     assert.equal(third.saved.appended, 1);
-    assert.equal(fsSync.readFileSync(nodePath.join(dir, nodePath.basename(first.saved.path)), 'utf8'), 'a\nb\nc\nd\ne\n');
+    assert.equal(fsSync.readFileSync(nodePath.resolve(__dirname, '../..', first.saved.path), 'utf8'), 'a\nb\nc\nd\ne\n');
     // 不同目标各自独立成文件
     payload = ['x'];
     const other = await restarted.logs(321, 'bill-cnos-jf', 'prep-ss-1', 'container1', 100);
@@ -206,8 +206,32 @@ test('同一目标的并发读取串行落盘，不重复追加', async () => {
       service.logs(321, 'ns', 'pod', 'container1', 100),
     ]);
     assert.equal(first.saved.appended + second.saved.appended, 3); // 一次完整写入，另一次无新增
-    assert.equal(fsSync.readFileSync(nodePath.join(dir, nodePath.basename(first.saved.path)), 'utf8'), 'a\nb\nc\n');
+    assert.equal(fsSync.readFileSync(nodePath.resolve(__dirname, '../..', first.saved.path), 'utf8'), 'a\nb\nc\n');
   });
+});
+
+test('北京时间跨午夜切换日期目录，重启续接当日日志且保留旧文件', async t => {
+  const dir = fsSync.mkdtempSync(nodePath.join(os.tmpdir(), 'dcos-daily-'));
+  t.after(() => fsSync.rmSync(dir, { recursive: true, force: true }));
+  let time = new Date('2026-10-30T15:59:59Z');
+  const options = { logDir: dir, now: () => time };
+  const service = new DcosLogs(config('http://fixture.test'), options);
+  const legacy = nodePath.join(dir, '321__ns__pod__container.log');
+  fsSync.writeFileSync(legacy, 'legacy\n');
+  const first = await service.persistLogs(321, 'ns', 'pod', 'container', ['a']);
+  assert.match(first.path, /2026-10-30\//);
+  time = new Date('2026-10-30T16:00:00Z');
+  const second = await service.persistLogs(321, 'ns', 'pod', 'container', ['a', 'b']);
+  assert.match(second.path, /2026-10-31\//);
+  assert.notEqual(first.path, second.path);
+  assert.equal(second.appended, 2);
+  const restarted = new DcosLogs(config('http://fixture.test'), options);
+  const third = await restarted.persistLogs(321, 'ns', 'pod', 'container', ['b', 'c']);
+  assert.equal(third.appended, 1);
+  const read = saved => fsSync.readFileSync(nodePath.resolve(__dirname, '../..', saved.path), 'utf8');
+  assert.equal(read(first), 'a\n');
+  assert.equal(read(second), 'a\nb\nc\n');
+  assert.equal(fsSync.readFileSync(legacy, 'utf8'), 'legacy\n');
 });
 
 test('工作负载启停映射云翼固定接口且 POST 空体不带 Content-Type', async () => {
