@@ -19,7 +19,7 @@ test('Grafana SQL is fixed and filters are bounded', () => {
   assert.match(query.queries[0].rawSql, /service_name = 'rating-test'\s+AND severity_text = 'WARN'/);
   assert.doesNotMatch(query.queries[0].rawSql, /service_instance_id\s*=/);
   assert.match(query.queries[0].rawSql, /DATE_SUB\(timestamp, INTERVAL 8 HOUR\)/);
-  assert.match(query.queries[0].rawSql, /ORDER BY timestamp DESC\s+LIMIT 500\s+\) AS t ORDER BY time ASC$/);
+  assert.match(query.queries[0].rawSql, /ORDER BY timestamp DESC\s+LIMIT 500$/);
   for (const invalid of [{ service: '' }, { service: "x' OR 1=1" }, { minutes: 2880 }, { limit: 5000 }, { level: "WARN'--" }]) {
     assert.throws(() => makeQuery({ ...filters, ...invalid }, config), { code: 'GRAFANA_INVALID_FILTER' });
   }
@@ -28,8 +28,9 @@ test('Grafana SQL is fixed and filters are bounded', () => {
 test('desktop bridge signs in, queries MySQL frames, and clears expired sessions', async t => {
   const upstreamCalls = [];
   const columns = {
-    body: ['first\nsecond'], span_id: ['span'], time: [1794290700000], scope_name: ['scope'],
-    level: ['WARN'], service_instance_id: ['rating-test-0'], trace_id: ['trace'],
+    body: ['newest\nsecond line', 'older'], span_id: ['span', ''], time: [1794290700000, 1794290699000],
+    scope_name: ['scope', 'scope'], level: ['WARN', 'WARN'], service_instance_id: ['rating-test-0', 'rating-test-1'],
+    trace_id: ['trace', ''],
   };
   const upstream = createServer(async (req, res) => {
     const chunks = [];
@@ -98,7 +99,9 @@ test('desktop bridge signs in, queries MySQL frames, and clears expired sessions
   assert.equal(Number(discovery.to) - Number(discovery.from), 10800000);
   assert.match(discovery.queries[0].rawSql, /SELECT service_name[\s\S]*\$__timeFilter\(timestamp\)\s+AND LOWER\(service_name\) LIKE '%test%'\s+GROUP BY service_name\s+ORDER BY MAX\(timestamp\) DESC\s+LIMIT 1001/);
   assert.equal((await call('query', { ...filters, rawSql: 'SELECT 1' }))[0], 400);
-  assert.deepEqual(await call('query', filters), [200, { ok: true, rows: [Object.fromEntries(Object.entries(columns).map(([key, values]) => [key, values[0]]))] }]);
+  assert.deepEqual(await call('query', filters), [200, { ok: true,
+    rows: columns.time.map((_, i) => Object.fromEntries(Object.entries(columns).map(([key, values]) => [key, values[i]]))),
+  }]);
   assert.deepEqual(upstreamCalls.map(({ path, method, cookie, org }) => [path, method, cookie, org]), [
     ['/api/user', 'GET', 'grafana_session=initial', '1'],
     ['/api/ds/query?ds_type=mysql', 'POST', 'grafana_session=rotated', '1'],

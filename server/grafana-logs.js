@@ -46,16 +46,13 @@ function makeQuery({ service, minutes, limit, level = '' }, config, now = Date.n
     throw failure(400, 'GRAFANA_INVALID_FILTER', '请检查服务名、时间范围、级别和条数。');
   }
   // 复现仪表板的时间宏与 UTC 转换。SQL 结构固定，只允许上方校验过的过滤值。
-  const rawSql = `SELECT time, body, level, service_instance_id, scope_name, trace_id, span_id
-FROM (
-  SELECT DATE_SUB(timestamp, INTERVAL 8 HOUR) AS time, body, severity_text AS level,
-         service_instance_id, scope_name, trace_id, span_id
-  FROM oteldb.otel_logs
-  WHERE $__timeFilter(timestamp)
-    AND service_name = '${service}'${level ? `\n    AND severity_text = '${level}'` : ''}
-  ORDER BY timestamp DESC
-  LIMIT ${limit}
-) AS t ORDER BY time ASC`;
+  const rawSql = `SELECT DATE_SUB(timestamp, INTERVAL 8 HOUR) AS time, body, severity_text AS level,
+       service_instance_id, scope_name, trace_id, span_id
+FROM oteldb.otel_logs
+WHERE $__timeFilter(timestamp)
+  AND service_name = '${service}'${level ? `\n  AND severity_text = '${level}'` : ''}
+ORDER BY timestamp DESC
+LIMIT ${limit}`;
   return queryBody(rawSql, config, minutes, limit, now);
 }
 
