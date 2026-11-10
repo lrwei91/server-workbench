@@ -187,7 +187,8 @@ test('Grafana business logs sign in, query, and handle expired sessions', async 
   await page.route('**/api/grafana/services?*', route => {
     const minutes = new URL(route.request().url()).searchParams.get('minutes');
     ranges.push(minutes);
-    return fulfill(route, { services: minutes === '60' ? ['another-service', 'rating-test'] : ['rating-test', 'recent-service'], truncated: false });
+    return fulfill(route, { services: minutes === '60' ? ['another-test-service', 'rating-test'] : ['rating-test', 'recent-test-service'],
+      aliases: { 'rating-test': '算费后台进程' }, truncated: false });
   });
   const received = [];
   await page.route('**/api/grafana/query', route => {
@@ -200,14 +201,38 @@ test('Grafana business logs sign in, query, and handle expired sessions', async 
   await expect(page.getByRole('button', { name: '查询日志' })).toBeDisabled();
   await page.getByRole('button', { name: '登录 Grafana' }).click();
   const services = page.getByRole('combobox', { name: '服务名', exact: true });
-  await expect(services.getByRole('option')).toHaveText(['请选择服务', 'another-service', 'rating-test']);
+  const list = page.getByRole('listbox', { name: '匹配的服务' });
+  const options = list.getByRole('option');
+  const query = page.getByRole('button', { name: '查询日志' });
+  await services.click();
+  await expect(options).toHaveText(['another-test-service', '算费后台进程rating-test']);
   await expect(services).toHaveValue('');
-  await expect(page.getByRole('button', { name: '查询日志' })).toBeDisabled();
-  await services.selectOption('another-service');
+  await expect(query).toBeDisabled();
+  await services.fill('THER');
+  await expect(options).toHaveText(['another-test-service']);
+  await expect(query).toBeDisabled();
+  await list.getByRole('option', { name: 'another-test-service', exact: true }).click();
   await page.getByRole('combobox', { name: '时间范围', exact: true }).selectOption('180');
-  await expect(services.getByRole('option')).toHaveText(['请选择服务', 'rating-test', 'recent-service']);
+  await services.click();
+  await expect(options).toHaveText(['算费后台进程rating-test', 'recent-test-service']);
   await expect(services).toHaveValue('');
-  await services.selectOption('rating-test');
+  await services.fill('no-match');
+  await expect(page.getByText('没有匹配的服务', { exact: true })).toBeVisible();
+  await services.press('Enter');
+  expect(received).toEqual([]);
+  await services.press('Escape');
+  await expect(services).toHaveAttribute('aria-expanded', 'false');
+  await services.fill('算费 TING TEST');
+  await expect(options).toHaveText(['算费后台进程rating-test']);
+  await services.press('ArrowDown');
+  await expect(services).toHaveAttribute('aria-activedescendant', 'grafana-service-option-0');
+  await services.press('Enter');
+  await expect(services).toHaveValue('rating-test');
+  await expect(page.locator('#grafanaSelectedAlias')).toHaveText('算费后台进程');
+  await expect(query).toBeEnabled();
+  await services.fill('rating');
+  await expect(query).toBeDisabled();
+  await list.getByRole('option', { name: /算费后台进程.*rating-test/ }).click();
   await page.getByRole('button', { name: '刷新列表' }).click();
   await expect(services).toBeEnabled();
   await expect(services).toHaveValue('rating-test');
@@ -227,10 +252,19 @@ test('Grafana business logs sign in, query, and handle expired sessions', async 
 for (const size of [{ width: 1024, height: 768 }, { width: 683, height: 384 }]) {
   test(`Grafana log filters fit at ${size.width}×${size.height}`, async ({ page }) => {
     await page.setViewportSize(size);
+    await page.addInitScript(() => { window.workbenchDesktop = { loginGrafana: async () => ({ ok: true }) }; });
+    await page.route('**/api/grafana/status', route => fulfill(route, { configured: true, desktop: true, connected: true }));
+    await page.route('**/api/grafana/services?*', route => fulfill(route, { services: Array.from({ length: 40 }, (_, i) => `rating-test-service-${i}`) }));
     await page.goto('/#/businessLogs');
     await expect(page.getByRole('button', { name: '查询日志' })).toBeInViewport();
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(size.width);
     expect((await page.locator('#grafanaLogResults').boundingBox()).height).toBeGreaterThan(24);
+    await page.getByRole('combobox', { name: '服务名' }).click();
+    const list = page.getByRole('listbox', { name: '匹配的服务' });
+    await expect(list).toBeInViewport();
+    const popup = await page.locator('#grafanaServicePopup').boundingBox();
+    expect(popup.x + popup.width).toBeLessThanOrEqual(size.width);
+    expect(popup.y + popup.height).toBeLessThanOrEqual(size.height);
   });
 }
 

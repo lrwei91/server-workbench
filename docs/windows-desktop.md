@@ -36,6 +36,7 @@ Python 依赖按现有 CDR requirements 安装；构建工具版本固定，CDR 
 首次启动仅复制 `.env.example`，不自动导入源码目录的 `.env`，避免把个人凭据带入安装包。
 
 - `.env`：菜单编辑连接配置，重启生效；沿用已有字段。
+- `grafana-service-aliases.json`：可选的本机服务备注，不随安装包分发，JSON 格式为 `{"demo-test-service":"演示服务"}`。业务日志刷新列表时重新读取；支持用备注或原服务名搜索。配置工作负载名可匹配其 Pod，精确配置的服务名优先。
 - `desktop.json`：自动检查偏好、用户选择的源目录和首次分配的 Node 端口。
 - `source/`：默认话单源目录；菜单可选择外部目录，源文件仍只读。
 - `outputs/`：默认导出目录；`.env` 的 `CDR_OUTPUT_DIR` 可指定其他目录。

@@ -3,6 +3,9 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { createServer } = require('node:http');
 const { once, EventEmitter } = require('node:events');
+const { mkdtempSync, writeFileSync } = require('node:fs');
+const { tmpdir } = require('node:os');
+const { join } = require('node:path');
 const { makeQuery } = require('../../server/grafana-logs');
 const { createGrafanaLogin } = require('../../desktop/grafana-login.cjs');
 
@@ -40,9 +43,14 @@ test('desktop bridge signs in, queries MySQL frames, and clears expired sessions
     }
     if (upstreamCalls.length === 4) { res.writeHead(302, { Location: '/login' }); return res.end(); }
     if (upstreamCalls.at(-1).body.queries[0].rawSql.startsWith('SELECT service_name')) {
+      const sql = upstreamCalls.at(-1).body.queries[0].rawSql;
+      const candidates = ['', 'rating-test', 'another-TEST-service', 'only-dev', 'rating-test-748cfdb787-k54g8',
+        'rating-test-56f7dd4c66-mtrm8', 'rating-test-0', 'rating-test', null];
+      const matching = sql.includes("LOWER(service_name) LIKE '%test%'") ?
+        candidates.filter(name => name?.toLowerCase().includes('test')) : candidates;
       return res.end(JSON.stringify({ results: { A: { status: 200, frames: [{
         schema: { fields: [{ name: 'service_name' }] },
-        data: { values: [['', 'rating-test', 'another-service', 'rating-test', null]] },
+        data: { values: [matching] },
       }] } } }));
     }
     res.end(JSON.stringify({ results: { A: { status: 200, frames: [{
@@ -56,6 +64,11 @@ test('desktop bridge signs in, queries MySQL frames, and clears expired sessions
   process.env.GRAFANA_DATASOURCE_ID = '2';
   process.env.GRAFANA_ORG_ID = '1';
   process.env.GRAFANA_DEFAULT_INSTANCE = 'ignored-legacy-setting';
+  const configDirectory = mkdtempSync(join(tmpdir(), 'grafana-service-aliases-'));
+  process.env.WORKBENCH_CONFIG_DIR = configDirectory;
+  writeFileSync(join(configDirectory, 'grafana-service-aliases.json'), JSON.stringify({
+    'rating-test': '算费测试', 'rating-test-748cfdb787-k54g8': '指定 Pod 备注', 'unlisted-service': '仅本地',
+  }));
   const bridge = require('../../server/server').createServer({ token: 'desktop' }).listen(0, '127.0.0.1');
   t.after(() => bridge.close());
   await once(bridge, 'listening');
@@ -74,10 +87,16 @@ test('desktop bridge signs in, queries MySQL frames, and clears expired sessions
   const connected = await call('connect', { cookie: 'grafana_session=initial' });
   assert.deepEqual(connected, [200, { ok: true, configured: true, connected: true }]);
   assert.equal((await call('services?minutes=2880'))[0], 400);
-  assert.deepEqual(await call('services?minutes=180'), [200, { ok: true, services: ['rating-test', 'another-service'], truncated: false }]);
+  assert.deepEqual(await call('services?minutes=180'), [200, {
+    ok: true,
+    services: ['rating-test', 'another-TEST-service', 'rating-test-748cfdb787-k54g8', 'rating-test-56f7dd4c66-mtrm8', 'rating-test-0'],
+    aliases: { 'rating-test': '算费测试', 'rating-test-748cfdb787-k54g8': '指定 Pod 备注',
+      'rating-test-56f7dd4c66-mtrm8': '算费测试', 'rating-test-0': '算费测试' },
+    truncated: false,
+  }]);
   const discovery = upstreamCalls[1].body;
   assert.equal(Number(discovery.to) - Number(discovery.from), 10800000);
-  assert.match(discovery.queries[0].rawSql, /SELECT service_name[\s\S]*\$__timeFilter\(timestamp\)[\s\S]*GROUP BY service_name\s+ORDER BY MAX\(timestamp\) DESC\s+LIMIT 1001/);
+  assert.match(discovery.queries[0].rawSql, /SELECT service_name[\s\S]*\$__timeFilter\(timestamp\)\s+AND LOWER\(service_name\) LIKE '%test%'\s+GROUP BY service_name\s+ORDER BY MAX\(timestamp\) DESC\s+LIMIT 1001/);
   assert.equal((await call('query', { ...filters, rawSql: 'SELECT 1' }))[0], 400);
   assert.deepEqual(await call('query', filters), [200, { ok: true, rows: [Object.fromEntries(Object.entries(columns).map(([key, values]) => [key, values[0]]))] }]);
   assert.deepEqual(upstreamCalls.map(({ path, method, cookie, org }) => [path, method, cookie, org]), [

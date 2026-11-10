@@ -1,5 +1,7 @@
 'use strict';
 
+const { readFile } = require('node:fs/promises');
+
 const RANGES = new Set([15, 60, 180, 360, 1440]);
 const LIMITS = new Set([100, 500, 1000]);
 const LEVELS = new Set(['DEBUG', 'INFO', 'WARN', 'ERROR']);
@@ -7,6 +9,30 @@ const FIELDS = ['time', 'body', 'level', 'service_instance_id', 'scope_name', 't
 const SERVICE_LIMIT = 1000;
 const validService = value => typeof value === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$/.test(value);
 const failure = (status, code, message) => Object.assign(new Error(message), { status, code });
+
+async function serviceAliases(file, services) {
+  if (!file) return { aliases: {} };
+  let configured;
+  try {
+    configured = JSON.parse((await readFile(file, 'utf8')).replace(/^\uFEFF/, ''));
+    if (!configured || typeof configured !== 'object' || Array.isArray(configured)) return { aliases: {}, aliasConfigInvalid: true };
+  } catch (error) {
+    return error.code === 'ENOENT' ? { aliases: {} } : { aliases: {}, aliasConfigInvalid: true };
+  }
+  const aliases = [];
+  for (const service of services) {
+    // 先用精确备注，再匹配已配置的 Deployment 或 StatefulSet 工作负载名。
+    const workload = service.replace(/-[a-z0-9]{9,10}-[a-z0-9]{5}$|-[0-9]+$/, '');
+    for (const key of [service, workload]) {
+      const value = Object.hasOwn(configured, key) && configured[key];
+      if (typeof value === 'string' && value.trim()) {
+        aliases.push([service, value.trim()]);
+        break;
+      }
+    }
+  }
+  return { aliases: Object.fromEntries(aliases) };
+}
 
 function rotatedCookie(cookie, headers) {
   const rotated = headers.getSetCookie?.().map(value => value.split(';', 1)[0])
@@ -62,9 +88,10 @@ function readFrames(result, limit, fieldNames = FIELDS) {
 
 class GrafanaLogs {
   #cookie = '';
-  constructor(config, { fetchImpl = fetch } = {}) {
+  constructor(config, { fetchImpl = fetch, aliasesPath } = {}) {
     this.config = config;
     this.fetchImpl = fetchImpl;
+    this.aliasesPath = aliasesPath;
     try {
       const url = new URL(config.baseUrl);
       if (/^https?:$/.test(url.protocol) && !url.username && !url.password && url.pathname === '/' && !url.search && !url.hash) this.origin = url.origin;
@@ -134,14 +161,15 @@ class GrafanaLogs {
     const rawSql = `SELECT service_name
 FROM oteldb.otel_logs
 WHERE $__timeFilter(timestamp)
-  AND service_name IS NOT NULL AND service_name <> ''
+  AND LOWER(service_name) LIKE '%test%'
 GROUP BY service_name
 ORDER BY MAX(timestamp) DESC
 LIMIT ${limit}`;
     const result = await this.#runQuery(queryBody(rawSql, this.config, minutes, limit), signal);
     const rows = readFrames(result, limit, ['service_name']);
     const names = new Set(rows.map(row => row.service_name).filter(validService));
-    return { services: [...names].slice(0, SERVICE_LIMIT), truncated: rows.length > SERVICE_LIMIT };
+    const services = [...names].slice(0, SERVICE_LIMIT);
+    return { services, ...(await serviceAliases(this.aliasesPath, services)), truncated: rows.length > SERVICE_LIMIT };
   }
 }
 

@@ -37,7 +37,7 @@ app.whenReady().then(async () => {
       const { queries } = JSON.parse(Buffer.concat(chunks));
       if (queries[0].rawSql.startsWith('SELECT service_name')) {
         return res.end(JSON.stringify({ results: { A: { status: 200, frames: [{
-          schema: { fields: [{ name: 'service_name' }] }, data: { values: [['other-service', 'smoke-service']] },
+          schema: { fields: [{ name: 'service_name' }] }, data: { values: [['other-test-service', 'smoke-test-service']] },
         }] } } }));
       }
       const fields = ['time', 'body', 'level', 'service_instance_id', 'scope_name', 'trace_id', 'span_id'].map(name => ({ name }));
@@ -82,9 +82,13 @@ app.whenReady().then(async () => {
     await wait(() => !login.disabled);
     login.click();
     await wait(() => !services.disabled);
-    if (services.value || services.options.length !== 3) throw new Error('Unexpected initial service selection');
-    services.value = 'smoke-service';
+    if (services.value || !button.disabled) throw new Error('Unexpected initial service selection');
+    services.focus();
+    services.value = 'MOKE';
     services.dispatchEvent(new Event('input', { bubbles: true }));
+    const matches = document.querySelectorAll('#grafanaServiceOptions [role="option"]');
+    if (matches.length !== 1 || matches[0].textContent !== 'smoke-test-service') throw new Error('Unexpected filtered services');
+    matches[0].click();
     await wait(() => !button.disabled);
     button.click();
     await wait(() => document.querySelector('#grafanaLogResults pre'));

@@ -161,7 +161,17 @@
     <section id="businessLogsPage" class="feature-page grafana-logs-page hidden" data-primary-panel="businessLogs" aria-labelledby="grafanaLogsTitle">
       <header class="feature-page-heading"><div><h1 id="grafanaLogsTitle">业务日志</h1><p>Grafana · 按服务查询已采集的日志</p></div><button id="grafanaLogin" class="wb-button" type="button" disabled>登录 Grafana</button></header>
       <form id="grafanaLogForm" class="grafana-log-filters">
-        <label><span>服务名</span><select id="grafanaLogService" class="wb-field" required disabled><option value="">请选择服务</option></select></label>
+        <div class="grafana-service-picker">
+          <div class="grafana-service-caption"><label for="grafanaLogService">服务名</label><span id="grafanaSelectedAlias" hidden></span></div>
+          <div class="grafana-service-field">
+            <input id="grafanaLogService" class="wb-field" type="text" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="grafanaServiceOptions" autocomplete="off" spellcheck="false" placeholder="输入关键词或选择服务" disabled>
+            <button id="grafanaServiceToggle" class="wb-button" type="button" aria-label="展开或收起服务列表" tabindex="-1" disabled>▾</button>
+          </div>
+          <div id="grafanaServicePopup" class="grafana-service-popup" hidden>
+            <div id="grafanaServiceOptions" role="listbox" aria-label="匹配的服务"></div>
+            <p id="grafanaServiceEmpty" role="status" hidden>没有匹配的服务</p>
+          </div>
+        </div>
         <button id="grafanaRefreshServices" class="wb-button" type="button" disabled>刷新列表</button>
         <label>时间范围<select id="grafanaLogRange" class="wb-field"><option value="15">最近 15 分钟</option><option value="60" selected>最近 1 小时</option><option value="180">最近 3 小时</option><option value="360">最近 6 小时</option><option value="1440">最近 24 小时</option></select></label>
         <label>级别<select id="grafanaLogLevel" class="wb-field"><option value="">全部</option><option>DEBUG</option><option>INFO</option><option>WARN</option><option>ERROR</option></select></label>
