@@ -23,7 +23,7 @@
         <button class="primary-nav-item" type="button" data-primary-page="workspace" title="资源浏览" aria-label="资源浏览"><svg aria-hidden="true"><use href="/shared/icons.svg#folder"></use></svg><span>资源浏览</span></button>
         <button class="primary-nav-item" type="button" data-primary-page="query" title="数据库查询" aria-label="数据库查询"><svg aria-hidden="true"><use href="/shared/icons.svg#database"></use></svg><span>数据库查询</span></button>
         <button class="primary-nav-item" type="button" data-primary-page="redis" title="Redis 档案" aria-label="Redis 档案"><svg aria-hidden="true"><use href="/shared/icons.svg#archive"></use></svg><span>Redis 档案</span></button>
-        <button class="primary-nav-item" type="button" data-primary-page="processLogs" title="进程日志" aria-label="进程日志"><svg aria-hidden="true"><use href="/shared/icons.svg#terminal"></use></svg><span>进程日志</span></button>
+        <button class="primary-nav-item" type="button" data-primary-page="businessLogs" title="业务日志" aria-label="业务日志"><svg aria-hidden="true"><use href="/shared/icons.svg#terminal"></use></svg><span>业务日志</span></button>
         <button class="primary-nav-item" type="button" data-primary-page="cdr" title="话单工具" aria-label="话单工具"><svg aria-hidden="true"><use href="/shared/icons.svg#list"></use></svg><span>话单工具</span></button>
         <span class="nav-footer">本地工具工作台</span>
       </nav>
@@ -158,27 +158,18 @@
         <p id="redisIndexState" class="wb-status" role="status" aria-live="polite"></p><div id="redisIndexResults"></div><footer class="task-footer"><button id="btnRedisIndexApply" class="wb-button primary" type="button" disabled>确认新增缺失 key</button></footer>
       </section>
 <section id="redisPanel-history" class="redis-sync-panel hidden" data-redis-panel="history" role="tabpanel" aria-labelledby="redisTab-history"><h2>同步记录与恢复</h2><p class="query-help">查询当前目标的同步备份，恢复前需确认，当前值冲突时停止恢复。</p><button id="btnRedisSyncHistory" class="wb-button" type="button">同步记录 / 恢复</button><p id="redisHistoryState" class="wb-status" role="status"></p><div id="redisSyncHistory" aria-live="polite"></div></section></div></section>
-    <section id="processLogsPage" class="feature-page process-log-page hidden" data-primary-panel="processLogs" aria-labelledby="processLogsTitle">
-      <header class="feature-page-heading"><div><h1 id="processLogsTitle">进程日志</h1></div></header>
-      <div class="process-log-body">
-        <aside class="log-targets" aria-label="日志目标">
-        <section class="dcos-connection-panel" aria-label="平台连接">
-          <details class="dcos-connection-card" id="dcosConnectionCard" aria-label="云翼平台连接">
-            <summary><span class="status-dot" id="dcosConnectionDot" aria-hidden="true"></span><span class="dcos-connection-title">云翼平台</span><strong id="dcosConnectionStatus">未连接</strong><span class="card-toggle" aria-hidden="true"></span></summary>
-            <div class="dcos-connection-body"><div class="dcos-endpoint"><span>平台地址</span><span id="dcosBaseUrl">—</span></div><details class="dcos-manual-login"><summary>手动 Cookie 连接</summary><label class="connection-secret-field" for="dcosCookieInput"><span class="wb-label">Cookie</span><input id="dcosCookieInput" class="wb-field" type="password" autocomplete="off" spellcheck="false" placeholder="粘贴 Cookie"></label><button class="wb-button" id="dcosConnect" type="button">连接</button></details></div>
-          </details>
-          <div class="dcos-connect-actions"><button class="wb-button primary" id="dcosBrowserLogin" type="button" hidden>网页登录</button><button class="wb-button ghost" id="dcosDisconnect" type="button" disabled hidden>断开连接</button></div>
-          <p id="dcosConnectionError" class="wb-status" role="status"></p>
-        </section>
-        <div class="dcos-target-heading"><h2>日志目标</h2><button id="dcosSearchButton" class="wb-button ghost" type="button" title="刷新工作负载" aria-label="刷新工作负载" disabled>刷新</button></div>
-        <div class="dcos-selectors"><label>集群<select id="dcosCluster" class="wb-field"></select></label><label>命名空间<select id="dcosNamespace" class="wb-field" disabled></select></label><div class="dcos-workload-picker"><label for="dcosWorkloadSearch">工作负载</label><input id="dcosWorkloadSearch" class="wb-field" type="search" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="dcosWorkloadOptions" autocomplete="off" maxlength="100" placeholder="搜索或选择工作负载" disabled><div id="dcosWorkloadOptions" class="dcos-workload-options" role="listbox" aria-label="工作负载匹配结果" hidden></div><select id="dcosWorkload" class="hidden" aria-hidden="true" tabindex="-1" disabled></select></div></div>
-        <div class="dcos-toolbar"><div class="dcos-page-nav"><span id="dcosPageInfo" class="dialog-note" role="status">—</span><button id="dcosPrevPage" class="wb-button ghost" type="button" aria-label="上一页" title="上一页" disabled hidden>‹</button><button id="dcosNextPage" class="wb-button ghost" type="button" aria-label="下一页" title="下一页" disabled hidden>›</button></div><div class="dcos-workload-actions"><button id="dcosStartWorkload" class="wb-button" type="button" disabled title="启动当前选中的工作负载">启动</button><button id="dcosStopWorkload" class="wb-button danger" type="button" disabled title="停止当前选中的工作负载，全部 Pod 会下线">停止</button></div></div>
-        </aside>
-        <div class="log-view"><div class="log-context"><label>Pod<select id="dcosPod" class="wb-field" disabled></select></label><label>容器<select id="dcosContainer" class="wb-field" disabled></select></label></div>
-        <div class="dcos-log-bar"><p id="dcosLogState" class="wb-status" role="status" aria-live="polite">请选择目标。</p><div class="dcos-log-actions"><label>末尾行数<select id="dcosLines" class="wb-field"><option value="100">100</option><option value="500">500</option><option value="1000">1000</option></select></label><button id="dcosRefresh" class="wb-button primary" type="button" disabled>刷新日志</button><label class="dcos-auto"><input id="dcosAutoRefresh" type="checkbox" title="仅控制页面显示刷新；选定容器后后台始终采集并保存日志">每 5 秒刷新显示</label><label class="dcos-auto"><input id="dcosFollow" type="checkbox" checked>跟随末尾</label></div></div>
-        <pre id="dcosLogText" class="preview-text" tabindex="0" aria-label="容器日志">请选择集群和命名空间。</pre>
-        </div>
-      </div>
+    <section id="businessLogsPage" class="feature-page grafana-logs-page hidden" data-primary-panel="businessLogs" aria-labelledby="grafanaLogsTitle">
+      <header class="feature-page-heading"><div><h1 id="grafanaLogsTitle">业务日志</h1><p>Grafana · 按服务查询已采集的日志</p></div><button id="grafanaLogin" class="wb-button" type="button" disabled>登录 Grafana</button></header>
+      <form id="grafanaLogForm" class="grafana-log-filters">
+        <label><span>服务名</span><select id="grafanaLogService" class="wb-field" required disabled><option value="">请选择服务</option></select></label>
+        <button id="grafanaRefreshServices" class="wb-button" type="button" disabled>刷新列表</button>
+        <label>时间范围<select id="grafanaLogRange" class="wb-field"><option value="15">最近 15 分钟</option><option value="60" selected>最近 1 小时</option><option value="180">最近 3 小时</option><option value="360">最近 6 小时</option><option value="1440">最近 24 小时</option></select></label>
+        <label>级别<select id="grafanaLogLevel" class="wb-field"><option value="">全部</option><option>DEBUG</option><option>INFO</option><option>WARN</option><option>ERROR</option></select></label>
+        <label>最多条数<select id="grafanaLogLimit" class="wb-field"><option>100</option><option>500</option><option selected>1000</option></select></label>
+        <button id="grafanaLogSearch" class="wb-button primary" type="submit" disabled>查询日志</button>
+      </form>
+      <p id="grafanaLogState" class="wb-status" role="status"></p>
+      <ol id="grafanaLogResults" class="grafana-log-results" aria-label="业务日志结果" tabindex="0"></ol>
     </section>
     <section id="cdrPage" class="feature-page cdr-page hidden" data-primary-panel="cdr" aria-labelledby="cdrTitle"><header class="feature-page-heading"><div><h1 id="cdrTitle">话单工具</h1><p>话单文件数据调整与导出</p></div></header><div class="cdr-frame-wrap"><iframe id="cdrFrame" title="话单文件数据调整工具" loading="lazy"></iframe></div></section>
       </div>

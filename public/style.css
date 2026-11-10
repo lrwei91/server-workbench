@@ -2222,3 +2222,13 @@ dialog.wb-dialog.drawer.expanded[open] {
 .result-group-content .query-section[open] { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 .result-group-content .query-section > summary { flex: 0 0 auto; }
 .result-group-content .query-section > .query-table-wrap { flex: 1; min-height: 0; overflow: auto; }
+.grafana-logs-page .feature-page-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+.grafana-log-filters { display: flex; align-items: end; gap: 8px 12px; flex-wrap: wrap; padding: 12px 16px 0; }
+.grafana-log-filters label { display: grid; gap: 4px; min-width: 0; }
+.grafana-log-filters label:first-child { flex: 1 1 240px; max-width: 450px; }
+.grafana-log-filters label:first-child select { width: 100%; min-width: 0; text-overflow: ellipsis; }
+.grafana-logs-page > .wb-status { margin: 8px 16px; }
+.grafana-log-results { flex: 1; min-height: 0; min-width: 0; overflow: auto; list-style: none; margin: 0; padding: 0 4px; }
+.grafana-log-results > li { padding: 8px 12px; border-bottom: 1px solid var(--wb-border, #e2e8f0); }
+.grafana-log-meta { color: var(--wb-muted, #475569); font-size: 12px; overflow-wrap: anywhere; }
+.grafana-log-results pre { margin: 4px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; }

@@ -121,6 +121,13 @@ function normalize(raw) {
       clusters,
       timeoutMs: envNumber('DCOS_TIMEOUT_MS', Number(dcos.timeoutMs) || 15000),
     },
+    grafana: {
+      baseUrl: envText('GRAFANA_BASE_URL').trim(),
+      datasourceUid: envText('GRAFANA_DATASOURCE_UID').trim(),
+      datasourceId: envNumber('GRAFANA_DATASOURCE_ID', 2),
+      orgId: envNumber('GRAFANA_ORG_ID', 1),
+      timeoutMs: envNumber('GRAFANA_TIMEOUT_MS', 20000),
+    },
     cdr: { upstream: envText('CDR_UPSTREAM', cdr.upstream || `http://${cdr.host || '127.0.0.1'}:${Number(cdr.port) || 8000}`), sessionToken: envText('CDR_SESSION_TOKEN') },
     hdfsTimeoutMs: Number(value.hdfsTimeoutMs) || 90000,
     hbaseTimeoutMs: Number(value.hbaseTimeoutMs) || 120000,

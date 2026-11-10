@@ -387,10 +387,6 @@ test('connection settings use independent source controls and keep credentials o
   assert.match(dialog, /data-connection-source="bigdata"/); assert.match(dialog, /HDFS\/HBase 客户端服务/);
   assert.equal((dialog.match(/data-connection-connect="(?:ssh|bigdata|udal|doris|pg|voyage)"/g) || []).length, 6); assert.equal((dialog.match(/<input\b/g) || []).length, 1); assert.match(dialog, /id="voyageTokenInput"[^>]*type="password"[^>]*autocomplete="off"/); assert.doesNotMatch(dialog, /dcosCookieInput|data-connection-source="(?:dcos|archive)"/); assert.doesNotMatch(dialog, /id="btnConnectAll"|data-db-disconnect/);
   assert.match(dialog, /<span>工程环境<\/span><small>1 个数据源<\/small>/);
-  const processPage = html.match(/<section id="processLogsPage"[\s\S]*?<\/section>\s*<section id="cdrPage"/)?.[0] || '';
-  assert.match(processPage, /id="dcosCookieInput"[^>]*type="password"[^>]*autocomplete="off"/);
-  assert.match(processPage, /id="dcosStartWorkload"[^>]*disabled/);
-  assert.match(processPage, /id="dcosStopWorkload"[^>]*class="wb-button danger"[^>]*disabled/);
   const dcosSource = fs.readFileSync(path.join(__dirname, '../../public/js/dcos-logs.js'), 'utf8');
   assert.doesNotMatch(dcosSource, /localStorage|sessionStorage/);
   assert.match(dcosSource, /\/api\/dcos\/workload\/\$\{action\}/);
@@ -398,16 +394,16 @@ test('connection settings use independent source controls and keep credentials o
   assert.match(source, /postJson\('\/api\/connect', \{\}/); assert.match(source, /postJson\('\/api\/bigdata\/connect', \{\}/); assert.match(source, /postJson\('\/api\/db\/connect', \{ source \}/); assert.match(source, /postJson\('\/api\/voyage\/connect', token \? \{ token \} : \{\}/); assert.doesNotMatch(source, /\/api\/connections\/connect|wb_conn_cfg|wb_db_cfg|sessionPassword|DB_FIELDS|localStorage\.(?:setItem|getItem)\([^\n]*voyageToken|sessionStorage\.(?:setItem|getItem)\([^\n]*voyageToken/i);
 });
 
-test('primary sidebar owns resources, process logs, and CDR while quick lookup is removed', () => {
+test('primary sidebar exposes Grafana logs but not the legacy cloud log page', () => {
   const html = fs.readFileSync(path.join(__dirname, '../../public/index.html'), 'utf8');
-  const source = fs.readFileSync(path.join(__dirname, '../../public/js/main.js'), 'utf8');
   const topbar = html.match(/<header class="topbar">[\s\S]*?<\/header>/)?.[0] || '';
   assert.match(html, /<nav class="primary-sidebar"/);
-  assert.deepEqual([...html.matchAll(/data-primary-page="([^"]+)"/g)].map((match) => match[1]), ['workspace', 'query', 'redis', 'processLogs', 'cdr']);
+  assert.deepEqual([...html.matchAll(/data-primary-page="([^"]+)"/g)].map((match) => match[1]), ['workspace', 'query', 'redis', 'businessLogs', 'cdr']);
+  assert.match(html, /id="businessLogsPage"[^>]*data-primary-panel="businessLogs"/);
   assert.doesNotMatch(topbar, /btnBilling|btnCdr|btnProcessLogs/);
   assert.doesNotMatch(html, /billingDialog|dcosLogDialog|cdrDialog|billingContent/);
   assert.match(html, /id="cdrPage"[^>]*data-primary-panel="cdr"/);
-  assert.match(source, /dcosLogs\.deactivate\(\)/);
+  assert.doesNotMatch(html, /id="processLogsPage"|id="dcosCookieInput"/);
 });
 
 test('SSH connection status is rendered inside the resource explorer instead of the top bar', () => {

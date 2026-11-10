@@ -167,120 +167,72 @@ test('CDR delayed preview cannot survive changed inputs and unsaved record editi
   await expect(frame.locator('#btnBatchApply')).toBeDisabled(); await expect(frame.locator('#batchPreview')).toBeEmpty();
 });
 
-async function mockLogs(page) {
-  const calls = { logs: 0, kinds: [] };
-  await page.route('**/api/dcos/status', route => fulfill(route, { configured: true, connected: true, baseUrl: 'https://logs.example.invalid', clusters: [{ id: 321, name: '测试集群' }] }));
-  await page.route('**/api/dcos/namespaces?*', route => fulfill(route, { namespaces: [{ name: 'bill-cnos-jf' }] }));
-  await page.route('**/api/dcos/workloads?*', route => {
-    const term = new URL(route.request().url()).searchParams.get('search').toLowerCase();
-    const records = [{ name: 'billing-test', kind: 'StatefulSet', runningPodNum: 1 }, { name: 'billing-backend-test', kind: 'Deployment', runningPodNum: 1 }].filter(item => item.name.toLowerCase().includes(term));
-    return fulfill(route, { records, total: records.length, pageNow: 1 });
-  });
-  await page.route('**/api/dcos/pods?*', route => { calls.kinds.push(new URL(route.request().url()).searchParams.get('workloadKind')); return fulfill(route, { pods: [{ name: 'billing-test-0', status: 'Running', containers: ['billing'] }] }); });
-  await page.route('**/api/dcos/logs?*', route => { calls.logs++; return fulfill(route, { lines: Array.from({ length: 150 }, (_, i) => `2026-10-22 20:00:${String(i % 60).padStart(2,'0')} [INFO] 测试日志第 ${i} 行`), readAt: '2026-10-22T12:00:00Z' }); });
-  return calls;
-}
-async function selectLogTarget(page) {
-  await page.locator('#dcosCluster').selectOption('321'); await page.locator('#dcosNamespace').selectOption('bill-cnos-jf');
-  await page.locator('#dcosWorkloadSearch').click();
-  await page.getByRole('option', { name: 'billing-test · 有状态 StatefulSet · 1 Pod', exact: true }).click();
-  await page.locator('#dcosPod').selectOption('billing-test-0'); await page.locator('#dcosContainer').selectOption('billing');
-}
-for (const size of [{ width: 1366, height: 768, label: '1366' }, { width: 1024, height: 768, label: '1024' }, { width: 683, height: 384, label: '1366-at-200' }]) {
-  test(`compact log sidebar keeps connection and target controls accessible at ${size.label}`, async ({ page }) => {
-    await page.setViewportSize(size);
-    await page.addInitScript(() => { window.workbenchDesktop = { loginDcos: async () => ({ ok: false, message: '登录已取消，请重试。' }) }; });
-    await mockLogs(page);
-    await page.route('**/api/dcos/status', route => fulfill(route, { configured: true, connected: false, baseUrl: 'https://logs.example.invalid', clusters: [{ id: 321, name: '测试集群' }] }));
-    await page.goto('/#/logs');
-    await expect(page.locator('#dcosConnectionStatus')).toHaveText('未连接');
-    await expect(page.locator('#dcosConnectionCard')).not.toHaveAttribute('open');
-    await expect(page.locator('#dcosConnectionError')).toBeHidden();
-    await expect(page.locator('#dcosDisconnect')).toBeHidden();
-    await expect(page.locator('#dcosBrowserLogin')).toBeVisible();
-    await expect(page.locator('#dcosPrevPage')).toBeHidden();
-    await expect(page.locator('#dcosSearchButton')).toBeDisabled();
-    const path = require('node:path'); const fs = require('node:fs'); const directory = path.resolve('outputs/log-sidebar'); fs.mkdirSync(directory, { recursive: true });
-    await page.screenshot({ path: path.join(directory, `disconnected-${size.label}.png`) });
-    await page.locator('#dcosBrowserLogin').click();
-    await expect(page.locator('#dcosConnectionError')).toHaveText('登录已取消，请重试。');
-    await page.locator('#dcosConnectionCard > summary').click();
-    await page.locator('.dcos-manual-login > summary').click();
-    await page.locator('#dcosCookieInput').fill('fixture=session');
-    await expect(page.locator('#dcosConnect')).toBeEnabled();
-    await expect(page.locator('#dcosCookieInput')).toHaveCSS('grid-column', 'auto');
-    expect((await page.locator('#dcosCookieInput').boundingBox()).width).toBeGreaterThan(140);
-    for (const selector of ['#dcosCookieInput', '#dcosConnect', '#dcosStartWorkload', '#dcosStopWorkload']) {
-      await page.locator(selector).scrollIntoViewIfNeeded();
-      const box = await page.locator(selector).boundingBox();
-      expect(box.x).toBeGreaterThanOrEqual(0); expect(box.x + box.width).toBeLessThanOrEqual(size.width);
-      expect(box.y).toBeGreaterThanOrEqual(0); expect(box.y + box.height).toBeLessThanOrEqual(size.height);
-    }
-    await page.unroute('**/api/dcos/status'); await mockLogs(page); await page.reload();
-    await selectLogTarget(page);
-    await expect(page.locator('#dcosLogState')).toContainText('已读取 150 行');
-    await expect(page.locator('#dcosConnectionStatus')).toHaveClass('connected');
-    await expect(page.locator('#dcosDisconnect')).toBeVisible();
-    await expect(page.locator('#dcosPageInfo')).toHaveText('2 个工作负载');
-    await expect(page.locator('#dcosPrevPage')).toBeHidden();
-    await page.screenshot({ path: path.join(directory, `connected-${size.label}.png`) });
-    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-  });
-}
-test('compact log sidebar preserves manual Cookie access and multi-page navigation', async ({ page }) => {
-  await page.addInitScript(() => { window.workbenchDesktop = { loginDcos: async () => ({ ok: false }) }; });
-  await mockLogs(page);
-  await page.route('**/api/dcos/status', route => fulfill(route, { configured: true, connected: false, baseUrl: 'https://logs.example.invalid', clusters: [{ id: 321, name: '测试集群' }] }));
-  await page.route('**/api/dcos/connect', route => fulfill(route, { configured: true, connected: true, baseUrl: 'https://logs.example.invalid', clusters: [{ id: 321, name: '测试集群' }] }));
-  await page.route('**/api/dcos/workloads?*', route => {
-    const pageNow = Number(new URL(route.request().url()).searchParams.get('pageNow'));
-    return fulfill(route, { records: [{ name: `billing-page-${pageNow}`, kind: 'Deployment', runningPodNum: 1 }], total: 70, pageNow });
-  });
+test('legacy log route returns to resources without a cloud log entry', async ({ page }) => {
+  const requests = [];
+  page.on('request', request => { if (new URL(request.url()).pathname.startsWith('/api/dcos/')) requests.push(request.url()); });
+  await mockResources(page);
   await page.goto('/#/logs');
-  await expect(page.locator('#dcosConnectionCard')).not.toHaveAttribute('open');
-  await expect(page.locator('#dcosBrowserLogin')).toBeVisible();
-  await page.locator('#dcosConnectionCard > summary').click();
-  await page.locator('.dcos-manual-login > summary').click();
-  await page.locator('#dcosCookieInput').fill('fixture=session'); await page.locator('#dcosConnect').click();
-  await expect(page.locator('#dcosConnectionStatus')).toHaveText('已连接');
-  await page.locator('#dcosCluster').selectOption('321'); await page.locator('#dcosNamespace').selectOption('bill-cnos-jf');
-  await expect(page.locator('#dcosPageInfo')).toHaveText('70 个工作负载 · 1/2');
-  await expect(page.locator('#dcosPrevPage')).toBeDisabled(); await page.locator('#dcosNextPage').click();
-  await expect(page.locator('#dcosPageInfo')).toHaveText('70 个工作负载 · 2/2');
-  await expect(page.locator('#dcosNextPage')).toBeDisabled(); await page.locator('#dcosPrevPage').click();
-  await expect(page.locator('#dcosPageInfo')).toHaveText('70 个工作负载 · 1/2');
-});
-test('log follow pauses on scroll while collection continues after leaving the page', async ({ page }) => {
-  const calls = await mockLogs(page); await page.clock.install(); await page.goto('/#/logs'); await selectLogTarget(page);
-  await expect(page.locator('#dcosLogState')).toContainText('已读取 150 行'); await expect(page.locator('#dcosConnectionCard')).not.toHaveAttribute('open');
-  await expect(page.locator('#dcosFollow')).toBeChecked();
-  await page.locator('#dcosLogText').evaluate(node => { node.scrollTop = 0; node.dispatchEvent(new Event('scroll')); });
-  await expect(page.locator('#dcosFollow')).not.toBeChecked();
-  await page.locator('#dcosAutoRefresh').check(); await page.getByRole('button', { name: '资源浏览', exact: true }).click();
-  const before = calls.logs; await page.clock.runFor(6000); await expect.poll(() => calls.logs).toBe(before + 1);
-  await page.getByRole('button', { name: '进程日志', exact: true }).click(); await page.clock.runFor(5100); await expect.poll(() => calls.logs).toBe(before + 2);
-  await expect(page.locator('#dcosWorkload')).toHaveValue('StatefulSet/billing-test');
-  await expect(page.locator('#dcosWorkloadSearch')).toHaveValue('billing-test');
+  await expect(page).toHaveURL(/#\/resources\/files$/);
+  await expect(page.locator('#fileList .resource-row')).toHaveCount(50);
+  await expect(page.getByRole('button', { name: '资源浏览', exact: true })).toHaveAttribute('aria-current', 'page');
+  await expect(page.getByRole('button', { name: '进程日志', exact: true })).toHaveCount(0);
+  await expect(page.locator('#processLogsPage')).toHaveCount(0);
+  expect(requests).toEqual([]);
 });
 
-test('silent log collection ignores display refresh and visibility, then stops on disconnect', async ({ page }) => {
-  const calls = await mockLogs(page);
-  await page.route('**/api/dcos/disconnect', route => fulfill(route, { configured: true, connected: false, baseUrl: 'https://logs.example.invalid', clusters: [{ id: 321, name: '测试集群' }] }));
-  await page.clock.install(); await page.goto('/#/logs'); await selectLogTarget(page);
-  await expect(page.locator('#dcosLogState')).toContainText('已读取 150 行');
-  await expect(page.locator('#dcosAutoRefresh')).not.toBeChecked();
-  const displayed = await page.locator('#dcosLogState').textContent();
-  let before = calls.logs;
-  await page.clock.runFor(5100); await expect.poll(() => calls.logs).toBe(before + 1);
-  await expect(page.locator('#dcosLogState')).toHaveText(displayed);
-  await page.evaluate(() => { Object.defineProperty(document, 'hidden', { configurable: true, get: () => true }); document.dispatchEvent(new Event('visibilitychange')); });
-  before = calls.logs; await page.clock.runFor(5100); await expect.poll(() => calls.logs).toBe(before + 1);
-  await expect(page.locator('#dcosLogState')).toHaveText(displayed);
-  await page.evaluate(() => { Object.defineProperty(document, 'hidden', { configurable: true, get: () => false }); document.dispatchEvent(new Event('visibilitychange')); });
-  await page.locator('#dcosDisconnect').click();
-  await expect(page.locator('#dcosConnectionStatus')).toHaveText('未连接');
-  before = calls.logs; await page.clock.runFor(15000); expect(calls.logs).toBe(before);
+test('Grafana business logs sign in, query, and handle expired sessions', async ({ page }) => {
+  await page.addInitScript(() => { window.workbenchDesktop = { loginGrafana: async () => ({ ok: true }) }; });
+  await page.route('**/api/grafana/status', route => fulfill(route, { configured: true, desktop: true, connected: false, instance: 'legacy-default' }));
+  const ranges = [];
+  await page.route('**/api/grafana/services?*', route => {
+    const minutes = new URL(route.request().url()).searchParams.get('minutes');
+    ranges.push(minutes);
+    return fulfill(route, { services: minutes === '60' ? ['another-service', 'rating-test'] : ['rating-test', 'recent-service'], truncated: false });
+  });
+  const received = [];
+  await page.route('**/api/grafana/query', route => {
+    received.push(route.request().postDataJSON());
+    if (received.length === 2) return route.fulfill({ status: 401, json: { ok: false, error: { code: 'GRAFANA_LOGIN_REQUIRED', message: '请重新登录 Grafana。' } } });
+    return fulfill(route, { rows: [{ time: 1794290700000, body: 'first\n<img src=x>', level: 'WARN', service_instance_id: 'rating-test-0', trace_id: 'trace' }] });
+  });
+  await page.goto('/#/businessLogs');
+  await expect(page.getByRole('button', { name: '业务日志', exact: true })).toHaveAttribute('aria-current', 'page');
+  await expect(page.getByRole('button', { name: '查询日志' })).toBeDisabled();
+  await page.getByRole('button', { name: '登录 Grafana' }).click();
+  const services = page.getByRole('combobox', { name: '服务名', exact: true });
+  await expect(services.getByRole('option')).toHaveText(['请选择服务', 'another-service', 'rating-test']);
+  await expect(services).toHaveValue('');
+  await expect(page.getByRole('button', { name: '查询日志' })).toBeDisabled();
+  await services.selectOption('another-service');
+  await page.getByRole('combobox', { name: '时间范围', exact: true }).selectOption('180');
+  await expect(services.getByRole('option')).toHaveText(['请选择服务', 'rating-test', 'recent-service']);
+  await expect(services).toHaveValue('');
+  await services.selectOption('rating-test');
+  await page.getByRole('button', { name: '刷新列表' }).click();
+  await expect(services).toBeEnabled();
+  await expect(services).toHaveValue('rating-test');
+  expect(ranges).toEqual(['60', '180', '180']);
+  await page.getByRole('combobox', { name: '级别', exact: true }).selectOption('WARN');
+  await page.getByRole('button', { name: '查询日志' }).click();
+  await expect(page.locator('#grafanaLogState')).toHaveText('返回 1 条日志 · 北京时间');
+  await expect(page.locator('#grafanaLogResults pre')).toContainText('<img src=x>');
+  await expect(page.locator('#grafanaLogResults img')).toHaveCount(0);
+  expect(received[0]).toEqual({ service: 'rating-test', minutes: 180, limit: 1000, level: 'WARN' });
+  await page.getByRole('button', { name: '查询日志' }).click();
+  await expect(page.locator('#grafanaLogState')).toHaveText('请重新登录 Grafana。');
+  await expect(page.getByRole('button', { name: '登录 Grafana' })).toBeEnabled();
+  await expect(services).toHaveValue('');
 });
+
+for (const size of [{ width: 1024, height: 768 }, { width: 683, height: 384 }]) {
+  test(`Grafana log filters fit at ${size.width}×${size.height}`, async ({ page }) => {
+    await page.setViewportSize(size);
+    await page.goto('/#/businessLogs');
+    await expect(page.getByRole('button', { name: '查询日志' })).toBeInViewport();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(size.width);
+    expect((await page.locator('#grafanaLogResults').boundingBox()).height).toBeGreaterThan(24);
+  });
+}
 
 async function mockResources(page) {
   await page.route('**/api/status', route => fulfill(route, { connected: true, home: '/home/qa', conn: { host: 'fixture-host', username: 'qa' } }));
@@ -309,7 +261,7 @@ test('resource path edit, preview drawer sizing, focus restoration and scroll co
 const sizes = [{ width: 1024, height: 768, label: '1024' }, { width: 1366, height: 768, label: '1366' }, { width: 1920, height: 1080, label: '1920' }, { width: 1093, height: 614, label: '1366-at-125' }, { width: 911, height: 512, label: '1366-at-150' }, { width: 683, height: 512, label: '1024-at-150' }];
 for (const size of sizes) test(`layout has no page overflow or clipped primary controls at ${size.label}`, async ({ page, request }) => {
   await page.setViewportSize({ width: size.width, height: size.height }); await page.emulateMedia({ reducedMotion: 'reduce' });
-  await connected(page); await mockResources(page); await mockLogs(page);
+  await connected(page); await mockResources(page);
   const errors = []; page.on('pageerror', error => errors.push(error.message));
   await page.route('**/api/query/phone', route => fulfill(route, { result: queryResult({ data: { productInstances: Array.from({ length: 30 }, (_, i) => ({ prod_inst_id: String(103386066 + i), ...Object.fromEntries(Array.from({ length: 16 }, (_, j) => [`test_field_${j}`, `测试长字段${'内容'.repeat(30)}`])) })) } }) }));
   await request.post('/cdr/api/reset', { data: {} }); await request.post('/cdr/api/load', { data: { filename: 'sample.json' } });
@@ -329,8 +281,6 @@ for (const size of sizes) test(`layout has no page overflow or clipped primary c
   await page.screenshot({ path: path.join(dir, `query-${size.label}.png`) });
   await page.getByRole('button', { name: 'Redis 档案', exact: true }).click(); await fits('#btnRedisQuery');
   if (size.label === '1366') await page.screenshot({ path: path.join(dir, 'redis.png') });
-  await page.getByRole('button', { name: '进程日志', exact: true }).click(); await selectLogTarget(page); await fits('#dcosRefresh');
-  if (size.label === '1366') await page.screenshot({ path: path.join(dir, 'logs.png') });
   await page.getByRole('button', { name: '话单工具', exact: true }).click(); const frame = page.frameLocator('#cdrFrame'); await expect(frame.locator('#statTotal')).toHaveText('2'); await fits('#btnExport', frame);
   expect((await frame.locator('.table-wrap').boundingBox()).height).toBeGreaterThan(45);
   if (size.label === '1366') await page.screenshot({ path: path.join(dir, 'cdr.png') });
@@ -341,24 +291,25 @@ for (const size of sizes) test(`layout has no page overflow or clipped primary c
 });
 
 
-test('cancelled file deletion cannot leak into a later workload confirmation; running workload operations lock their target', async ({ page }) => {
-  await mockResources(page); await mockLogs(page);
-  let deletions = 0, stops = 0, release, stopped = false;
-  const held = new Promise(resolve => { release = resolve; });
-  await page.route('**/api/sftp/delete', route => { deletions++; return fulfill(route, { ok: true }); });
-  await page.route('**/api/dcos/pods?*', route => fulfill(route, { pods: stopped ? [] : [{ name: 'billing-test-0', containers: ['billing'] }] }));
-  await page.route('**/api/dcos/workload/stop', async route => { stops++; expect(route.request().postDataJSON().workloadName).toBe('billing-test'); expect(route.request().postDataJSON().workloadKind).toBe('StatefulSet'); await held; stopped = true; await fulfill(route, { ok: true }); });
+test('cancelled file deletion does not affect the next confirmed target', async ({ page }) => {
+  await mockResources(page);
+  const deletions = [];
+  await page.route('**/api/sftp/delete', route => {
+    deletions.push(route.request().postDataJSON().path);
+    return fulfill(route, { ok: true });
+  });
   await page.goto('/'); await expect(page.locator('#fileList .resource-row')).toHaveCount(50);
-  await page.locator('#fileList .resource-row').first().getByRole('button', { name: /^更多操作/ }).click();
-  await page.locator('.row-action-menu:popover-open').getByRole('button', { name: '删除', exact: true }).click();
+  const chooseDelete = async (row) => {
+    await row.getByRole('button', { name: /^更多操作/ }).click();
+    await page.locator('.row-action-menu:popover-open').getByRole('button', { name: '删除', exact: true }).click();
+  };
+  await chooseDelete(page.locator('#fileList .resource-row').filter({ hasText: 'billing-test.log' }));
   await page.locator('#confirmDialog [data-dialog-close]').last().click();
-  await page.getByRole('button', { name: '进程日志', exact: true }).click(); await selectLogTarget(page);
-  await page.locator('#dcosStopWorkload').click(); await expect(page.locator('#confirmTarget')).toHaveText('321:bill-cnos-jf / StatefulSet / billing-test');
-  await page.locator('#btnConfirmAction').click(); await expect(page.locator('#dcosCluster')).toBeDisabled(); await expect(page.locator('#dcosDisconnect')).toBeDisabled();
-  expect(deletions).toBe(0); expect(stops).toBe(1);
-  await page.getByRole('button', { name: '资源浏览', exact: true }).click(); release();
-  await page.getByRole('button', { name: '进程日志', exact: true }).click(); await expect(page.locator('#dcosStartWorkload')).toBeEnabled();
-  expect(deletions).toBe(0); expect(stops).toBe(1);
+  expect(deletions).toEqual([]);
+  await chooseDelete(page.locator('#fileList .resource-row').filter({ hasText: 'sample-01.json' }));
+  await expect(page.locator('#confirmTarget')).toHaveText('/home/qa/sample-1.json');
+  await page.locator('#btnConfirmAction').click();
+  await expect.poll(() => deletions).toEqual(['/home/qa/sample-1.json']);
 });
 
 test('direct HBase routes load the restored connection; sample and RowKey views remain usable in the detail drawer', async ({ page }) => {
@@ -397,32 +348,4 @@ test('CDR rejects saving an edit after an external session revision change', asy
   await request.post('/cdr/api/record/1', { data: { updates: { CHARGE: 5 }, expected_revision: session.revision } });
   await frame.locator('#btnSaveEdit').click(); await expect(frame.locator('#editStatus')).toContainText('会话版本已变化'); await expect(frame.locator('#btnSaveEdit')).toBeDisabled();
   expect((await (await request.get('/cdr/api/record/0')).json()).record.CHARGE).toBe(1);
-});
-
-test('log target selection resumes after leaving during a cancelled namespace request', async ({ page }) => {
-  await mockLogs(page);
-  let reads = 0, release;
-  const held = new Promise(resolve => { release = resolve; });
-  await page.route('**/api/dcos/namespaces?*', async route => { reads++; if (reads === 1) await held; await fulfill(route, { namespaces: [{ name: 'bill-cnos-jf' }] }).catch(() => {}); });
-  await page.goto('/#/logs'); await page.locator('#dcosCluster').selectOption('321'); await expect.poll(() => reads).toBe(1);
-  await page.getByRole('button', { name: '资源浏览', exact: true }).click(); release();
-  await page.getByRole('button', { name: '进程日志', exact: true }).click();
-  await expect(page.locator('#dcosNamespace')).toBeEnabled(); await expect.poll(() => reads).toBe(2);
-  await page.locator('#dcosNamespace').selectOption('bill-cnos-jf'); await expect(page.locator('#dcosWorkloadSearch')).toBeEnabled();
-});
-
-test('workload combobox searches both kinds without case sensitivity and clears stale selection', async ({ page }) => {
-  const calls = await mockLogs(page);
-  await page.goto('/#/logs'); await selectLogTarget(page);
-  const search = page.locator('#dcosWorkloadSearch');
-  await search.fill('BACKEND');
-  await expect(page.locator('#dcosWorkload')).toHaveValue('');
-  await expect(page.locator('#dcosStopWorkload')).toBeDisabled();
-  await expect(page.getByRole('option', { name: 'billing-backend-test · 无状态 Deployment · 1 Pod', exact: true })).toBeVisible();
-  await search.press('ArrowDown'); await search.press('Enter');
-  await expect(page.locator('#dcosWorkload')).toHaveValue('Deployment/billing-backend-test');
-  await expect.poll(() => calls.kinds.at(-1)).toBe('Deployment');
-  await search.fill('no-matching-workload');
-  await expect(page.locator('#dcosWorkloadOptions')).toContainText('没有匹配的工作负载');
-  await expect(page.locator('#dcosPod')).toBeDisabled();
 });

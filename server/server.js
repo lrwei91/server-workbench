@@ -18,11 +18,13 @@ const { queryArchiveRelations } = require('./archive-relations');
 const { VoyageManager } = require('./voyage');
 const { manager: bigdata } = require('./bigdata-client');
 const { DcosLogs } = require('./dcos-logs');
+const { GrafanaLogs } = require('./grafana-logs');
 const { RedisArchiveService } = require('./redis-archive');
 const { PgRedisSync, TABLES: SYNC_TABLES } = require('./pg-redis-sync');
 const { RedisIndexes } = require('./redis-indexes');
 const voyage = new VoyageManager(config.voyage);
 const dcos = new DcosLogs(config.dcos, { logDir: path.join(config.resolveLogDir(), 'dcos') });
+const grafana = new GrafanaLogs(config.grafana);
 const redisArchive = new RedisArchiveService(config.redisArchive);
 const redisSync = new PgRedisSync({ database, redis: redisArchive, backupDir: path.join(config.resolveLogDir(), 'pg-redis-sync') });
 const redisIndexes = new RedisIndexes({ database, redis: redisArchive, auditDir: path.join(config.resolveLogDir(), 'redis-indexes') });
@@ -192,7 +194,7 @@ async function staticFile(res, base, relative) {
   pipeline(file.createReadStream(), res, () => {});
 }
 
-async function handle(req, res) {
+async function handle(req, res, { desktop = false } = {}) {
   const url = new URL(req.url, 'http://127.0.0.1');
   const p = url.pathname;
   if (req.method === 'GET' && p === '/api/health') return sendJson(res, 200, { ok: true });
@@ -215,6 +217,24 @@ async function handle(req, res) {
     });
   }
   if (req.method === 'GET' && p === '/api/status') return sendJson(res, 200, { ok: true, connected: Boolean(ssh.conn), conn: ssh.connInfo ? ssh.maskConfig(ssh.connInfo) : null, home: ssh.home || null });
+  if (req.method === 'GET' && p === '/api/grafana/status') return sendJson(res, 200, { ok: true, ...grafana.status(), desktop });
+  if (p.startsWith('/api/grafana/') && !desktop) throw new RequestError(403, 'GRAFANA_DESKTOP_REQUIRED', '请在桌面版打开 Grafana 日志。');
+  if (req.method === 'GET' && p === '/api/grafana/login-status') return sendJson(res, 200, { ok: true, ...grafana.loginStatus() });
+  if (req.method === 'POST' && p === '/api/grafana/connect') {
+    const body = await readBody(req); assertObject(body, ['cookie']);
+    const result = await runAbortableRequest(req, res, signal => grafana.connect(body.cookie, { signal }), { timeoutMs: config.grafana.timeoutMs });
+    return sendJson(res, 200, { ok: true, ...result });
+  }
+  if (req.method === 'GET' && p === '/api/grafana/services') {
+    const minutes = Number(url.searchParams.get('minutes'));
+    const result = await runAbortableRequest(req, res, signal => grafana.listServices(minutes, { signal }), { timeoutMs: config.grafana.timeoutMs });
+    return sendJson(res, 200, { ok: true, ...result });
+  }
+  if (req.method === 'POST' && p === '/api/grafana/query') {
+    const body = await readBody(req); assertObject(body, ['service', 'minutes', 'limit', 'level']);
+    const rows = await runAbortableRequest(req, res, signal => grafana.query(body, { signal }), { timeoutMs: config.grafana.timeoutMs });
+    return sendJson(res, 200, { ok: true, rows });
+  }
   if (req.method === 'GET' && p === '/api/dcos/status') return sendJson(res, 200, { ok: true, ...dcos.status() });
   if (req.method === 'POST' && p === '/api/dcos/connect') {
     const body = await readBody(req); assertObject(body, ['cookie']);
@@ -487,7 +507,7 @@ function createServer({ token = '' } = {}) {
     if (token && (req.headers['x-workbench-token'] !== token || (req.headers.origin && req.headers.origin !== `http://${req.headers.host}`))) {
       return sendError(res, new RequestError(403, 'DESKTOP_SESSION_REQUIRED', '桌面会话验证失败'));
     }
-    handle(req, res).catch((error) => sendError(res, error));
+    handle(req, res, { desktop: Boolean(token) }).catch((error) => sendError(res, error));
   });
 }
 async function shutdownServices() {

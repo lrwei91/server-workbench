@@ -7,9 +7,9 @@ import { $, $$, announce, initTabKeyboard, initDrawerControls, createRequestGate
 import { formatHbaseScanText, isBatchInfoTable, isMonthlyAccumulatorDetailTable, isTicketDispatchTable } from '/js/hbase-scan-format.js';
 import { generateInsertScript, hasInsertRows, INSERT_TABLES } from '/js/insert-export.js';
 import { redisArchiveLabel, redisTimestampText } from '/js/redis-labels.js';
-import { initDcosLogs } from '/js/dcos-logs.js';
 import { initRedisSync } from '/js/redis-sync.js';
 import { initRedisIndexes } from '/js/redis-indexes.js';
+import { initGrafanaLogs } from '/js/grafana-logs.js';
 
 const HDFS_UPLOAD_TIMEOUT = 200000;
 const DEFAULT_RESOURCE_TIMEOUTS = { filesListMs: 30000, hdfsListMs: 190000, hbaseScanMs: 130000 };
@@ -208,7 +208,6 @@ document.addEventListener('click', (event) => {
   if (id && dialogs.has(id)) closeDialog(id);
 });
 document.getElementById('hbaseScanDialog')?.addEventListener('close', () => cancelHbaseScan());
-const dcosLogs = initDcosLogs();
 let navigation;
 
 function icon(name, label = '') {
@@ -1139,6 +1138,7 @@ const redisActions = {
 initRedisSync(redisActions);
 initRedisIndexes(redisActions);
 
+const grafanaLogs = initGrafanaLogs();
 initTabKeyboard(); initDrawerControls(); initResourcePaths();
 navigation = initNavigation({ onChange: ({ page, tab }) => {
   for (const [id, controller] of dialogs) if (controller.isOpen) closeDialog(id);
@@ -1146,7 +1146,7 @@ navigation = initNavigation({ onChange: ({ page, tab }) => {
   if (page === 'resources') switchTab(tab);
   if (page === 'query') { switchQueryTab(tab); renderDbStatus(); }
   if (page === 'redis') switchRedisTab(tab);
-  if (page === 'logs') dcosLogs.activate(); else dcosLogs.deactivate();
+  if (page === 'businessLogs') void grafanaLogs.activate(); else grafanaLogs.deactivate();
   if (page === 'cdr' && !$('#cdrFrame').getAttribute('src')) $('#cdrFrame').src = '/cdr/?embedded=1';
 } });
 document.addEventListener('workbench:instance', event => {
