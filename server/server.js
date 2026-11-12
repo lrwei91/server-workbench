@@ -17,14 +17,10 @@ const phoneQuery = require('./phone-query');
 const { queryArchiveRelations } = require('./archive-relations');
 const { VoyageManager } = require('./voyage');
 const { manager: bigdata } = require('./bigdata-client');
-const { DcosLogs } = require('./dcos-logs');
-const { GrafanaLogs } = require('./grafana-logs');
 const { RedisArchiveService } = require('./redis-archive');
 const { PgRedisSync, TABLES: SYNC_TABLES } = require('./pg-redis-sync');
 const { RedisIndexes } = require('./redis-indexes');
 const voyage = new VoyageManager(config.voyage);
-const dcos = new DcosLogs(config.dcos, { logDir: path.join(config.resolveLogDir(), 'dcos') });
-const grafana = new GrafanaLogs(config.grafana, { aliasesPath: path.join(path.dirname(config.envPath), 'grafana-service-aliases.json') });
 const redisArchive = new RedisArchiveService(config.redisArchive);
 const redisSync = new PgRedisSync({ database, redis: redisArchive, backupDir: path.join(config.resolveLogDir(), 'pg-redis-sync') });
 const redisIndexes = new RedisIndexes({ database, redis: redisArchive, auditDir: path.join(config.resolveLogDir(), 'redis-indexes') });
@@ -194,7 +190,7 @@ async function staticFile(res, base, relative) {
   pipeline(file.createReadStream(), res, () => {});
 }
 
-async function handle(req, res, { desktop = false } = {}) {
+async function handle(req, res) {
   const url = new URL(req.url, 'http://127.0.0.1');
   const p = url.pathname;
   if (req.method === 'GET' && p === '/api/health') return sendJson(res, 200, { ok: true });
@@ -217,74 +213,6 @@ async function handle(req, res, { desktop = false } = {}) {
     });
   }
   if (req.method === 'GET' && p === '/api/status') return sendJson(res, 200, { ok: true, connected: Boolean(ssh.conn), conn: ssh.connInfo ? ssh.maskConfig(ssh.connInfo) : null, home: ssh.home || null });
-  if (req.method === 'GET' && p === '/api/grafana/status') return sendJson(res, 200, { ok: true, ...grafana.status(), desktop });
-  if (p.startsWith('/api/grafana/') && !desktop) throw new RequestError(403, 'GRAFANA_DESKTOP_REQUIRED', '请在桌面版打开 Grafana 日志。');
-  if (req.method === 'GET' && p === '/api/grafana/login-status') return sendJson(res, 200, { ok: true, ...grafana.loginStatus() });
-  if (req.method === 'POST' && p === '/api/grafana/connect') {
-    const body = await readBody(req); assertObject(body, ['cookie']);
-    const result = await runAbortableRequest(req, res, signal => grafana.connect(body.cookie, { signal }), { timeoutMs: config.grafana.timeoutMs });
-    return sendJson(res, 200, { ok: true, ...result });
-  }
-  if (req.method === 'GET' && p === '/api/grafana/services') {
-    const minutes = Number(url.searchParams.get('minutes'));
-    const result = await runAbortableRequest(req, res, signal => grafana.listServices(minutes, { signal }), { timeoutMs: config.grafana.timeoutMs });
-    return sendJson(res, 200, { ok: true, ...result });
-  }
-  if (req.method === 'POST' && p === '/api/grafana/query') {
-    const body = await readBody(req); assertObject(body, ['service', 'minutes', 'limit', 'level']);
-    const rows = await runAbortableRequest(req, res, signal => grafana.query(body, { signal }), { timeoutMs: config.grafana.timeoutMs });
-    return sendJson(res, 200, { ok: true, rows });
-  }
-  if (req.method === 'GET' && p === '/api/dcos/status') return sendJson(res, 200, { ok: true, ...dcos.status() });
-  if (req.method === 'POST' && p === '/api/dcos/connect') {
-    const body = await readBody(req); assertObject(body, ['cookie']);
-    const result = await runAbortableRequest(req, res, (signal) => dcos.connect(body.cookie, { signal }), { timeoutMs: config.dcos.timeoutMs });
-    return sendJson(res, 200, { ok: true, ...result });
-  }
-  if (req.method === 'POST' && p === '/api/dcos/disconnect') {
-    const body = await readBody(req); assertObject(body, []);
-    return sendJson(res, 200, { ok: true, ...dcos.disconnect() });
-  }
-  if (req.method === 'GET' && p === '/api/dcos/namespaces') {
-    const result = await runAbortableRequest(req, res, (signal) => dcos.namespaces(requireString(url.searchParams.get('clusterId'), 'clusterId'), { signal }), { timeoutMs: config.dcos.timeoutMs });
-    return sendJson(res, 200, { ok: true, namespaces: result });
-  }
-  if (req.method === 'GET' && p === '/api/dcos/workloads') {
-    const clusterId = requireString(url.searchParams.get('clusterId'), 'clusterId');
-    const namespaceName = requireString(url.searchParams.get('namespaceName'), 'namespaceName');
-    const pageNow = Number(url.searchParams.get('pageNow') || 1);
-    const pageSize = Number(url.searchParams.get('pageSize') || 50);
-    const search = (url.searchParams.get('search') || '').trim();
-    if (!Number.isInteger(pageNow) || pageNow < 1 || !Number.isInteger(pageSize) || pageSize < 1 || pageSize > 100 || search.length > 100) throw new RequestError(400, 'INVALID_INPUT', '工作负载分页或筛选参数无效');
-    const result = await runAbortableRequest(req, res, (signal) => dcos.workloads(clusterId, namespaceName, { pageNow, pageSize, search, signal }), { timeoutMs: config.dcos.timeoutMs });
-    return sendJson(res, 200, { ok: true, ...result });
-  }
-  if (req.method === 'GET' && p === '/api/dcos/pods') {
-    const clusterId = requireString(url.searchParams.get('clusterId'), 'clusterId');
-    const namespaceName = requireString(url.searchParams.get('namespaceName'), 'namespaceName');
-    const workloadName = requireString(url.searchParams.get('workloadName'), 'workloadName');
-    const workloadKind = url.searchParams.get('workloadKind') ?? 'StatefulSet';
-    const result = await runAbortableRequest(req, res, (signal) => dcos.pods(clusterId, namespaceName, workloadName, { signal, workloadKind }), { timeoutMs: config.dcos.timeoutMs });
-    return sendJson(res, 200, { ok: true, pods: result });
-  }
-  if (req.method === 'GET' && p === '/api/dcos/logs') {
-    const clusterId = requireString(url.searchParams.get('clusterId'), 'clusterId');
-    const namespaceName = requireString(url.searchParams.get('namespaceName'), 'namespaceName');
-    const podName = requireString(url.searchParams.get('podName'), 'podName');
-    const containerName = requireString(url.searchParams.get('containerName'), 'containerName');
-    const tailingLines = Number(url.searchParams.get('tailingLines') || 100);
-    const result = await runAbortableRequest(req, res, (signal) => dcos.logs(clusterId, namespaceName, podName, containerName, tailingLines, { signal }), { timeoutMs: config.dcos.timeoutMs });
-    return sendJson(res, 200, { ok: true, ...result });
-  }
-  if (req.method === 'POST' && (p === '/api/dcos/workload/start' || p === '/api/dcos/workload/stop')) {
-    const body = await readBody(req); assertObject(body, ['clusterId', 'namespaceName', 'workloadName', 'workloadKind']);
-    const action = p.endsWith('/stop') ? 'stop' : 'start';
-    const clusterId = requireString(body.clusterId, 'clusterId');
-    const namespaceName = requireString(body.namespaceName, 'namespaceName');
-    const workloadName = requireString(body.workloadName, 'workloadName');
-    const result = await runAbortableRequest(req, res, (signal) => dcos.workloadAction(action, clusterId, namespaceName, workloadName, { signal, workloadKind: body.workloadKind }), { timeoutMs: config.dcos.timeoutMs });
-    return sendJson(res, 200, { ok: true, ...result });
-  }
   if (req.method === 'GET' && p === '/api/bigdata/status') return sendJson(res, 200, { ok: true, ...bigdata.status() });
   if (req.method === 'POST' && p === '/api/bigdata/connect') {
     const body = await readBody(req); assertObject(body, []); const result = await bigdata.connect(); return sendJson(res, 200, { ok: true, ...result });
@@ -503,11 +431,12 @@ async function handle(req, res, { desktop = false } = {}) {
 }
 
 function createServer({ token = '' } = {}) {
+  if (!token) throw new Error('createServer 需要会话 token（桌面会话模式为唯一模式）');
   return http.createServer((req, res) => {
-    if (token && (req.headers['x-workbench-token'] !== token || (req.headers.origin && req.headers.origin !== `http://${req.headers.host}`))) {
+    if (req.headers['x-workbench-token'] !== token || (req.headers.origin && req.headers.origin !== `http://${req.headers.host}`)) {
       return sendError(res, new RequestError(403, 'DESKTOP_SESSION_REQUIRED', '桌面会话验证失败'));
     }
-    handle(req, res, { desktop: Boolean(token) }).catch((error) => sendError(res, error));
+    handle(req, res).catch((error) => sendError(res, error));
   });
 }
 async function shutdownServices() {

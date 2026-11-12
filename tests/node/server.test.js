@@ -15,7 +15,7 @@ const { createServer, asRequestError, MAX_BODY_BYTES } = require('../../server/s
 function request(server, method, path, body) {
   return new Promise((resolve, reject) => {
     const address = server.address();
-    const req = http.request({ host: address.address, port: address.port, method, path, headers: body === undefined ? {} : { 'content-type': 'application/json' } }, (res) => {
+    const req = http.request({ host: address.address, port: address.port, method, path, headers: { 'x-workbench-token': 'test-token', ...(body === undefined ? {} : { 'content-type': 'application/json' }) } }, (res) => {
       let data = ''; res.setEncoding('utf8'); res.on('data', (chunk) => { data += chunk; }); res.on('end', () => resolve({ status: res.statusCode, body: data ? JSON.parse(data) : null }));
     }); req.on('error', reject); if (body !== undefined) req.write(typeof body === 'string' ? body : JSON.stringify(body)); req.end();
   });
@@ -143,7 +143,7 @@ test('HBase path errors map to 400 and HBase shell failures map to 502', () => {
 });
 
 test('HTTP errors have real status and normalized shape', async () => {
-  const server = createServer(); await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const server = createServer({ token: 'test-token' }); await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   try {
     const missing = await request(server, 'GET', '/api/nope');
     assert.equal(missing.status, 404); assert.equal(missing.body.ok, false); assert.equal(missing.body.error.code, 'NOT_FOUND');
@@ -288,7 +288,7 @@ test('instance HTTP queries route to connected Voyage without PG and propagate b
     calls.push({ source, schema: options.schema, sql });
     return /FROM prod_inst\b/i.test(sql) ? [{ prod_inst_id: values[0], his_id: '0' }] : [];
   };
-  const server = createServer(); await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const server = createServer({ token: 'test-token' }); await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   try {
     for (const schema of ['bill_inmemory', 'crmv3']) {
       calls.length = 0;
@@ -385,25 +385,22 @@ test('connection settings use independent source controls and keep credentials o
   assert.doesNotMatch(dialog, /<details[^>]*\bopen\b/); assert.match(dialog, /data-connection-source="voyage"/); assert.match(dialog, /Voyage 在线数据库/);
   assert.match(dialog, /data-connection-source="ssh"/); assert.match(dialog, /data-connection-source="udal"/); assert.match(dialog, /data-connection-source="doris"/); assert.match(dialog, /data-connection-source="pg"/);
   assert.match(dialog, /data-connection-source="bigdata"/); assert.match(dialog, /HDFS\/HBase 客户端服务/);
-  assert.equal((dialog.match(/data-connection-connect="(?:ssh|bigdata|udal|doris|pg|voyage)"/g) || []).length, 6); assert.equal((dialog.match(/<input\b/g) || []).length, 1); assert.match(dialog, /id="voyageTokenInput"[^>]*type="password"[^>]*autocomplete="off"/); assert.doesNotMatch(dialog, /dcosCookieInput|data-connection-source="(?:dcos|archive)"/); assert.doesNotMatch(dialog, /id="btnConnectAll"|data-db-disconnect/);
+  assert.equal((dialog.match(/data-connection-connect="(?:ssh|bigdata|udal|doris|pg|voyage)"/g) || []).length, 6); assert.equal((dialog.match(/<input\b/g) || []).length, 1); assert.match(dialog, /id="voyageTokenInput"[^>]*type="password"[^>]*autocomplete="off"/); assert.doesNotMatch(dialog, /data-connection-source="archive"/); assert.doesNotMatch(dialog, /id="btnConnectAll"|data-db-disconnect/);
   assert.match(dialog, /<span>工程环境<\/span><small>1 个数据源<\/small>/);
-  const dcosSource = fs.readFileSync(path.join(__dirname, '../../public/js/dcos-logs.js'), 'utf8');
-  assert.doesNotMatch(dcosSource, /localStorage|sessionStorage/);
-  assert.match(dcosSource, /\/api\/dcos\/workload\/\$\{action\}/);
   assert.doesNotMatch(html, /id="settingsDialog"|id="dbSettingsDialog"|id="btnSettings"|id="btnDbSettings"/);
   assert.match(source, /postJson\('\/api\/connect', \{\}/); assert.match(source, /postJson\('\/api\/bigdata\/connect', \{\}/); assert.match(source, /postJson\('\/api\/db\/connect', \{ source \}/); assert.match(source, /postJson\('\/api\/voyage\/connect', token \? \{ token \} : \{\}/); assert.doesNotMatch(source, /\/api\/connections\/connect|wb_conn_cfg|wb_db_cfg|sessionPassword|DB_FIELDS|localStorage\.(?:setItem|getItem)\([^\n]*voyageToken|sessionStorage\.(?:setItem|getItem)\([^\n]*voyageToken/i);
 });
 
-test('primary sidebar exposes Grafana logs but not the legacy cloud log page', () => {
+test('primary sidebar exposes the four app pages and no log page', () => {
   const html = fs.readFileSync(path.join(__dirname, '../../public/index.html'), 'utf8');
   const topbar = html.match(/<header class="topbar">[\s\S]*?<\/header>/)?.[0] || '';
   assert.match(html, /<nav class="primary-sidebar"/);
-  assert.deepEqual([...html.matchAll(/data-primary-page="([^"]+)"/g)].map((match) => match[1]), ['workspace', 'query', 'redis', 'businessLogs', 'cdr']);
-  assert.match(html, /id="businessLogsPage"[^>]*data-primary-panel="businessLogs"/);
+  assert.deepEqual([...html.matchAll(/data-primary-page="([^"]+)"/g)].map((match) => match[1]), ['workspace', 'query', 'redis', 'cdr']);
+  assert.doesNotMatch(html, /businessLogsPage|data-primary-page="businessLogs"/);
   assert.doesNotMatch(topbar, /btnBilling|btnCdr|btnProcessLogs/);
-  assert.doesNotMatch(html, /billingDialog|dcosLogDialog|cdrDialog|billingContent/);
+  assert.doesNotMatch(html, /billingDialog|cdrDialog|billingContent/);
   assert.match(html, /id="cdrPage"[^>]*data-primary-panel="cdr"/);
-  assert.doesNotMatch(html, /id="processLogsPage"|id="dcosCookieInput"/);
+  assert.doesNotMatch(html, /id="processLogsPage"/);
 });
 
 test('SSH connection status is rendered inside the resource explorer instead of the top bar', () => {

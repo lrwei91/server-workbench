@@ -8,14 +8,14 @@ const { createServer } = require('../../server/server');
 const { PgRedisSync } = require('../../server/pg-redis-sync');
 
 test('sync HTTP validates scope, confirmation, same origin and unknown fields', async (t) => {
-  const server = createServer(); await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const server = createServer({ token: 'test-token' }); await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   t.after(() => new Promise((resolve) => server.close(resolve)));
   const base = `http://127.0.0.1:${server.address().port}`;
   const post = async (route, body, headers = {}) => {
-    const result = await fetch(`${base}/api/redis-sync/${route}`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body) });
+    const result = await fetch(`${base}/api/redis-sync/${route}`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-workbench-token': 'test-token', ...headers }, body: JSON.stringify(body) });
     return { status: result.status, body: await result.json() };
   };
-  const status = await fetch(`${base}/api/redis-sync/status`).then((result) => result.json());
+  const status = await fetch(`${base}/api/redis-sync/status`, { headers: { 'x-workbench-token': 'test-token' } }).then((result) => result.json());
   assert.equal(status.tables.length, 9); assert.equal(status.schema, 'bill_inmemory'); assert.equal(status.mode, 'fields-and-direct-subscriptions');
   for (const [route, body, code] of [
     ['preview', { key: 'arbitrary:key' }, 'INVALID_REDIS_KEY'],
@@ -31,7 +31,7 @@ test('sync HTTP validates scope, confirmation, same origin and unknown fields', 
     const result = await post(route, body); assert.equal(result.status, 400); assert.equal(result.body.error.code, code);
   }
   const cross = await post('apply', { previewId: 'fixture', confirmed: true }, { Origin: 'https://untrusted.example' });
-  assert.equal(cross.status, 403); assert.equal(cross.body.error.code, 'CROSS_ORIGIN_WRITE');
+  assert.equal(cross.status, 403); assert.equal(cross.body.error.code, 'DESKTOP_SESSION_REQUIRED');
   const fetchSite = await post('restore', { backupId: 'fixture', confirmed: true }, { 'Sec-Fetch-Site': 'cross-site' });
   assert.equal(fetchSite.status, 403);
   const expired = await post('apply', { previewId: 'fixture', confirmed: true }, { Origin: base });

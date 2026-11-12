@@ -1,5 +1,5 @@
 # ---- 运行时产物（不提交）----
-# 运行日志与审计产物（dcos 容器日志、Redis 同步备份与索引审计）
+# 运行日志与审计产物（Redis 同步备份与索引审计）
 logs/
 *.log
 
@@ -32,8 +32,6 @@ AGENTS.md
 __pycache__/
 .pytest_cache/
 *.pyc
-test-results/
-playwright-report/
 bigdata-client-service/build/
 dist/
 build/

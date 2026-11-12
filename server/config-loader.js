@@ -9,12 +9,10 @@ const envPath = path.join(configDir, '.env');
 
 // 内置默认值；本机连接信息只从 .env 读取。
 const DEFAULTS = {
-  workbench: { host: '127.0.0.1', port: 17755 },
   ssh: { host: '', port: 22, username: '', password: '', timeoutMs: 15000, execTimeoutMs: 30000, execMaxTimeoutMs: 120000, execMaxOutputBytes: 2 * 1024 * 1024 },
   hdfsTimeoutMs: 90000,
   hbaseTimeoutMs: 120000,
   cdr: { upstream: 'http://127.0.0.1:8000' },
-  dcos: { baseUrl: '', clusters: [{ id: 321, name: 'ccse-xyha-01' }], timeoutMs: 15000 },
   logs: { dir: './logs' },
 };
 
@@ -42,22 +40,14 @@ function envNumber(name, fallback) { const value = Number(env[name]); return Num
 
 function normalize(raw) {
   const value = { ...raw };
-  const workbench = value.workbench || {};
   const ssh = value.ssh || {};
   const redisArchive = value.redisArchive || {};
   const voyage = value.voyage || {};
   const bigdataClient = value.bigdataClient || {};
   const cdr = value.cdr || {};
   const logs = value.logs || {};
-  const dcos = value.dcos || {};
-  const clusterText = envText('DCOS_CLUSTERS', Array.isArray(dcos.clusters) ? dcos.clusters.map((item) => `${item.id}:${item.name}`).join(',') : '321:ccse-xyha-01');
-  const clusters = clusterText.split(',').map((item) => item.trim()).filter(Boolean).map((item) => {
-    const colon = item.indexOf(':');
-    return { id: Number(colon < 0 ? item : item.slice(0, colon)), name: (colon < 0 ? item : item.slice(colon + 1)).trim() };
-  });
   return {
     ...value,
-    workbench: { host: envText('WORKBENCH_HOST', workbench.host || '127.0.0.1'), port: envNumber('WORKBENCH_PORT', Number(workbench.port) || 17755) },
     ssh: {
       host: envText('SSH_HOST', typeof ssh.host === 'string' ? ssh.host : '').trim(),
       port: envNumber('SSH_PORT', Number(ssh.port) || 22),
@@ -116,18 +106,6 @@ function normalize(raw) {
       timeoutMs: envNumber('BIGDATA_CLIENT_TIMEOUT_MS', Number(bigdataClient.timeoutMs) || 30000),
       listCacheMs: envNumber('BIGDATA_CLIENT_LIST_CACHE_MS', Number(bigdataClient.listCacheMs) || 30000),
     },
-    dcos: {
-      baseUrl: envText('DCOS_BASE_URL', dcos.baseUrl || '').trim().replace(/\/$/, ''),
-      clusters,
-      timeoutMs: envNumber('DCOS_TIMEOUT_MS', Number(dcos.timeoutMs) || 15000),
-    },
-    grafana: {
-      baseUrl: envText('GRAFANA_BASE_URL').trim(),
-      datasourceUid: envText('GRAFANA_DATASOURCE_UID').trim(),
-      datasourceId: envNumber('GRAFANA_DATASOURCE_ID', 2),
-      orgId: envNumber('GRAFANA_ORG_ID', 1),
-      timeoutMs: envNumber('GRAFANA_TIMEOUT_MS', 20000),
-    },
     cdr: { upstream: envText('CDR_UPSTREAM', cdr.upstream || `http://${cdr.host || '127.0.0.1'}:${Number(cdr.port) || 8000}`), sessionToken: envText('CDR_SESSION_TOKEN') },
     hdfsTimeoutMs: Number(value.hdfsTimeoutMs) || 90000,
     hbaseTimeoutMs: Number(value.hbaseTimeoutMs) || 120000,
@@ -144,9 +122,6 @@ function validate() {
   if (!normalized.ssh.host || !normalized.ssh.username) errors.push('缺少 SSH_HOST 或 SSH_USERNAME，请在项目根目录 .env 中填写');
   for (const [source, item] of Object.entries(normalized.database)) if (!item.host || !item.username) errors.push(`缺少 ${source.toUpperCase()}_HOST 或 ${source.toUpperCase()}_USERNAME，请在项目根目录 .env 中填写`);
   if (normalized.bigdataClient.defaultMode === 'client' && !normalized.bigdataClient.token) errors.push('BIGDATA_CLIENT_DEFAULT_MODE=client 时必须配置 BIGDATA_CLIENT_TOKEN');
-  if (normalized.dcos.baseUrl && !/^https?:\/\/[^/]+$/i.test(normalized.dcos.baseUrl)) errors.push('DCOS_BASE_URL 必须是 http(s) 站点根地址');
-  if (normalized.dcos.clusters.some((item) => !Number.isInteger(item.id) || item.id < 1 || !item.name)) errors.push('DCOS_CLUSTERS 格式应为 集群ID:集群名，多个集群用逗号分隔');
-  if (!Number.isInteger(normalized.workbench.port) || normalized.workbench.port < 1 || normalized.workbench.port > 65535) errors.push('workbench.port 必须是 1-65535 的整数');
   return errors;
 }
 

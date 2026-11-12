@@ -9,7 +9,6 @@ import { generateInsertScript, hasInsertRows, INSERT_TABLES } from '/js/insert-e
 import { redisArchiveLabel, redisTimestampText } from '/js/redis-labels.js';
 import { initRedisSync } from '/js/redis-sync.js';
 import { initRedisIndexes } from '/js/redis-indexes.js';
-import { initGrafanaLogs } from '/js/grafana-logs.js';
 
 const HDFS_UPLOAD_TIMEOUT = 200000;
 const DEFAULT_RESOURCE_TIMEOUTS = { filesListMs: 30000, hdfsListMs: 190000, hbaseScanMs: 130000 };
@@ -487,9 +486,10 @@ function resourceRow(item, kind) {
     if (item.isDir) { const enter = el('button', { class: 'fact', type: 'button', text: '进入' }); enter.addEventListener('click', () => navigateResource('hbase', fullPath)); actions.append(enter); const note = el('button', { class: 'fact', type: 'button', text: '备注' }); note.addEventListener('click', () => openAnnotationDialog(fullPath, rowAlias(item, kind, fullPath), kind)); actions.append(note); }
     else {
       const scan = el('button', { class: 'fact', type: 'button', text: '查看' }); scan.addEventListener('click', () => scanHbase(fullPath));
+      const download = el('button', { class: 'fact', type: 'button', text: '下载' }); download.addEventListener('click', () => { void downloadHbaseTable(fullPath); });
       const note = el('button', { class: 'fact', type: 'button', text: '备注' }); note.addEventListener('click', () => openAnnotationDialog(fullPath, rowAlias(item, kind, fullPath), kind));
       const favorite = el('button', { class: 'fact', type: 'button', text: isFavorite('hbase', fullPath) ? '★' : '☆', title: isFavorite('hbase', fullPath) ? '编辑收藏' : '收藏表', 'aria-label': isFavorite('hbase', fullPath) ? '编辑收藏' : '收藏表' }); favorite.addEventListener('click', () => openFavoriteDialog('hbase', fullPath));
-      actions.append(scan, note, favorite);
+      actions.append(scan, download, note, favorite);
     }
     nameButton.addEventListener('dblclick', () => item.isDir ? navigateResource('hbase', fullPath) : scanHbase(fullPath));
     compactResourceActions(actions, item.name); return row;
@@ -567,9 +567,18 @@ function renderHbaseScan() {
       offset += count;
       return node;
     };
+    const sourceIndex = hbaseSourcePathIndex(scan.table);
     const table = el('table', { class: 'hbase-result-table', 'aria-label': 'HBase 查询结果' });
-    table.append(el('thead', {}, el('tr', {}, el('th', { scope: 'col', text: '序号' }), ...scan.table.columns.map((value) => cell('th', value)))));
-    table.append(el('tbody', {}, ...scan.table.rows.map((row, index) => el('tr', {}, el('th', { scope: 'row', text: index + 1 }), ...row.map((value) => cell('td', value))))));
+    table.append(el('thead', {}, el('tr', {}, el('th', { scope: 'col', text: '序号' }), ...scan.table.columns.map((value) => cell('th', value)), ...(sourceIndex >= 0 ? [el('th', { scope: 'col', text: '操作' })] : []))));
+    table.append(el('tbody', {}, ...scan.table.rows.map((row, index) => {
+      const cells = [el('th', { scope: 'row', text: index + 1 }), ...row.map((value) => cell('td', value))];
+      if (sourceIndex >= 0) {
+        const sourcePath = String(row[sourceIndex] || '').trim();
+        if (sourcePath.startsWith('/')) { const downloadSource = el('button', { class: 'fact', type: 'button', text: '下载源文件' }); downloadSource.addEventListener('click', () => downloadRemote(sourcePath, 'hdfs')); cells.push(el('td', {}, downloadSource)); }
+        else cells.push(el('td', { text: '—' }));
+      }
+      return el('tr', {}, ...cells);
+    })));
     $('#hbaseScanTable').append(table);
   } else if (scan.loading && !text) setText($('#hbaseScanText'), '正在读取…');
   else renderHighlightedText($('#hbaseScanText'), scan.displayText || '', query, scan.matchIndex);
@@ -578,7 +587,7 @@ function renderHbaseScan() {
   setText($('#hbaseScanNotice'), `${formatNote}${scan.truncated ? '输出已截断；当前内容仅代表已加载样本，复制仍会保留原始输出。' : '仅查找当前样本；匹配数量按文字出现次数计算，复制按钮会保留原始输出。'}`);
   const stateText = scan.loading ? '正在读取' : scan.error || (scan.tablePath ? `已加载，最多 ${scan.limit} 行` : '');
   setText($('#hbaseScanState'), stateText);
-  $('#hbaseScanReload').disabled = scan.loading || !scan.tablePath; $('#hbaseScanLimit').disabled = scan.loading; $('#hbaseRowKeyQuery').disabled = scan.loading || state.bigdata.mode !== 'client' || !state.bigdata.connected;
+  $('#hbaseScanReload').disabled = scan.loading || !scan.tablePath; $('#hbaseScanLimit').disabled = scan.loading; $('#hbaseRowKeyQuery').disabled = scan.loading || state.bigdata.mode !== 'client' || !state.bigdata.connected; $('#hbaseScanDownload').disabled = scan.loading || !scan.rawText;
   $('#hbaseScanRetry').classList.toggle('hidden', !scan.error || scan.loading);
   setText($('#hbaseScanMeta'), scan.tablePath ? `${scan.tablePath.replace(/^\/+/, '')} · ${scan.queryKind === 'get' ? `RowKey ${scan.rowKey}` : `最多 ${scan.limit} 行`}` : '');
 }
@@ -628,6 +637,32 @@ async function previewRemote(remotePath, kind) {
   try { const endpoint = kind === 'files' ? '/api/sftp/preview' : '/api/hdfs/preview'; const timeout = kind === 'files' ? 30000 : state.timeouts.hdfsListMs; const result = await postJson(endpoint, { path: remotePath, maxBytes: 262144 }, { timeout }); setText($('#previewText'), prettifyJson(result.text) || '（空文件）'); if (result.truncated) setText($('#previewMeta'), `${remotePath} · 已显示前 256 KiB，内容已截断`); status(`${kind === 'hdfs' ? 'HDFS' : '服务器文件'} · 已预览 ${remotePath}`, 'success'); } catch (error) { setText($('#previewText'), error.message); status(error.message, 'error'); }
 }
 function downloadRemote(remotePath, kind) { const a = document.createElement('a'); a.href = `${kind === 'hdfs' ? '/api/hdfs/download' : '/api/sftp/download'}?path=${encodeURIComponent(remotePath)}`; a.download = ''; document.body.append(a); a.click(); a.remove(); toast(`开始下载：${remotePath.split('/').pop()}`, 'ok'); }
+function downloadTextFile(fileName, text) { const blob = new Blob([String(text || '')], { type: 'text/plain;charset=utf-8' }); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = fileName; document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000); }
+function hbaseTableFileName(tablePath, suffix = '') { const base = String(tablePath || 'hbase').replace(/^\/+/, '').replace(/[^A-Za-z0-9._-]+/g, '_').replace(/^_+|_+$/g, '') || 'hbase'; return `${base}${suffix}.txt`; }
+async function downloadHbaseTable(tablePath) {
+  const limit = 200;
+  toast(`正在读取表数据（最多 ${limit} 行）…`);
+  try {
+    const result = await postJson('/api/hbase/scan', { path: tablePath, limit }, { timeout: state.timeouts.hbaseScanMs });
+    const fileName = hbaseTableFileName(tablePath);
+    downloadTextFile(fileName, String(result.text || ''));
+    toast(`已下载：${fileName}`, 'ok');
+    status(`HBase · ${tablePath} · 已下载原始结果（最多 ${limit} 行）`, 'success');
+  } catch (error) { toast(error.message, 'err'); status(error.message, 'error'); }
+}
+function downloadHbaseScanRaw() {
+  const scan = state.hbaseScan;
+  if (scan.loading) return toast('正在读取，请稍后再下载', 'err');
+  if (!scan.rawText) return toast('暂无可下载的原始结果', 'err');
+  const suffix = scan.queryKind === 'get' && scan.rowKey ? `_rowkey_${String(scan.rowKey).replace(/[^A-Za-z0-9._-]+/g, '_').slice(0, 80)}` : '';
+  const fileName = hbaseTableFileName(scan.tablePath, suffix);
+  downloadTextFile(fileName, scan.rawText);
+  toast(`已下载：${fileName}`, 'ok');
+}
+function hbaseSourcePathIndex(table) {
+  if (!table?.columns) return -1;
+  return table.columns.findIndex((column) => /SOURCE_PATH/.test(column) || column.includes('源文件'));
+}
 async function uploadLocalFile(file, { thenHdfs = false } = {}) {
   if (!state.connected) { toast('请先连接服务器', 'err'); return; }
   const targetDir = state.cwd;
@@ -723,6 +758,7 @@ $('#hbaseScanRetry').addEventListener('click', () => { if (state.hbaseScan.table
 $('#hbaseRowKeyQuery').addEventListener('click', () => { const rowKey = $('#hbaseRowKeyInput').value; if (!rowKey) return toast('请输入完整 RowKey', 'err'); if (!state.hbaseScan.tablePath) return; void loadHbaseRowKey(state.hbaseScan.tablePath, rowKey); });
 $('#hbaseRowKeyInput').addEventListener('keydown', (event) => { if (event.key === 'Enter') { event.preventDefault(); $('#hbaseRowKeyQuery').click(); } });
 $('#hbaseScanCopy').addEventListener('click', async () => { try { await navigator.clipboard.writeText(state.hbaseScan.rawText || ''); toast('已复制原始结果', 'ok'); } catch (_) { toast('复制失败，请手动选择文本', 'err'); } });
+$('#hbaseScanDownload').addEventListener('click', () => downloadHbaseScanRaw());
 $('#insertSqlCopy').addEventListener('click', async () => { try { const sql = $('#insertSqlText').textContent || ''; await navigator.clipboard.writeText(sql); setText($('#insertSqlCopyState'), `已复制 ${sql.length.toLocaleString('zh-CN')} 个字符`); toast('INSERT 语句已复制', 'ok'); } catch (_) { setText($('#insertSqlCopyState'), '复制失败，请手动选择文本'); toast('复制失败，请手动选择文本', 'err'); } });
 $('#insertTargetSelect').addEventListener('change', () => { if (state.insertExportResult) { renderInsertExport(state.insertExportResult); setText($('#insertSqlCopyState'), ''); } });
 
@@ -1138,7 +1174,6 @@ const redisActions = {
 initRedisSync(redisActions);
 initRedisIndexes(redisActions);
 
-const grafanaLogs = initGrafanaLogs();
 initTabKeyboard(); initDrawerControls(); initResourcePaths();
 navigation = initNavigation({ onChange: ({ page, tab }) => {
   for (const [id, controller] of dialogs) if (controller.isOpen) closeDialog(id);
@@ -1146,7 +1181,6 @@ navigation = initNavigation({ onChange: ({ page, tab }) => {
   if (page === 'resources') switchTab(tab);
   if (page === 'query') { switchQueryTab(tab); renderDbStatus(); }
   if (page === 'redis') switchRedisTab(tab);
-  if (page === 'businessLogs') void grafanaLogs.activate(); else grafanaLogs.deactivate();
   if (page === 'cdr' && !$('#cdrFrame').getAttribute('src')) $('#cdrFrame').src = '/cdr/?embedded=1';
 } });
 document.addEventListener('workbench:instance', event => {

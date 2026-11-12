@@ -20,10 +20,10 @@ Windows x64 安装包与自动更新分发仓库。测试安装包未进行代�
 
 ## 功能与安全边界
 
-- 主工作台采用浅色工具主题，一级导航包含「资源浏览」「数据库查询」「Redis 档案」「业务日志」「话单工具」五个独立页面。窄窗口自动收为图标导航；切页保留输入、结果与滚动位置，页面地址只记录模块和子页，不包含号码或实例 ID。查询结果按分组阅读，明确的产品实例可带入档案查询或 Redis 页面，由用户发起查询。
+- 主工作台采用浅色工具主题，一级导航包含「资源浏览」「数据库查询」「Redis 档案」「话单工具」四个独立页面。窄窗口自动收为图标导航；切页保留输入、结果与滚动位置，页面地址只记录模块和子页，不包含号码或实例 ID。查询结果按分组阅读，明确的产品实例可带入档案查询或 Redis 页面，由用户发起查询。
 - 文件浏览使用结构化 SFTP 接口：目录列表、预览、新建文件/目录、删除文件或空目录、下载。删除需要二次确认，根路径受保护。
 - 服务器文件、HDFS 和 HBase 列表支持基于已加载结果的名称/路径/中文备注搜索与排序；常用目录和 HBase 表可收藏到当前浏览器。
-- HDFS 支持目录浏览、文件预览/下载、服务器文件上传、在当前目录新建目录/新建空文件，以及文件或空目录二次确认删除。新建目录/文件走 SSH 命令链路（常驻客户端服务暂无这两个接口），要求 SSH 已连接；HDFS 页的「上传」先把本机文件传到服务器当前目录，再弹出确认框指定 HDFS 目标目录；客户端服务模式复用常驻 `FileSystem`，SSH 命令链路保留为显式回退。HBase 表查看支持 20/50/100/200 行样本、RowKey 精确查询、当前样本内查找、结构化行数据和原始结果复制。
+- HDFS 支持目录浏览、文件预览/下载、服务器文件上传、在当前目录新建目录/新建空文件，以及文件或空目录二次确认删除。新建目录/文件走 SSH 命令链路（常驻客户端服务暂无这两个接口），要求 SSH 已连接；HDFS 页的「上传」先把本机文件传到服务器当前目录，再弹出确认框指定 HDFS 目标目录；客户端服务模式复用常驻 `FileSystem`，SSH 命令链路保留为显式回退。HBase 表查看支持 20/50/100/200 行样本、RowKey 精确查询、当前样本内查找、结构化行数据、原始结果复制与下载；表列表「更多」菜单可直接下载该表最多 200 行的原始结果，结构化结果含 SOURCE_PATH（来源文件）时可逐行下载该 HDFS 源文件。
 - 固定查询支持选择环境：测试环境从 PostgreSQL `bill_inmemory` 查档案、MySQL/UDAL `CONFIGDB_CNOS_JF_TEST` 查配置；工程环境通过已连接的 Voyage 查询，支持 `bill_inmemory` / `crmv3` Schema。连接成功后切到对应查询环境，切换环境或 Schema 会取消旧请求并清空结果，避免混用。关系链查询固定使用测试 PG/MySQL，Redis 同步也仍固定从测试 PG 读取。
 - 「号码查产品」用手机号、固话或宽带业务号码 `acc_nbr` 定位产品实例。业务号码是产品实例的属性，不等于 `prod_inst_id`，同一号码可能返回多个实例或历史版本。「实例查档案」使用产品实例ID，保留PG现存 `his_id` 版本及根产品/销售品的一跳直接关系；关联节点不展开兄弟实例。销售品定义和定价计划转到MySQL查询，缺失/失败/上限分别展示；详见 [实例档案查询覆盖](./docs/archive-query-coverage.md)。
 - 「查询套餐」按规格 `offer_id` 查MySQL套餐定义与定价，再沿PG `prod_offer_inst → offer_prod_inst_rel → prod_inst` 反查订购用户。「查询事件类型」从MySQL读取事件格式、入库路由和定价关联，从PG读取关联销售品/产品实例；默认事件类型为 `206080000`（CDMA集团）。
@@ -34,7 +34,6 @@ Windows x64 安装包与自动更新分发仓库。测试安装包未进行代�
 - 「Redis 档案」支持从测试 PG `bill_inmemory` 预览并同步已有字段及根产品直接订购新增记录，按 `ID + his_id` 匹配；新增订购关系与销售品实例列明目标分组和字段值，其他新增类型仅核对。确认后仅写入指定 key，写前备份、保留 TTL 并回读验证，支持冲突保护和整条恢复。PG 缺失记录、未映射字段保持原值，不自动删除；字段无差异不等于完整档案一致。使用与边界见 [PG → Redis 同步](./docs/pg-redis-sync.md)。
 - 「Redis 档案」可输入实例 ID 或手机号，定位已有 CPP 并预览缺失的 `rate:account` / `rate:accNbr` SET 索引。分别使用根产品实际 `account` / `accNbr`，确认后按二进制格式新增并回读，已有 key 保留；手机号索引缺失时从测试 PG 定位，多实例由用户选择。仅覆盖所选实例，不创建完整 CPP，详见 [缺失号码索引补建](./docs/redis-indexes.md)。
 - MySQL/UDAL 与 Doris 连接固定使用 `utf8mb4`；已被上游错误转码且可无损识别的业务名称会恢复显示并保留“原始值”列。页面及服务生成的时间统一按 UTC+8 展示和记录。
-- 桌面版「业务日志」通过 Grafana 读取 `oteldb.otel_logs`。在桌面版配置目录的 `.env` 设置 `GRAFANA_BASE_URL` 和 `GRAFANA_DATASOURCE_UID`，可选设定数据源 ID 和组织 ID（字段见 [.env.example](./.env.example)）。登录后，「服务名」按所选时间范围加载有日志且原服务名含 `test` 的服务（不区分大小写），最近有日志的排在前面，默认不选中。可输入关键词模糊筛选，支持多个关键词且不区分大小写；需要从结果中选定服务。选中后查询该服务下的日志，最新的排在最前，每条仍显示所属实例；默认最近 1 小时、最多 1000 条日志。登录会话和日志结果仅保存在本次运行内存，不用复制 Cookie 或填写数据库凭据。
 - 话单页面以记录表格为中心，批量修改、造数及导出记录按需打开抽屉；撤销、导出和未导出状态常驻。源 NDJSON 只读，修改留在内存；修改批量条件会作废预览，替换未导出会话前需确认。支持版本冲突检测、10 万条记录上限、O(1) ID 索引和原子导出校验。
 
 ## 目录
@@ -48,7 +47,7 @@ server-workbench/
 ├─ server/                   # Node HTTP、SSH、SFTP、HDFS、数据库/档案查询、CDR 代理
 ├─ bigdata-client-service/   # 内网常驻 Java HDFS/HBase 原生客户端服务
 ├─ cdr/                      # FastAPI + 内存 CDR 引擎与前端
-└─ tests/                    # Node builtin test、Python unittest、Playwright 浏览器用例、fixture
+└─ tests/                    # Node builtin test、Python unittest、fixture
 ```
 
 ## 质量检查
@@ -61,11 +60,7 @@ server-workbench/
 npm run check
 npm run test:node
 npm run test:python
-npx playwright install chromium
-npm run test:browser
 git diff --check
 ```
-
-浏览器测试使用锁定的 Playwright 版本（支持项目 Node.js 18 基线），启动隔离的 Node/CDR 服务，以临时话单执行编辑、批量操作、撤销和导出；远端接口使用模拟响应，覆盖路由、取消、过期响应、Redis 确认及布局。测试不需要真实 SSH/SFTP/HDFS 或凭据；真实远端链路需在本机准备 `.env` 和 `ssh2` 后另行 smoke。
 
 更多说明见 [overview.md](./overview.md) 和 [cdr/README.md](./cdr/README.md)。

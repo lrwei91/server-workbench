@@ -9,7 +9,7 @@ const runtime = require('../../desktop/runtime.cjs');
 const { configureUpdates } = require('../../desktop/updates.cjs');
 const builder = require('../../electron-builder.cjs');
 
-test('desktop auth protects static, Node APIs and CDR proxy without changing browser mode', async (t) => {
+test('desktop auth protects static, Node APIs and CDR proxy', async (t) => {
   const server = createServer({ token: 'test-secret' });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   t.after(() => { server.closeAllConnections(); server.close(); });
@@ -73,10 +73,10 @@ test('config loader uses desktop env and writable logs, not installed directory'
   const { spawnSync } = require('node:child_process');
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'workbench-config-'));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
-  fs.writeFileSync(path.join(directory, '.env'), 'WORKBENCH_PORT=24567\nSSH_HOST=desktop-fixture\n');
-  const child = spawnSync(process.execPath, ['-e', 'const c=require("./server/config-loader"); console.log(JSON.stringify({port:c.workbench.port,host:c.ssh.host,logs:c.resolveLogDir()}))'], { cwd: path.join(__dirname, '../..'), env: { ...process.env, WORKBENCH_CONFIG_DIR: directory, WORKBENCH_DATA_DIR: directory }, encoding: 'utf8' });
+  fs.writeFileSync(path.join(directory, '.env'), 'SSH_HOST=desktop-fixture\n');
+  const child = spawnSync(process.execPath, ['-e', 'const c=require("./server/config-loader"); console.log(JSON.stringify({host:c.ssh.host,logs:c.resolveLogDir()}))'], { cwd: path.join(__dirname, '../..'), env: { ...process.env, WORKBENCH_CONFIG_DIR: directory, WORKBENCH_DATA_DIR: directory }, encoding: 'utf8' });
   assert.equal(child.status, 0, child.stderr);
-  assert.deepEqual(JSON.parse(child.stdout), { port: 24567, host: 'desktop-fixture', logs: path.join(directory, 'logs') });
+  assert.deepEqual(JSON.parse(child.stdout), { host: 'desktop-fixture', logs: path.join(directory, 'logs') });
 });
 test('installer uses public GitHub NSIS and explicit resource allowlist', () => {
   assert.equal(builder.publish[0].owner, 'lrwei91'); assert.equal(builder.publish[0].repo, 'server-workbench');

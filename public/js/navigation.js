@@ -4,10 +4,9 @@ export const ROUTES = Object.freeze({
   resources: ['files', 'hdfs', 'hbase'],
   query: ['phone', 'productInstance', 'offer', 'eventType', 'threshold', 'relations'],
   redis: ['archive', 'sync', 'indexes', 'history'],
-  businessLogs: [],
   cdr: [],
 });
-const PANELS = { resources: 'workspace', query: 'query', redis: 'redis', businessLogs: 'businessLogs', cdr: 'cdr' };
+const PANELS = { resources: 'workspace', query: 'query', redis: 'redis', cdr: 'cdr' };
 export function parseRoute(hash) {
   const match = /^#\/([A-Za-z]+)(?:\/([A-Za-z]+))?$/.exec(hash || '');
   const page = match && Object.hasOwn(ROUTES, match[1]) ? match[1] : 'resources';

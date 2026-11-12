@@ -7,11 +7,11 @@ const { EventEmitter } = require('node:events');
 const { createServer } = require('../../server/server');
 
 test('static resources stream concurrently and keep missing/directory/traversal responses', async (t) => {
-  const server = createServer();
+  const server = createServer({ token: 'test-token' });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(() => new Promise(resolve => server.close(resolve)));
   const request = path => new Promise((resolve, reject) => {
-    http.get({ host: '127.0.0.1', port: server.address().port, path }, res => {
+    http.get({ host: '127.0.0.1', port: server.address().port, path, headers: { 'x-workbench-token': 'test-token' } }, res => {
       let body = '';
       res.setEncoding('utf8'); res.on('data', chunk => { body += chunk; });
       res.on('end', () => resolve({ status: res.statusCode, body }));
@@ -47,15 +47,15 @@ for (const protocol of ['http:', 'https:']) {
   });
 }
 
-// CDR startup/session restoration is exercised through the real browser and local engine.
+// CDR startup/session restoration is covered by the local engine tests.
 
 test('SVG navigation sprites and favicon are served as images', async t => {
-  const server = createServer();
+  const server = createServer({ token: 'test-token' });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(() => { server.closeAllConnections(); server.close(); });
   const origin = `http://127.0.0.1:${server.address().port}`;
   for (const asset of ['/shared/icons.svg', '/favicon.svg']) {
-    const response = await fetch(origin + asset);
+    const response = await fetch(origin + asset, { headers: { 'x-workbench-token': 'test-token' } });
     assert.equal(response.status, 200);
     assert.match(response.headers.get('content-type'), /^image\/svg\+xml/);
     assert.match(await response.text(), /<svg/);

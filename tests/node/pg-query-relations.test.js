@@ -116,10 +116,10 @@ test('HTTP test query routes keep PG/Voyage routing and fixed relation modes', a
   const { manager } = require('../../server/database');
   const { createServer } = require('../../server/server');
   const db = fixture(); const original = manager.query; manager.query = db.query.bind(db);
-  const server = createServer(); await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const server = createServer({ token: 'test-token' }); await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const request = (method, endpoint, body) => new Promise((resolve, reject) => {
     const payload = body === undefined ? '' : JSON.stringify(body);
-    const req = require('node:http').request({ host: '127.0.0.1', port: server.address().port, path: endpoint, method, headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(payload) } }, (res) => {
+    const req = require('node:http').request({ host: '127.0.0.1', port: server.address().port, path: endpoint, method, headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(payload), 'x-workbench-token': 'test-token' } }, (res) => {
       let text = ''; res.on('data', (b) => { text += b; }); res.on('end', () => resolve({ status: res.statusCode, body: JSON.parse(text) }));
     }); req.on('error', reject); req.end(payload);
   });

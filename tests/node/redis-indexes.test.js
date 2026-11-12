@@ -159,10 +159,10 @@ test('phone resolves existing accNbr first; missing index uses bounded parameter
 });
 
 test('index HTTP routes enforce schema, confirmation and same-origin writes', async (t) => {
-  const server = createServer(); await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve)); t.after(() => new Promise((resolve) => server.close(resolve)));
+  const server = createServer({ token: 'test-token' }); await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve)); t.after(() => new Promise((resolve) => server.close(resolve)));
   const base = `http://127.0.0.1:${server.address().port}`;
   const post = async (route, body, headers = {}) => {
-    const res = await fetch(`${base}/api/redis-index/${route}`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body) });
+    const res = await fetch(`${base}/api/redis-index/${route}`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-workbench-token': 'test-token', ...headers }, body: JSON.stringify(body) });
     return { status: res.status, body: await res.json() };
   };
   for (const [route, body, code] of [

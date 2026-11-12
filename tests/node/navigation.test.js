@@ -10,7 +10,7 @@ test('routes restore only known modules and subpages', () => {
   assert.deepEqual(parse('#/query/relations'), { page: 'query', tab: 'relations' });
   assert.deepEqual(parse('#/redis/history'), { page: 'redis', tab: 'history' });
   assert.deepEqual(parse('#/logs'), { page: 'resources', tab: 'files' });
-  assert.deepEqual(parse('#/businessLogs'), { page: 'businessLogs', tab: '' });
+  assert.deepEqual(parse('#/businessLogs'), { page: 'resources', tab: 'files' });
   for (const hash of ['', '#/unknown', '#/query/phone/13800138000', '#/constructor']) assert.deepEqual(parse(hash), { page: 'resources', tab: 'files' });
   assert.deepEqual(parse('#/redis/13800138000'), { page: 'resources', tab: 'files' });
   assert.deepEqual(parse('#/query/unknown'), { page: 'query', tab: 'phone' });
