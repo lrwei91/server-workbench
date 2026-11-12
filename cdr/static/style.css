@@ -460,6 +460,50 @@ dialog.wb-dialog.drawer[open] {
 .drawer .wb-dialog__header, .drawer .wb-dialog__footer {
   flex: 0 0 auto;
 }
+.drawer .intake-body {
+  padding: 8px 20px 20px;
+  overflow-wrap: anywhere;
+}
+.intake-body fieldset {
+  min-width: 0;
+  border: 1px solid var(--wb-border);
+  border-radius: 5px;
+  margin: 0;
+  padding: 10px;
+}
+.intake-period, .intake-file-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 8px 12px;
+  margin-bottom: 10px;
+}
+.intake-period label {
+  flex: 1 1 190px;
+  min-width: 0;
+}
+.intake-file-actions {
+  align-items: center;
+}
+.intake-files {
+  display: grid;
+  gap: 8px;
+  max-height: 240px;
+  overflow: auto;
+  margin-bottom: 10px;
+}
+.intake-file-group label {
+  display: flex;
+  align-items: start;
+  gap: 8px;
+  padding: 4px 0;
+}
+.intake-body .wb-status {
+  padding: 0;
+}
+.intake-path {
+  font-family: var(--wb-mono);
+}
 .drawer .cdr-card {
   border: 0;
 }

@@ -4,7 +4,7 @@ import { initResourcePaths, compactResourceActions, renderBreadcrumbs } from '/j
 import { switchRedisTab } from '/js/redis-ui.js';
 import { displayValue, rowField, renderTable, resultSection, watchQueryResults } from '/js/query-results.js';
 import { $, $$, announce, initTabKeyboard, initDrawerControls, createRequestGate, DialogController, el, formatBytes, formatDate, getJson, postJson, setText } from '/shared/ui.js';
-import { formatHbaseScanText, isBatchInfoTable, isMonthlyAccumulatorDetailTable, isTicketDispatchTable } from '/js/hbase-scan-format.js';
+import { formatHbaseScanText, isBatchInfoTable, isMonthlyAccumulatorDetailTable, isTicketDispatchTable, isTicketNormalTable } from '/js/hbase-scan-format.js';
 import { generateInsertScript, hasInsertRows, INSERT_TABLES } from '/js/insert-export.js';
 import { redisArchiveLabel, redisTimestampText } from '/js/redis-labels.js';
 import { initRedisSync } from '/js/redis-sync.js';
@@ -582,9 +582,10 @@ function renderHbaseScan() {
     $('#hbaseScanTable').append(table);
   } else if (scan.loading && !text) setText($('#hbaseScanText'), '正在读取…');
   else renderHighlightedText($('#hbaseScanText'), scan.displayText || '', query, scan.matchIndex);
-  const formatSource = isBatchInfoTable(scan.tablePath) ? 'RowKey 与列族 batch_info' : isMonthlyAccumulatorDetailTable(scan.tablePath) || isTicketDispatchTable(scan.tablePath) ? 'RowKey' : '列族 f 的 Qualifier';
+  const formatSource = isTicketNormalTable(scan.tablePath) ? 'HBase 单元格' : isBatchInfoTable(scan.tablePath) ? 'RowKey 与列族 batch_info' : isMonthlyAccumulatorDetailTable(scan.tablePath) || isTicketDispatchTable(scan.tablePath) ? 'RowKey' : '列族 f 的 Qualifier';
   const formatNote = scan.structured ? `已从 ${formatSource} 解析 ${scan.parsedCount} 条${scan.skippedCount ? `，${scan.skippedCount} 条格式不匹配` : ''}。` : '';
-  setText($('#hbaseScanNotice'), `${formatNote}${scan.truncated ? '输出已截断；当前内容仅代表已加载样本，复制仍会保留原始输出。' : '仅查找当前样本；匹配数量按文字出现次数计算，复制按钮会保留原始输出。'}`);
+  const ticketNote = scan.structured && isTicketNormalTable(scan.tablePath) ? '按 203020000 字段字典备注同名 JSON 字段；其他字段保留在原始值中。' : '';
+  setText($('#hbaseScanNotice'), `${formatNote}${ticketNote}${scan.truncated ? '输出已截断；当前内容仅代表已加载样本，复制仍会保留原始输出。' : '仅查找当前样本；匹配数量按文字出现次数计算，复制按钮会保留原始输出。'}`);
   const stateText = scan.loading ? '正在读取' : scan.error || (scan.tablePath ? `已加载，最多 ${scan.limit} 行` : '');
   setText($('#hbaseScanState'), stateText);
   $('#hbaseScanReload').disabled = scan.loading || !scan.tablePath; $('#hbaseScanLimit').disabled = scan.loading; $('#hbaseRowKeyQuery').disabled = scan.loading || state.bigdata.mode !== 'client' || !state.bigdata.connected; $('#hbaseScanDownload').disabled = scan.loading || !scan.rawText;
@@ -610,7 +611,7 @@ async function loadHbaseSample(tablePath, limit) {
     const result = await postJson('/api/hbase/scan', { path: tablePath, limit }, { signal: request.signal, timeout: state.timeouts.hbaseScanMs });
     if (!request.isCurrent()) return null;
     const scan = state.hbaseScan; scan.tablePath = tablePath; scan.limit = Number(result.limit) || limit; scan.rawText = String(result.text || ''); scan.truncated = Boolean(result.truncated);
-    const formatted = formatHbaseScanText(tablePath, scan.rawText); scan.table = formatted.table; scan.structured = formatted.structured; scan.parsedCount = formatted.parsedCount; scan.skippedCount = formatted.skippedCount;
+    const formatted = formatHbaseScanText(tablePath, scan.rawText, result.rows); scan.table = formatted.table; scan.structured = formatted.structured; scan.parsedCount = formatted.parsedCount; scan.skippedCount = formatted.skippedCount;
     scan.displayText = formatted.structured ? formatted.text : (scan.rawText ? (scan.truncated ? scan.rawText : (prettifyJson(scan.rawText) || scan.rawText)) : '');
     finishHbaseScan(); status(`HBase · ${tablePath} · 样本已加载`, 'success'); return result;
   } catch (error) {
@@ -772,7 +773,7 @@ async function loadHbaseRowKey(tablePath, rowKey) {
     const result = await postJson('/api/hbase/get', { path: tablePath, rowKey }, { signal: request.signal, timeout: 60000 });
     if (!request.isCurrent()) return null;
     scan.rawText = String(result.text || ''); scan.truncated = Boolean(result.truncated); scan.structured = false; scan.parsedCount = Number(result.rowCount) || 0; scan.skippedCount = 0;
-    const formatted = formatHbaseScanText(tablePath, scan.rawText); scan.table = formatted.table; scan.structured = formatted.structured; scan.parsedCount = formatted.parsedCount || scan.parsedCount; scan.skippedCount = formatted.skippedCount; scan.displayText = formatted.structured ? formatted.text : (scan.rawText || '（未找到该 RowKey）');
+    const formatted = formatHbaseScanText(tablePath, scan.rawText, result.rows); scan.table = formatted.table; scan.structured = formatted.structured; scan.parsedCount = formatted.parsedCount || scan.parsedCount; scan.skippedCount = formatted.skippedCount; scan.displayText = formatted.structured ? formatted.text : (scan.rawText || '（未找到该 RowKey）');
     finishHbaseScan(); status(`HBase · ${tablePath} · RowKey 查询完成`, 'success'); return result;
   } catch (error) { if (!request.isCurrent() || error.code === 'REQUEST_ABORTED') return null; finishHbaseScan(error); status(error.message, 'error'); return null; }
 }
