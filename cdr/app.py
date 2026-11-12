@@ -5,7 +5,7 @@ import os
 import secrets
 import sys
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, List, Literal, Optional
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
@@ -14,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
 import engine
+import intake
 
 RESOURCE_ROOT = Path(sys._MEIPASS) if getattr(sys, "frozen", False) else Path(__file__).resolve().parent.parent
 STATIC_DIR = RESOURCE_ROOT / "cdr" / "static"
@@ -63,6 +64,17 @@ class ExportReq(StrictModel):
     expected_revision: Optional[int] = Field(default=None, ge=0)
 
 
+class IntakeFile(StrictModel):
+    scope: Literal["source", "export"]
+    name: str = Field(min_length=1, max_length=255)
+
+
+class IntakeReq(StrictModel):
+    files: list[IntakeFile] = Field(min_length=1, max_length=intake.FILE_LIMIT)
+    period: str = Field(min_length=6, max_length=6)
+    period_field: Literal["CJ_START_TIME", "ORG_START_TIME", "ONLINE_TIME"]
+
+
 class RevisionConflict(Exception):
     def __init__(self, expected, actual): self.expected, self.actual = expected, actual
 
@@ -102,6 +114,17 @@ def api_session(): return _run(engine.get_session)
 
 @app.get("/api/files")
 def api_files(): return _run(lambda: {"files": engine.list_files()})
+
+
+@app.get("/api/intake/files")
+def api_intake_files():
+    return _run(intake.list_files, engine.SOURCE_DIR, engine.OUTPUT_DIR)
+
+
+@app.post("/api/intake/prepare")
+def api_intake_prepare(req: IntakeReq):
+    return _run(intake.prepare, [(f.scope, f.name) for f in req.files], req.period,
+                req.period_field, engine.SOURCE_DIR, engine.OUTPUT_DIR)
 
 
 @app.post("/api/load")

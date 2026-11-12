@@ -6,6 +6,100 @@ const path = require('node:path');
 const formatterSource = fs.readFileSync(path.resolve(__dirname, '../../public/js/hbase-scan-format.js'), 'utf8');
 const formatterUrl = `data:text/javascript;base64,${Buffer.from(formatterSource).toString('base64')}`;
 
+test('TICKET_NORMAL lists cells without assuming a business payload layout', async () => {
+  const { formatHbaseScanText } = await import(formatterUrl);
+  const raw = [
+    'ROW COLUMN+CELL',
+    'key-1 column=a:ticket, timestamp=0, value=one_two|three',
+    '      column=b:, timestamp=9223372036854775807,',
+    '        value=original payload',
+    'key-2 column=a:meta, timestamp=1, value={"id":"001"}',
+    '2 row(s)',
+  ].join('\n');
+  const result = formatHbaseScanText('/ns:TICKET_NORMAL', raw);
+  assert.equal(result.text, raw);
+  assert.equal(result.parsedCount, 3);
+  assert.deepEqual(result.table.columns, ['ROW_KEY', 'FAMILY（列族）', 'QUALIFIER', 'TIMESTAMP', 'VALUE_RAW（原始值）']);
+  assert.deepEqual(result.table.rows[0], ['key-1', 'a', 'ticket', '0（1970-01-01 08:00:00.000 +08:00）', 'one_two|three']);
+  assert.deepEqual(result.table.rows[1], ['key-1', 'b', '', '9223372036854775807', 'original payload']);
+  assert.equal(result.table.rows[2][0], 'key-2');
+  assert.equal(formatHbaseScanText('/ns:TICKET_NORMAL', '0 row(s)').structured, false);
+  assert.equal(formatHbaseScanText('/ns:TICKET_NORMAL_OTHER', raw).structured, false);
+});
+
+test('monthly TICKET_NORMAL labels only matching JSON keys and keeps exact values for scan and get', async () => {
+  const { formatHbaseScanText } = await import(formatterUrl);
+  const value = '{"EVENT_TYPE_ID":203020000,"TICKET_ID":9223372036854775807,"COLLECT_CDR_ID":-9223372036854775808,"CHARGE":0.000,"PAY_TYPE":"0021","DUP_END_TIME":null,"OTHER_KEY":"unmapped"}';
+  const cell = { family: 'd', qualifier: '', timestamp: '1791874739874', value, encoding: 'utf8' };
+  const raw = 'row-a column=d:, timestamp=1791874739874, value=' + value;
+  for (const rows of [undefined, [{ rowKey: 'row-a', cells: [cell] }]]) {
+    const result = formatHbaseScanText('/ns:TICKET_NORMAL_202611', raw, rows);
+    const fields = Object.fromEntries(result.table.columns.map((column, index) => [column, result.table.rows[0][index]]));
+    assert.equal(fields['EVENT_TYPE_ID（计费事件类型标识）'], '203020000（外来帐目）');
+    assert.equal(fields['TICKET_ID（计费话单标识）'], '9223372036854775807');
+    assert.equal(fields['COLLECT_CDR_ID（采集话单序列号）'], '-9223372036854775808');
+    assert.equal(fields['CHARGE（标准费用）'], '0.000');
+    assert.equal(fields['PAY_TYPE（付费方式）'], '0021');
+    assert.equal(fields['DUP_END_TIME（排重结束时间）'], 'null');
+    assert.equal(fields['VALUE_RAW（原始值）'], value);
+    assert.ok(!result.table.columns.some((key) => /OTHER_KEY|INDB_TIME/.test(key)));
+    assert.equal(result.text, raw);
+  }
+  const mixed = formatHbaseScanText('/ns:TICKET_NORMAL_202611', raw, [{ rowKey: 'row-a', cells: [cell, { ...cell, value: '{"TICKET_ID":', encoding: 'utf8' }, { ...cell, encoding: 'base64' }] }]);
+  const ticketIdIndex = mixed.table.columns.indexOf('TICKET_ID（计费话单标识）');
+  assert.deepEqual(mixed.table.rows.map((row) => row[ticketIdIndex]), ['9223372036854775807', '—', '—']);
+  assert.equal(mixed.table.rows[1].at(-1), '{"TICKET_ID":');
+});
+
+test('TICKET_NORMAL remarks match exact source-event codes, leaving other codes unchanged', async () => {
+  const { formatHbaseScanText } = await import(formatterUrl);
+  const values = ['"206070000"', '206070200', '204030000', '208550000', 'null'];
+  const raw = values.map((value, index) => `row-${index} column=d:, timestamp=1, value={"EVENT_TYPE_ID":${value}}`).join('\n');
+  const { table } = formatHbaseScanText('/ns:TICKET_NORMAL_202611', raw);
+  assert.deepEqual(table.rows.map((row) => row[0]), [
+    '206070000（C网语音(源事件)）', '206070200', '204030000（160）',
+    '208550000（国际漫游套餐费(源事件)）', 'null',
+  ]);
+  assert.deepEqual(table.rows.map((row) => row.at(-1)), values.map((value) => `{"EVENT_TYPE_ID":${value}}`));
+});
+
+test('monthly master and trial use screenshot labels and retain all resource subfields', async () => {
+  const { formatHbaseScanText, parseAccumulatorMasterValue } = await import(formatterUrl);
+  const value = '904785980_5709672311_904785980_20260602000000_20260701000000_1042432$0$3$0_1048576_0_20260624131322437';
+  for (const name of ['ACCUMULATOR_202606', 'TRY_ACCUMULATOR_202606', 'TRY_ACCUMULATOR_202606_plcatest']) {
+    const result = formatHbaseScanText(`/ns:${name}`, `01|4630664479 column=f:100_24A_1270_202606_8033145_5709672311, timestamp=1791874739874, value=${value}`);
+    const row = Object.fromEntries(result.table.columns.map((column, index) => [column, result.table.rows[0][index]]));
+    assert.equal(row['使用量'], '1042432');
+    assert.equal(row['时长子值（durationValue）'], '3');
+    assert.equal(row['赠送量（limitValue）'], '1048576');
+    assert.equal(row['属主类型（OWNER_TYPE）'], '24A（原子产品实例）');
+    assert.equal(row['费用类型（ACCUM）'], '100（转赠积量）');
+    assert.equal(row['账期周期（表名）'], '202606');
+    assert.equal(row['VALUE_RAW（原始值）'], value);
+    assert.match(row['生效时间'], /2026-06-02 00:00:00/);
+    assert.equal(row['T01销售品实例'], '5709672311');
+  }
+  const trial = parseAccumulatorMasterValue('907003419_0_0_20261001000000_20261101000000_0$0$0_41943040_0_20261001000000', '202610');
+  assert.equal(trial['使用量'], '0');
+  assert.equal(trial['阶梯档次（ladderClass）'], '0');
+  assert.equal(trial['实际费用（totalRealCharge）'], '0');
+  assert.equal(trial['赠送量（limitValue）'], '41943040');
+  assert.equal(trial['T01销售品实例'], '0');
+});
+
+test('master Value preserves unknown layouts and supports permanent and six-part resources', async () => {
+  const { parseAccumulatorMasterValue } = await import(formatterUrl);
+  assert.match(parseAccumulatorMasterValue('unexpected_value', '202610')['VALUE解析状态'], /未匹配/);
+  const unknown = parseAccumulatorMasterValue('1_2_3_20261001000000_20261101000000_1$2_9_0_20261001000000', '202610');
+  assert.equal(unknown['使用量原始段（resourceValue）'], '1$2');
+  assert.equal(unknown['使用量'], undefined);
+  const permanent = parseAccumulatorMasterValue('1_2_3_20261001000000_20261101000000_202610_10$2$3$4$5$6_7_8_9223372036854775807_0_20261001000000', '0');
+  assert.equal(permanent['使用量'], '10');
+  assert.equal(permanent['短信子值（msgValue）'], '6');
+  assert.equal(permanent['上期使用量（lastValue）'], '7');
+  assert.equal(permanent['赠送量（limitValue）'], '9223372036854775807');
+});
+
 test('monthly ACCUMULATOR scan formats qualifier fields for direct reading', async () => {
   const { formatHbaseScanText } = await import(formatterUrl);
   const raw = [

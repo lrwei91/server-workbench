@@ -21,6 +21,9 @@ process.on('SIGTERM', close); process.on('SIGINT', close);
   const cdrPort = reserve.address().port; await new Promise(resolve => reserve.close(resolve));
   const source = path.join(directory, 'source'); fs.mkdirSync(source);
   for (const name of ['sample.json', 'other.json']) fs.copyFileSync(path.join(root, 'tests/fixtures/sample.ndjson'), path.join(source, name));
+  for (const [name, id] of [['intake.txt', '1000000000000000001'], ['intake.dat', '1000000000000000002']]) {
+    fs.writeFileSync(path.join(source, name), JSON.stringify({ COLLECT_CDR_ID: id, ORG_CDR_ID: '26110100000000000001', CJ_START_TIME: '20261101000000' }) + '\n{"TICKET_COUNT":1}\n');
+  }
   Object.assign(process.env, { WORKBENCH_CONFIG_DIR: directory, WORKBENCH_DATA_DIR: directory, CDR_UPSTREAM: `http://127.0.0.1:${cdrPort}`, CDR_PORT: String(cdrPort), CDR_SOURCE_DIR: source, CDR_OUTPUT_DIR: path.join(directory, 'exports'), CDR_LOG_DIR: path.join(directory, 'cdr-logs'), CDR_SESSION_TOKEN: '', WORKBENCH_SESSION_TOKEN: '' });
   fs.writeFileSync(path.join(directory, '.env'), '');
   cdr = spawn(process.env.WORKBENCH_PYTHON || (process.platform === 'win32' ? 'python' : 'python3'), ['cdr/server.py'], { cwd: root, env: process.env, stdio: ['ignore', 'inherit', 'inherit'] });
