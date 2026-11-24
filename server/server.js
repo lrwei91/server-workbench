@@ -20,8 +20,10 @@ const { manager: bigdata } = require('./bigdata-client');
 const { RedisArchiveService } = require('./redis-archive');
 const { PgRedisSync, TABLES: SYNC_TABLES } = require('./pg-redis-sync');
 const { RedisIndexes } = require('./redis-indexes');
+const { RedisSnapshots } = require('./redis-snapshots');
 const voyage = new VoyageManager(config.voyage);
 const redisArchive = new RedisArchiveService(config.redisArchive);
+const redisSnapshots = new RedisSnapshots(redisArchive);
 const redisSync = new PgRedisSync({ database, redis: redisArchive, backupDir: path.join(config.resolveLogDir(), 'pg-redis-sync') });
 const redisIndexes = new RedisIndexes({ database, redis: redisArchive, auditDir: path.join(config.resolveLogDir(), 'redis-indexes') });
 
@@ -226,6 +228,21 @@ async function handle(req, res) {
     const body = await readBody(req); assertObject(body, ['token']);
     if (body.token !== undefined && typeof body.token !== 'string') throw new RequestError(400, 'INVALID_INPUT', 'token 必须是字符串');
     const result = await voyage.connect(body.token === undefined ? {} : { token: body.token }); return sendJson(res, 200, { ok: true, ...result });
+  }
+  if (req.method === 'POST' && p === '/api/redis-snapshot/search') {
+    const body = await readBody(req); assertObject(body, ['query', 'cursor']);
+    const result = await runQueryRequest(req, res, (signal) => redisSnapshots.search(body, signal));
+    return sendJson(res, 200, { ok: true, result });
+  }
+  if (req.method === 'POST' && p === '/api/redis-snapshot/detail') {
+    const body = await readBody(req); assertObject(body, ['key', 'cursor']);
+    const result = await runQueryRequest(req, res, (signal) => redisSnapshots.detail(body, signal));
+    return sendJson(res, 200, { ok: true, result });
+  }
+  if (req.method === 'POST' && p === '/api/redis-snapshot/mutate') {
+    requireSameOrigin(req); const body = await readBody(req); assertObject(body, ['key', 'action', 'type', 'previous', 'value', 'confirmed']);
+    const result = await runQueryRequest(req, res, (signal) => redisSnapshots.mutate(body, signal));
+    return sendJson(res, 200, { ok: true, result });
   }
   if (req.method === 'POST' && p === '/api/redis-index/lookup') {
     const body = await readBody(req); assertObject(body, ['inputType', 'value']);

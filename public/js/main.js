@@ -9,6 +9,7 @@ import { generateInsertScript, hasInsertRows, INSERT_TABLES } from '/js/insert-e
 import { redisArchiveLabel, redisTimestampText } from '/js/redis-labels.js';
 import { initRedisSync } from '/js/redis-sync.js';
 import { initRedisIndexes } from '/js/redis-indexes.js';
+import { initRedisSnapshots } from '/js/redis-snapshots.js';
 
 const HDFS_UPLOAD_TIMEOUT = 200000;
 const DEFAULT_RESOURCE_TIMEOUTS = { filesListMs: 30000, hdfsListMs: 190000, hbaseScanMs: 130000 };
@@ -187,7 +188,7 @@ function rowAlias(item, kind, fullPath) {
   return aliasTextFor(fullPath, kind === 'hbase' && !item.isDir ? String(item.name || '') : '');
 }
 
-const dialogs = new Map(['connectionDialog', 'confirmDialog', 'nameDialog', 'uploadDialog', 'annotationDialog', 'previewDialog', 'hbaseScanDialog', 'insertDialog', 'favoriteDialog'].map((id) => [id, new DialogController(document.getElementById(id))]));
+const dialogs = new Map(['connectionDialog', 'confirmDialog', 'nameDialog', 'uploadDialog', 'annotationDialog', 'previewDialog', 'hbaseScanDialog', 'insertDialog', 'favoriteDialog', 'snapshotDialog'].map((id) => [id, new DialogController(document.getElementById(id))]));
 const { renderConnectionList, connectSource, useSshBigdataMode, renderDbStatus, openConnections } = initConnections({ state, setConnected, refreshFiles, resetResourceState, renderBigdataSource, clearQueryResult, syncQuerySchemaControl, activeDatabaseSource, openDialog, toast });
 function openDialog(id, focus) {
   // 单 modal 约束：开新弹窗前先收起其它已打开的弹窗。否则两层 modal 叠加时，
@@ -1174,6 +1175,7 @@ const redisActions = {
 };
 initRedisSync(redisActions);
 initRedisIndexes(redisActions);
+initRedisSnapshots({ ...redisActions, openDialog, closeDialog, getTarget: () => state.connectionProfiles.redisArchive });
 
 initTabKeyboard(); initDrawerControls(); initResourcePaths();
 navigation = initNavigation({ onChange: ({ page, tab }) => {

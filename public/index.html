@@ -130,7 +130,7 @@
     </main>
     <section id="redisPage" class="feature-page redis-page hidden" data-primary-panel="redis" aria-labelledby="redisPageTitle">
       <header class="feature-page-heading"><h1 id="redisPageTitle">Redis 档案</h1><p>精确读取 rate:cpp 档案 · 补建号码索引 · 从 PostgreSQL 同步字段与新增订购</p></header>
-<div class="redis-tabs" role="tablist" aria-label="Redis 任务"><button id="redisTab-archive" class="tab" type="button" role="tab" data-redis-tab="archive" aria-controls="redisPanel-archive" aria-selected="true">档案查看</button><button id="redisTab-sync" class="tab" type="button" role="tab" data-redis-tab="sync" aria-controls="redisPanel-sync" aria-selected="false">PG 同步</button><button id="redisTab-indexes" class="tab" type="button" role="tab" data-redis-tab="indexes" aria-controls="redisPanel-indexes" aria-selected="false">号码索引</button><button id="redisTab-history" class="tab" type="button" role="tab" data-redis-tab="history" aria-controls="redisPanel-history" aria-selected="false">同步记录</button></div><div class="redis-target">      <form id="redisQueryForm" class="redis-query-form">
+<div class="redis-tabs" role="tablist" aria-label="Redis 任务"><button id="redisTab-archive" class="tab" type="button" role="tab" data-redis-tab="archive" aria-controls="redisPanel-archive" aria-selected="true">档案查看</button><button id="redisTab-sync" class="tab" type="button" role="tab" data-redis-tab="sync" aria-controls="redisPanel-sync" aria-selected="false">PG 同步</button><button id="redisTab-indexes" class="tab" type="button" role="tab" data-redis-tab="indexes" aria-controls="redisPanel-indexes" aria-selected="false">号码索引</button><button id="redisTab-history" class="tab" type="button" role="tab" data-redis-tab="history" aria-controls="redisPanel-history" aria-selected="false">同步记录</button><button id="redisTab-snapshots" class="tab" type="button" role="tab" data-redis-tab="snapshots" aria-controls="redisPanel-snapshots" aria-selected="false">快照键管理</button></div><div class="redis-target">      <form id="redisQueryForm" class="redis-query-form">
         <label for="redisKeyInput">产品实例 ID 或完整主键</label>
         <div class="query-input-row"><input id="redisKeyInput" class="wb-field" autocomplete="off" placeholder="例如 103386066 或 rate:cpp:103386066" required><button id="btnRedisQuery" class="wb-button primary" type="submit">查询并解密</button><button id="btnRedisCancel" class="wb-button hidden" type="button">取消</button></div>
         <p class="query-help">读取本地配置的 Redis DB，自动解压并展示 JSON；原字段、代码值保持不变。</p>
@@ -156,6 +156,20 @@
         <div class="redis-sync-actions redis-index-actions"><label class="redis-index-choice">候选实例<select id="redisIndexCandidate" class="wb-field"><option value="">先查询实例</option></select></label><button id="btnRedisIndexPreview" class="wb-button" type="button" disabled>预览所选实例</button><button id="btnRedisIndexConnections" class="wb-button ghost" type="button">连接 PostgreSQL</button></div>
         <p id="redisIndexState" class="wb-status" role="status" aria-live="polite"></p><div id="redisIndexResults"></div><footer class="task-footer"><button id="btnRedisIndexApply" class="wb-button primary" type="button" disabled>确认新增缺失 key</button></footer>
       </section>
+      <section id="redisPanel-snapshots" class="redis-sync-panel hidden" data-redis-panel="snapshots" role="tabpanel" aria-labelledby="redisTab-snapshots">
+        <h2>快照键管理</h2>
+        <p class="query-help">仅操作 rate:SERV_SNAPSHOT: 前缀下的键。支持按完整键名或后缀关键词搜索；其他类型只显示类型。</p>
+        <form id="snapshotSearch" class="snapshot-actions">
+          <label>键名搜索<input id="snapshotQuery" class="wb-field" value="rate:SERV_SNAPSHOT" autocomplete="off" maxlength="512"></label>
+          <button class="wb-button primary" type="submit">查询</button>
+          <button id="snapshotAddKey" class="wb-button" type="button">添加新键</button>
+        </form>
+        <p id="snapshotState" class="wb-status" role="status" aria-live="polite"></p>
+        <div class="snapshot-grid">
+          <section aria-label="快照键列表"><ul id="snapshotKeys"></ul><button id="snapshotMoreKeys" class="wb-button hidden" type="button">继续扫描</button></section>
+          <section id="snapshotDetail" aria-label="快照键内容"></section>
+        </div>
+      </section>
 <section id="redisPanel-history" class="redis-sync-panel hidden" data-redis-panel="history" role="tabpanel" aria-labelledby="redisTab-history"><h2>同步记录与恢复</h2><p class="query-help">查询当前目标的同步备份，恢复前需确认，当前值冲突时停止恢复。</p><button id="btnRedisSyncHistory" class="wb-button" type="button">同步记录 / 恢复</button><p id="redisHistoryState" class="wb-status" role="status"></p><div id="redisSyncHistory" aria-live="polite"></div></section></div></section>
     <section id="cdrPage" class="feature-page cdr-page hidden" data-primary-panel="cdr" aria-labelledby="cdrTitle"><header class="feature-page-heading"><div><h1 id="cdrTitle">话单工具</h1><p>话单文件数据调整与导出</p></div></header><div class="cdr-frame-wrap"><iframe id="cdrFrame" title="话单文件数据调整工具" loading="lazy"></iframe></div></section>
       </div>
@@ -178,6 +192,20 @@
   </div></div></dialog>
 
 
+  <dialog id="snapshotDialog" class="wb-dialog" aria-labelledby="snapshotEditorTitle">
+    <header class="wb-dialog__header"><h2 id="snapshotEditorTitle" class="wb-dialog__title">添加新键</h2></header>
+    <form id="snapshotEditor">
+      <div class="wb-dialog__body">
+        <label><span class="wb-label">键名</span><input id="snapshotEditorKey" class="wb-field" required maxlength="512" autocomplete="off"></label>
+        <div id="snapshotEditorOptions">
+          <label><span class="wb-label">类型</span><select id="snapshotEditorType" class="wb-field"><option value="string">STRING</option><option value="set">SET</option></select></label>
+          <p class="query-help">数据库沿用当前 Redis 配置；新键永久有效。</p>
+        </div>
+        <label><span class="wb-label" id="snapshotEditorValueLabel">值</span><textarea id="snapshotEditorValue" class="wb-field" rows="5" maxlength="65536"></textarea></label>
+      </div>
+      <footer class="wb-dialog__footer"><button class="wb-button" type="button" data-dialog-close="snapshotDialog">取消</button><button class="wb-button primary" type="submit">下一步</button></footer>
+    </form>
+  </dialog>
   <dialog id="confirmDialog" class="wb-dialog" aria-labelledby="confirmTitle"><header class="wb-dialog__header"><h2 id="confirmTitle" class="wb-dialog__title">需要确认</h2><button class="wb-button ghost" type="button" data-dialog-close="confirmDialog" aria-label="关闭确认">关闭</button></header><div class="wb-dialog__body"><p id="confirmMessage"></p><code id="confirmTarget" class="confirm-code"></code></div><footer class="wb-dialog__footer"><button class="wb-button" type="button" data-dialog-close="confirmDialog">取消</button><button id="btnConfirmAction" class="wb-button danger" type="button">确认执行</button></footer></dialog>
 
   <dialog id="nameDialog" class="wb-dialog" aria-labelledby="nameTitle"><header class="wb-dialog__header"><h2 id="nameTitle" class="wb-dialog__title">新建</h2><button class="wb-button ghost" type="button" data-dialog-close="nameDialog" aria-label="关闭新建">关闭</button></header><div class="wb-dialog__body"><label><span id="nameLabel" class="wb-label">名称</span><input id="nameInput" class="wb-field" aria-describedby="nameError" autocomplete="off"></label><p id="nameError" class="wb-status" role="alert"></p></div><footer class="wb-dialog__footer"><button class="wb-button" type="button" data-dialog-close="nameDialog">取消</button><button id="btnNameSubmit" class="wb-button primary" type="button">创建</button></footer></dialog>

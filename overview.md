@@ -32,7 +32,7 @@ graph TD
 - PG查询复用逻辑到物理表/字段映射：`prod_inst_acct_rel → prod_inst_acct`、`offer_inst → prod_offer_inst`、`offer_inst_rel → prod_offer_inst_rel`、`acc_num → acc_nbr`、销售品关系A/Z字段等；保留物理原值并提供逻辑兼容字段。配置查询不套用该映射，套餐定义读取MySQL `offer`。新增独立“关系链查询”覆盖产品/销售品正反向、功能产品、群主、三类非产品群及对端成员诊断；结果是带履历/状态/角色的原始候选，详见 [档案查询与关系链](./docs/archive-relations.md)。
 - “查询套餐”按规格offer_id读取MySQL定义和定价，从PG反查订购销售品实例、产品关系及产品实例。“查询事件类型”保留MySQL事件格式、入库路由、定价策略/组合查询，订购实例与产品关联转查PG。每一步记录实际来源，单分支失败保留已成功数据。
 - 阈值查询以 A 端产品实例 ID 为入口，分步读取 `prod_inst_rel`、产品规格为 `900178630` 的 `prod_inst`，以及六个固定档位属性对应的 `prod_inst_attr`，避免 UDAL 子查询路由限制。
-- 左侧独立「Redis 档案」页面由 Node 使用 RESP 直连本地 `.env` 指定的 Redis，仅允许读取 `rate:cpp:{数字ID}`；值按 4 字节大端解压长度、原始 LZ4 block、前缀与 JSON 的既有格式解析，浏览器只接收结构化数据，不接收 Redis 密码。
+- 左侧独立「Redis 档案」页面由 Node 使用 RESP 直连本地 `.env` 指定的 Redis，档案查看只读取 `rate:cpp:{数字ID}`；值按 4 字节大端解压长度、原始 LZ4 block、前缀与 JSON 的既有格式解析，浏览器只接收结构化数据，不接收 Redis 密码。
 - 主工作台的三类资源列表在已加载数据上本地搜索/排序并保留收藏；HBase 查看窗口只读取指定行数的样本，查找和高亮不触发额外扫描。月度 `ACCUMULATOR_<账期>` 在前端拆解列族 `f` 的 Qualifier；`ACCUMULATOR_DETAIL_<账期>` 拆解 MS/SM RowKey；未处理和已处理话单分发表分别按各自七段 RowKey 拆解来源标识/文件、时间键、分发类型、处理场景和附加编码；采预/批价的在途与已完成主表按批次 ID 汇总 `batch_info` 字段，子表拆解输入/输出方向、来源/目标路径及结果段；原始结果仍用于复制。
 - CDR 以「文件与会话 → 记录浏览 → 批量修改/造数 → 导出」顺序组织，字段错误、加载/空/错误状态和影响数量均在原位反馈。
 
@@ -47,6 +47,7 @@ graph TD
 - `/api/voyage/status|connect` 仅返回脱敏配置和连接状态；Bearer Token 只由 Node 从 `.env` 读取。适配器把 `columns + rows` 还原为对象，保留不安全大整数为字符串，并把 HTTP、鉴权和语句级错误分开报告。
 - `/api/query/redis` 只接收产品实例 ID 或 `rate:cpp:{数字ID}`，逐次认证、选择配置的 DB、GET 并解码 LZ4/JSON。单次连接与查询默认 15 秒，解压长度默认不超过 16 MiB，密码不进入接口响应。
 - `/api/redis-index/lookup|preview|apply` 补建根产品号码索引：实例直接定位 CPP；手机号先读 Redis accNbr，缺失时查测试 PG `prod_inst.acc_nbr`，最多 100 个候选。预览从所选 CPP 根 `prodInsts` 分别取 `account` 与 `accNbr`，历史成员去重后编码为二进制 SET。确认后 Lua 核对源字节与全部目标仍缺失，只新增缺失 key，不改已有 key/成员/TTL。写前本地操作记录、写后回读；响应异常保留 uncertain，不自动重放。仅覆盖所选实例，详见 [号码索引补建](./docs/redis-indexes.md)。
+- `/api/redis-snapshot/search|detail|mutate` 复用 Redis 档案连接并限制在 `rate:SERV_SNAPSHOT:` 下；键与 SET 成员使用游标分页，确认后以原子命令处理 STRING / SET，不提供导入或任意 Redis 命令入口。
 - `/api/redis-sync/preview|apply|history|restore` 从 PG 按 `ID + his_id` 更新既有 Redis 档案字段，并追加根产品直接订购关系及销售品实例；其他新增类型仅核对，缺失/未知内容保留，既有记录关联端点变更阻断。新增记录与字段共用候选编码、预览重算、整条备份及恢复；编码重算 Kryo String 字符长度并生成 raw LZ4 block，Redis Lua CAS 写入保留 TTL 并回读验证。恢复绑定连接和同步后的摘要、原绝对过期时间，避免覆盖后续修改；具体边界见 [PG → Redis 同步](./docs/pg-redis-sync.md)。
 - UDAL 按逻辑库建立 `utf8mb4` 连接，不在查询中写库名前缀；结果中的大整数、金额和日期保留字符串。可无损识别的 UTF-8/GB18030 历史错码业务名称恢复显示并保留原始值。分支失败、关联缺失与空结果分别返回，跨库结果不表示同一事务快照。
 - 浏览器日期格式化、查询元数据、SFTP 修改时间和 CDR 生成时间均显式使用 UTC+8；数据库业务日期字符串保持原值并标注 UTC+8，不做二次偏移。

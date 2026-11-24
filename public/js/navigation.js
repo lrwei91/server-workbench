@@ -3,7 +3,7 @@ import { $, $$ } from '/shared/ui.js';
 export const ROUTES = Object.freeze({
   resources: ['files', 'hdfs', 'hbase'],
   query: ['phone', 'productInstance', 'offer', 'eventType', 'threshold', 'relations'],
-  redis: ['archive', 'sync', 'indexes', 'history'],
+  redis: ['archive', 'sync', 'indexes', 'history', 'snapshots'],
   cdr: [],
 });
 const PANELS = { resources: 'workspace', query: 'query', redis: 'redis', cdr: 'cdr' };

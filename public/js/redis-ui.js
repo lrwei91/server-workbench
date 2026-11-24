@@ -7,5 +7,5 @@ export function switchRedisTab(tab) {
   });
   $$('[data-redis-panel]').forEach(panel => panel.classList.toggle('hidden', panel.dataset.redisPanel !== tab));
   $('#redisPage').dataset.task = tab;
-  $('.redis-target').classList.toggle('hidden', tab === 'indexes');
+  $('.redis-target').classList.toggle('hidden', tab === 'indexes' || tab === 'snapshots');
 }
