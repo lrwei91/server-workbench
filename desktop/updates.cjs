@@ -1,5 +1,25 @@
 'use strict';
+const fs = require('node:fs/promises');
+const path = require('node:path');
+const { NsisUpdater } = require('electron-updater');
 const { notesText } = require('./runtime.cjs');
+
+class WorkbenchNsisUpdater extends NsisUpdater {
+  async differentialDownloadInstaller(...args) {
+    // electron-updater 6.8.9 may retain current.blockmap across a manual install,
+    // or populate it when a new version is downloaded but not yet installed.
+    // The index carries no version label; fetch the published map for the running version.
+    try {
+      await fs.unlink(path.join(this.downloadedUpdateHelper.cacheDir, 'current.blockmap'));
+    } catch (error) {
+      if (error.code !== 'ENOENT') {
+        this.logger.warn(`无法清理未标注版本的增量索引（${error.code || 'UNKNOWN'}），改用全量下载。`);
+        return true; // NSIS updater verifies the full package using its normal path.
+      }
+    }
+    return super.differentialDownloadInstaller(...args);
+  }
+}
 
 // 独立于 renderer，便于测试事件状态与安装时机。
 function configureUpdates({ updater, packaged, notify, confirm, install, progress, log }) {
@@ -39,4 +59,4 @@ function configureUpdates({ updater, packaged, notify, confirm, install, progres
   }
   return { check };
 }
-module.exports = { configureUpdates };
+module.exports = { configureUpdates, WorkbenchNsisUpdater };

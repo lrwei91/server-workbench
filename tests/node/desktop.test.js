@@ -6,7 +6,7 @@ const path = require('node:path');
 const { EventEmitter } = require('node:events');
 const { createServer } = require('../../server/server');
 const runtime = require('../../desktop/runtime.cjs');
-const { configureUpdates } = require('../../desktop/updates.cjs');
+const { configureUpdates, WorkbenchNsisUpdater } = require('../../desktop/updates.cjs');
 const builder = require('../../electron-builder.cjs');
 
 test('desktop auth protects static, Node APIs and CDR proxy', async (t) => {
@@ -42,6 +42,53 @@ function fixture({ available = true, packaged = true, approved = true } = {}) {
   const controller = configureUpdates({ updater, packaged, notify: async () => calls.push('notify'), confirm: async () => approved, install: async () => calls.push('install'), progress: () => {}, log: () => {} });
   return { updater, calls, controller };
 }
+test('NSIS differential uses the running version blockmap instead of a stale cache', async (t) => {
+  const { gzipSync } = require('node:zlib');
+  const { createHash } = require('node:crypto');
+  const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'workbench-diff-'));
+  t.after(() => fs.rmSync(cacheDir, { recursive: true, force: true }));
+  const pending = path.join(cacheDir, 'pending'); fs.mkdirSync(pending);
+  const stale = path.join(cacheDir, 'current.blockmap'), installer = path.join(cacheDir, 'installer.exe');
+  const destination = path.join(pending, 'target.exe');
+  const bytes = Buffer.from('reusable installer fixture');
+  const blockmap = gzipSync(JSON.stringify({ version: '2', files: [{ name: 'file', offset: 0, sizes: [bytes.length], checksums: ['correct-block'] }] }));
+  const wrongMap = gzipSync(JSON.stringify({ version: '2', files: [{ name: 'wrong-base', offset: 0, sizes: [bytes.length], checksums: ['unrelated-block'] }] }));
+  fs.writeFileSync(stale, wrongMap); fs.writeFileSync(installer, bytes);
+  fs.writeFileSync(path.join(pending, 'cached-update.exe'), 'do not touch');
+  const updater = new WorkbenchNsisUpdater(null, { version: '1.0.20' });
+  const messages = [];
+  updater.logger = { info() {}, warn(message) { messages.push(message); }, error(message) { messages.push(message); } };
+  updater.downloadedUpdateHelper = { cacheDir, cacheDirForPendingUpdate: pending };
+  const from = new URL('https://example.invalid/1.0.20.exe.blockmap'), to = new URL('https://example.invalid/1.0.21.exe.blockmap');
+  const downloads = [];
+  updater.httpExecutor = { downloadToBuffer: async (url) => { downloads.push(url.href); return blockmap; } };
+  const provider = { isUseMultipleRangeRequest: false, getBlockMapFiles: (_url, oldVersion, newVersion) => {
+    assert.deepEqual([oldVersion, newVersion], ['1.0.20', '1.0.21']); return [from, to];
+  } };
+  const file = { url: new URL('https://example.invalid/target.exe'), info: { size: bytes.length, sha512: createHash('sha512').update(bytes).digest('base64') } };
+  const options = { updateInfoAndProvider: { info: { version: '1.0.21' }, provider } };
+  const download = () => updater.differentialDownloadInstaller(file, options, destination, provider, 'installer.exe');
+  assert.equal(await download(), false); // false means the package was reconstructed without full download.
+  assert.deepEqual(downloads, [to.href, from.href]);
+  assert.deepEqual(fs.readFileSync(destination), bytes);
+  assert.deepEqual(fs.readFileSync(installer), bytes);
+  assert.equal(fs.readFileSync(path.join(pending, 'cached-update.exe'), 'utf8'), 'do not touch');
+  assert.equal(fs.existsSync(stale), false);
+
+  updater.httpExecutor.downloadToBuffer = async (url) => {
+    if (url.href === from.href) throw new Error('previous release asset missing');
+    return blockmap;
+  };
+  assert.equal(await download(), true); // Upstream fallback still applies when the older index isn't available.
+  assert.ok(messages.some((message) => message.includes('fallback to full download')));
+
+  fs.mkdirSync(stale); // An undeletable cache entry must never be passed to the differential reader.
+  messages.length = 0;
+  assert.equal(await download(), true);
+  assert.ok(messages.some((message) => message.includes('改用全量下载')));
+  assert.ok(fs.statSync(stale).isDirectory());
+});
+
 test('update waits for confirmation/download, never installs on ordinary quit', async () => {
   const { updater, calls, controller } = fixture();
   await controller.check();

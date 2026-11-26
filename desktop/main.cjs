@@ -1,12 +1,12 @@
 'use strict';
 const { app, BrowserWindow, Menu, dialog, shell, utilityProcess, session } = require('electron');
-const { autoUpdater } = require('electron-updater');
 const fs = require('node:fs');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { randomBytes } = require('node:crypto');
 const runtime = require('./runtime.cjs');
-const { configureUpdates } = require('./updates.cjs');
+const { configureUpdates, WorkbenchNsisUpdater } = require('./updates.cjs');
+const autoUpdater = process.platform === 'win32' ? new WorkbenchNsisUpdater() : require('electron-updater').autoUpdater;
 const { parseEnv } = require('../server/config-loader');
 
 // 与安装版分离，避免开发运行污染用户的正式配置和收藏。
