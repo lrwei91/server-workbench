@@ -1,7 +1,8 @@
 import { $, el, announce, postJson } from '/shared/ui.js';
 
 const PREFIX = 'rate:SERV_SNAPSHOT:';
-const request = async (path, body) => (await postJson('/api/redis-snapshot/' + path, body, { timeout: 65000 })).result;
+const KEY_PAGE_SIZE = 100;
+const request = async (path, body, signal) => (await postJson('/api/redis-snapshot/' + path, body, { timeout: 65000, signal })).result;
 const displayValue = (row) => row.value === null ? `二进制或超长内容（${row.size} 字节，只读）` : row.value || '（空值）';
 const actionButton = (text, click, danger = false) => el('button', {
   type: 'button', class: 'wb-button' + (danger ? ' danger' : ''), text, on: { click },
@@ -9,21 +10,31 @@ const actionButton = (text, click, danger = false) => el('button', {
 
 export function initRedisSnapshots({ confirm, isWriting, acquireWrite, releaseWrite, openDialog, closeDialog, getTarget }) {
   const form = $('#snapshotSearch'), query = $('#snapshotQuery'), keysRoot = $('#snapshotKeys'),
-    detailRoot = $('#snapshotDetail'), moreKeys = $('#snapshotMoreKeys'), addKey = $('#snapshotAddKey'),
+    detailRoot = $('#snapshotDetail'), addKey = $('#snapshotAddKey'), cancelSearch = $('#snapshotCancelSearch'),
+    previousKeys = $('#snapshotPreviousKeys'), nextKeys = $('#snapshotNextKeys'),
     editor = $('#snapshotEditor'), editorKey = $('#snapshotEditorKey'), editorType = $('#snapshotEditorType'),
     editorValue = $('#snapshotEditorValue');
   const status = (message, tone) => announce($('#snapshotState'), message, tone);
-  let busy = false, target, keys = [], search, selected, edit;
+  let busy = false, target, keys = [], keyPage = 0, scanController, selected, edit;
 
   function controls() {
     const disabled = busy || isWriting();
-    for (const control of [...form.elements, addKey, moreKeys, ...keysRoot.querySelectorAll('button'), ...detailRoot.querySelectorAll('button')]) {
+    for (const control of [...form.elements, ...keysRoot.querySelectorAll('button'), ...detailRoot.querySelectorAll('button')]) {
+      if (control === cancelSearch) continue;
       control.disabled = disabled;
     }
-    moreKeys.classList.toggle('hidden', !search || search.cursor === '0' || query.value !== search.query);
+    cancelSearch.classList.toggle('hidden', !scanController);
+    cancelSearch.disabled = Boolean(scanController?.signal.aborted);
+    previousKeys.disabled = disabled || keyPage === 0;
+    nextKeys.disabled = disabled || (keyPage + 1) * KEY_PAGE_SIZE >= keys.length;
   }
   function renderKeys() {
-    keysRoot.replaceChildren(...keys.map((key) => el('li', {},
+    const pageCount = Math.max(1, Math.ceil(keys.length / KEY_PAGE_SIZE));
+    keyPage = Math.min(keyPage, pageCount - 1);
+    const offset = keyPage * KEY_PAGE_SIZE;
+    $('#snapshotKeyPages').classList.toggle('hidden', pageCount === 1);
+    $('#snapshotKeyPage').textContent = `${keyPage + 1} / ${pageCount}`;
+    keysRoot.replaceChildren(...keys.slice(offset, offset + KEY_PAGE_SIZE).map((key) => el('li', {},
       el('button', {
         text: key, type: 'button', class: 'wb-button',
         'aria-pressed': String(selected?.key === key), on: { click: () => void loadKey(key) },
@@ -59,19 +70,35 @@ export function initRedisSnapshots({ confirm, isWriting, acquireWrite, releaseWr
       if (cursor !== '0') detailRoot.append(actionButton('下一批成员', () => void loadKey(key, cursor)));
     } else detailRoot.append(el('p', { class: 'query-help', text: '当前版本仅编辑 STRING 和 SET。' }));
   }
-  async function scan(reset) {
+  async function scan() {
     if (busy || isWriting()) return;
-    const term = query.value;
-    if (!reset && (!search || search.query !== term || search.cursor === '0')) return;
-    if (reset) { search = null; keys = []; renderKeys(); }
-    busy = true; controls(); status('正在扫描快照键…');
+    const term = query.value, seen = new Set();
+    const controller = new AbortController();
+    scanController = controller; busy = true;
+    keys = []; keyPage = 0; renderKeys(); controls(); status('正在扫描快照键…');
+    let cursor = '0', batches = 0;
     try {
-      const result = await request('search', { query: term, cursor: reset ? '0' : search.cursor });
-      target = result.target; search = { query: term, cursor: result.cursor };
-      keys = result.keys; renderKeys();
-      status(`${target.host}:${target.port} / DB${target.db} · 本批 ${keys.length} 个键${result.cursor === '0' ? ' · 扫描结束' : ' · 还有后续批次'}`, 'success');
-    } catch (error) { status(error.message, 'error'); }
-    finally { busy = false; controls(); }
+      do {
+        const result = await request('search', { query: term, cursor }, controller.signal);
+        if (controller.signal.aborted) break;
+        target = result.target;
+        const previousCount = keys.length;
+        for (const key of result.keys) {
+          if (!seen.has(key)) { seen.add(key); keys.push(key); }
+        }
+        if (keys.length !== previousCount) { renderKeys(); controls(); }
+        cursor = result.cursor; batches += result.batches;
+        status(`${target.host}:${target.port} / DB${target.db} · 正在扫描（已扫 ${batches} 批，找到 ${keys.length} 个键）`);
+      } while (cursor !== '0');
+      if (controller.signal.aborted) status(`查询已取消，保留已找到的 ${keys.length} 个键（结果不完整）`, 'warning');
+      else status(`${target.host}:${target.port} / DB${target.db} · 查询完成 · 共 ${keys.length} 个键`, 'success');
+    } catch (error) {
+      status(controller.signal.aborted ? `查询已取消，保留已找到的 ${keys.length} 个键（结果不完整）` :
+        `查询中断：${error.message}。保留已找到的 ${keys.length} 个键（结果不完整）`, controller.signal.aborted ? 'warning' : 'error');
+    } finally {
+      keys.sort(); scanController = null; busy = false;
+      renderKeys(); controls();
+    }
   }
   async function readKey(key, cursor = '0') {
     selected = await request('detail', { key, cursor });
@@ -126,9 +153,10 @@ export function initRedisSnapshots({ confirm, isWriting, acquireWrite, releaseWr
     confirmMutation({ key, previous, action: 'remove-member' },
       `删除所选成员（${previous ? JSON.stringify(previous.slice(0, 120)) + (previous.length > 120 ? '…' : '') : '空值'}）。若为最后一个成员，Redis 将移除整个键。`);
   }
-  form.addEventListener('submit', (event) => { event.preventDefault(); void scan(true); });
-  query.addEventListener('input', controls);
-  moreKeys.addEventListener('click', () => void scan(false));
+  form.addEventListener('submit', (event) => { event.preventDefault(); void scan(); });
+  cancelSearch.addEventListener('click', () => { scanController?.abort(); controls(); });
+  previousKeys.addEventListener('click', () => { keyPage--; renderKeys(); controls(); keysRoot.scrollTop = 0; });
+  nextKeys.addEventListener('click', () => { keyPage++; renderKeys(); controls(); keysRoot.scrollTop = 0; });
   addKey.addEventListener('click', () => openEditor({ action: 'create' }));
   editorType.addEventListener('change', syncEditor);
   editor.addEventListener('submit', (event) => {

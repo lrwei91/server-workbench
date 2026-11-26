@@ -162,11 +162,19 @@
         <form id="snapshotSearch" class="snapshot-actions">
           <label>键名搜索<input id="snapshotQuery" class="wb-field" value="rate:SERV_SNAPSHOT" autocomplete="off" maxlength="512"></label>
           <button class="wb-button primary" type="submit">查询</button>
+          <button id="snapshotCancelSearch" class="wb-button hidden" type="button">取消查询</button>
           <button id="snapshotAddKey" class="wb-button" type="button">添加新键</button>
         </form>
         <p id="snapshotState" class="wb-status" role="status" aria-live="polite"></p>
         <div class="snapshot-grid">
-          <section aria-label="快照键列表"><ul id="snapshotKeys"></ul><button id="snapshotMoreKeys" class="wb-button hidden" type="button">继续扫描</button></section>
+          <section aria-label="快照键列表">
+            <ul id="snapshotKeys"></ul>
+            <div id="snapshotKeyPages" class="snapshot-actions hidden">
+              <button id="snapshotPreviousKeys" class="wb-button" type="button">上一页</button>
+              <span id="snapshotKeyPage" class="query-help"></span>
+              <button id="snapshotNextKeys" class="wb-button" type="button">下一页</button>
+            </div>
+          </section>
           <section id="snapshotDetail" aria-label="快照键内容"></section>
         </div>
       </section>
